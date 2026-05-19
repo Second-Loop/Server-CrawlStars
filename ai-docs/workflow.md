@@ -20,6 +20,8 @@ In scope:
 - Minimal server entrypoint
 - Health check code and tests
 - GitHub Actions CI
+- GitHub Actions CD packaging
+- Oracle VM pull-based systemd deployment scripts
 - Linear issue workflow
 - GitHub branch and PR workflow
 - Shared documentation in `ai-docs/`
@@ -132,6 +134,7 @@ Update docs when behavior, workflow, or architecture changes.
 - `ai-docs/linear-control.md`: Linear SSOT and issue control model
 - `ai-docs/github.md`: GitHub PR and review conventions
 - `ai-docs/ci.md`: CI contract and local validation
+- `ai-docs/deployment.md`: Oracle VM CD and systemd deployment notes
 - `ai-docs/protocol.md`: protocol planning notes
 - `ai-docs/server-todo.md`: near-term server work
 - `ai-docs/decisions.md`: lightweight ADR log

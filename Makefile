@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet test build ci
+.PHONY: fmt fmt-check vet test build deploy-check ci
 
 GO_CACHE ?= $(CURDIR)/.cache/go-build
 GO_MOD_CACHE ?= $(CURDIR)/.cache/go-mod
@@ -19,4 +19,7 @@ test:
 build:
 	$(GO_ENV) go build ./cmd/server
 
-ci: fmt-check vet test build
+deploy-check:
+	bash -n scripts/deploy/install-systemd.sh scripts/deploy/pull-latest.sh scripts/deploy/rollback.sh
+
+ci: fmt-check vet test build deploy-check
