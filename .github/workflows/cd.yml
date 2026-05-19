@@ -1,0 +1,78 @@
+name: CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  package-server:
+    name: Package server
+    runs-on: ubuntu-latest
+
+    env:
+      BINARY_NAME: crawl-stars-server
+      PACKAGE_NAME: crawl-stars-server-linux-amd64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build linux/amd64 server
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist/package
+          go build -trimpath -ldflags="-s -w" -o "dist/package/${BINARY_NAME}" ./cmd/server
+          printf '%s\n' "${GITHUB_SHA}" > dist/package/VERSION
+          printf '%s\n' "${GITHUB_SHA}" > dist/package/COMMIT_SHA
+          chmod 0755 "dist/package/${BINARY_NAME}"
+
+      - name: Package tarball
+        run: |
+          tar -czf "dist/${PACKAGE_NAME}" -C dist/package .
+          (cd dist && sha256sum "${PACKAGE_NAME}" > SHA256SUMS)
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-stars-server-linux-amd64-${{ github.sha }}
+          path: |
+            dist/${{ env.PACKAGE_NAME }}
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: server-${{ github.sha }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "dist/${PACKAGE_NAME}" "dist/SHA256SUMS" --clobber
+          else
+            gh release create "${RELEASE_TAG}" \
+              "dist/${PACKAGE_NAME}" \
+              "dist/SHA256SUMS" \
+              --target "${GITHUB_SHA}" \
+              --title "Server build ${GITHUB_SHA}" \
+              --notes "Automated linux/amd64 server package for ${GITHUB_SHA}."
+          fi

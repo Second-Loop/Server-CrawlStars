@@ -1,0 +1,24 @@
+[Unit]
+Description=Crawl Stars Go server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crawlstars
+Group=crawlstars
+WorkingDirectory=/opt/crawl-stars-server/current
+Environment=SERVER_ADDR=127.0.0.1:8080
+ExecStart=/opt/crawl-stars-server/current/crawl-stars-server
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/crawl-stars-server
+
+[Install]
+WantedBy=multi-user.target

@@ -39,3 +39,5 @@ jobs:
       - name: Build server
         run: go build ./cmd/server
 
+      - name: Check deployment scripts
+        run: bash -n scripts/deploy/install-systemd.sh scripts/deploy/pull-latest.sh scripts/deploy/rollback.sh
