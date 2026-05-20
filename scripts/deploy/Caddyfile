@@ -1,0 +1,8 @@
+{
+	auto_https off
+}
+
+:8081 {
+	bind 127.0.0.1
+	respond "Hello from Server Crawl Stars" 200
+}

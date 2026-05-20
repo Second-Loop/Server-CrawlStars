@@ -13,7 +13,7 @@ const serviceName = "server-crawlstars"
 func main() {
 	addr := os.Getenv("SERVER_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = "127.0.0.1:8080"
 	}
 
 	mux := http.NewServeMux()

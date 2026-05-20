@@ -31,9 +31,14 @@ Oracle VM
   stores immutable releases under /opt/crawl-stars-server/releases/<sha>
   switches /opt/crawl-stars-server/current
   runs /opt/crawl-stars-server/current/crawl-stars-server through systemd
+
+Cloudflare
+  terminates public HTTPS for tolerblanc.com
+  routes api-crawlstars.tolerblanc.com through Cloudflare Tunnel to 127.0.0.1:8080
+  routes tolerblanc.com through Cloudflare Tunnel to local Caddy on 127.0.0.1:8081
 ```
 
-The systemd unit sets `SERVER_ADDR=127.0.0.1:8080`. Public ingress, Cloudflare Tunnel, Tailscale, Docker, Kubernetes, and dashboards are outside the current scope.
+The systemd unit sets `SERVER_ADDR=127.0.0.1:8080`. Cloudflare Tunnel is the public exposure path. Caddy is local-only for the apex hello page. Tailscale, Docker, Kubernetes, and dashboards are outside the current scope.
 
 ## Near-Term Direction
 
