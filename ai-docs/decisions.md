@@ -41,3 +41,18 @@ Consequences:
 - GitHub Release assets keep the public-repo pull path simple for the VM.
 - The server process is managed by systemd instead of Docker, PM2, or Kubernetes.
 - Rollback is a symlink switch back to `/opt/crawl-stars-server/previous` plus systemd restart.
+
+## ADR-0004: Expose HTTPS Through Cloudflare Tunnel
+
+Status: Accepted
+
+Context: SL-35 needs public HTTPS hostnames for the Go server while keeping the Go process private to the VM. OCI public inbound changes should be avoided for now, so direct Caddy `80/tcp` and `443/tcp` ingress is not the selected production path.
+
+Decision: Keep the Go server on `127.0.0.1:8080` and run a Cloudflare Tunnel connector on the VM. Cloudflare routes `api-crawlstars.tolerblanc.com` to `http://127.0.0.1:8080`. The apex `tolerblanc.com` routes to local Caddy on `http://127.0.0.1:8081`, which returns a minimal hello response. Cloudflare owns public HTTPS at the edge; Caddy is local-only in this tunnel-backed setup.
+
+Consequences:
+
+- OCI public inbound does not need application `80/tcp` or `443/tcp` for this path; the connector makes outbound connections to Cloudflare.
+- The Go server port should not be opened in VM firewall, OCI Security Lists, or NSGs.
+- WebSocket traffic can use the same Cloudflare Tunnel hostname when the Go server implements a WebSocket endpoint.
+- Caddy still runs under systemd, but it only listens on `127.0.0.1:8081` for the apex hello page.

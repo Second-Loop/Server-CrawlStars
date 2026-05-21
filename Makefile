@@ -20,6 +20,6 @@ build:
 	$(GO_ENV) go build ./cmd/server
 
 deploy-check:
-	bash -n scripts/deploy/install-systemd.sh scripts/deploy/pull-latest.sh scripts/deploy/rollback.sh
+	bash -n scripts/deploy/*.sh
 
 ci: fmt-check vet test build deploy-check

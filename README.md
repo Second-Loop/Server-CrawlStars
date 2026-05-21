@@ -35,10 +35,12 @@ go run ./cmd/server
 Health check:
 
 ```sh
-curl http://localhost:8080/health
+curl http://127.0.0.1:8080/health
 ```
 
-Deployment docs live in `ai-docs/deployment.md`. The production systemd unit binds the server to `127.0.0.1:8080` by setting `SERVER_ADDR`.
+The server binds to `127.0.0.1:8080` by default. Use `SERVER_ADDR=:8080 go run ./cmd/server` only when you intentionally need it reachable from other hosts.
+
+Deployment docs live in `ai-docs/deployment.md`. The production systemd unit also sets `SERVER_ADDR=127.0.0.1:8080`; Cloudflare Tunnel exposes `api-crawlstars.tolerblanc.com` to the Go server and `tolerblanc.com` to a local-only Caddy hello page.
 
 ## Working Agreement
 
