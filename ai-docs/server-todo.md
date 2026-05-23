@@ -14,11 +14,17 @@
 
 ## Follow-Ups
 
-- [ ] Push initial baseline to GitHub
-- [ ] Confirm default branch after first push
-- [ ] Configure branch protection
-- [ ] Verify Linear GitHub integration after first PR
-- [ ] Run the first CD workflow and VM deployment smoke check
-- [ ] Confirm PR review settings
+- [x] Push initial baseline to GitHub
+- [x] Confirm default branch after first push
+- [x] Configure branch protection
+- [x] Verify Linear GitHub integration after first PR
+- [x] Run the first CD workflow and VM deployment smoke check
+- [x] Confirm PR review settings
+- [x] Expose the VM runtime through Cloudflare Tunnel
+- [x] Verify public `/health` and root domain responses
+
+## E1 Planning
+
 - [ ] Decide first vertical slice
 - [ ] Define protocol scope for the first slice
+- [ ] Split simulator, protocol, and integration work into issue-sized tickets
