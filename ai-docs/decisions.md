@@ -56,3 +56,18 @@ Consequences:
 - The Go server port should not be opened in VM firewall, OCI Security Lists, or NSGs.
 - WebSocket traffic can use the same Cloudflare Tunnel hostname when the Go server implements a WebSocket endpoint.
 - Caddy still runs under systemd, but it only listens on `127.0.0.1:8081` for the apex hello page.
+
+## ADR-0005: Document REST With OpenAPI And WebSocket Messages With AsyncAPI
+
+Status: Accepted
+
+Context: E1 needs a small contract surface for room lifecycle, client input, and server snapshot flows. REST endpoints should be easy to inspect and manually call, while WebSocket gameplay traffic is a bidirectional stream that Swagger UI does not model well.
+
+Decision: Use OpenAPI 3.x for REST APIs and Swagger UI when an interactive REST page is added. Use AsyncAPI for WebSocket channels and message payloads. OpenAPI may reference `ws://` or `wss://` server URLs, but AsyncAPI is the source of truth for WebSocket input and snapshot streams.
+
+Consequences:
+
+- REST and WebSocket contracts can evolve independently while sharing schema vocabulary where useful.
+- E1 debug APIs must be clearly marked as unstable and E1-only until promoted.
+- The first implementation issue that adds spec files should validate both OpenAPI and AsyncAPI documents.
+- The preferred hosted paths are `/docs/rest`, `/docs/ws`, `/docs/openapi.yaml`, and `/docs/asyncapi.yaml`.
