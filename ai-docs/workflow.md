@@ -1,20 +1,20 @@
 # Workflow
 
-This repository borrows a small part of OpenAI Symphony's operating model: issues are the task source of truth, work is scoped by acceptance criteria, and completion requires review plus validation.
+이 레포지토리는 OpenAI Symphony 운영 모델의 일부만 차용합니다. Issue가 task source of truth이고, 작업은 acceptance criteria 기준으로 scope가 정해지며, 완료에는 review와 validation이 필요합니다.
 
-It does not implement Symphony's scheduler, runner, daemon, multi-agent orchestration, dashboard, or automatic PR loop.
+이 레포지토리는 Symphony의 scheduler, runner, daemon, multi-agent orchestration, dashboard, automatic PR loop를 구현하지 않습니다.
 
 ## Project Overview
 
-`Server-CrawlStars` is the Go server repository for a Brawl Stars-style real-time multiplayer game. The Unity client is maintained separately.
+`Server-CrawlStars`는 Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go server repository입니다. Unity client는 별도 레포지토리에서 관리합니다.
 
-The current repository phase is bootstrap. The purpose is to establish a stable human plus Codex development workflow before building gameplay systems.
+현재 레포지토리는 E1 서버 권위 core loop skeleton을 준비하는 단계입니다. 안정적인 인간 + Codex 개발 workflow를 유지하면서, issue 단위로 gameplay server 기반을 확장합니다.
 
 ## Current Phase
 
-Phase E0: repository and collaboration foundation.
+Phase E1: server-authoritative core loop skeleton.
 
-In scope:
+이미 완료된 E0 범위:
 
 - Go project initialization
 - Minimal server entrypoint
@@ -26,13 +26,11 @@ In scope:
 - GitHub branch and PR workflow
 - Shared documentation in `ai-docs/`
 
-Out of scope:
+E1에서 아직 scope가 명시되기 전에는 제외되는 작업:
 
-- Game room server
-- Matchmaking
-- WebSocket gameplay loop
-- Physics simulation
-- Client prediction and reconciliation
+- Production matchmaking
+- Full gameplay loop
+- Persistence
 - Database and ORM
 - Kubernetes
 - Scheduler, runner, or multi-agent orchestration
@@ -40,44 +38,44 @@ Out of scope:
 
 ## What Codex Should Do
 
-- Read `AGENTS.md` first.
-- Read the active Linear issue before implementation when Linear access is available.
-- Confirm scope, acceptance criteria, and validation before editing.
-- Prefer small, issue-sized changes.
-- Keep code, tests, CI, and docs aligned.
-- Leave validation commands and results in the final work summary or PR.
-- Record uncertain architectural decisions in `ai-docs/decisions.md`.
+- `AGENTS.md`를 먼저 읽습니다.
+- Linear access가 가능하면 구현 전에 활성 Linear issue를 읽습니다.
+- 편집 전에 scope, acceptance criteria, validation을 확인합니다.
+- 작고 issue 크기에 맞는 변경을 선호합니다.
+- code, tests, CI, docs를 함께 맞춥니다.
+- 최종 작업 요약 또는 PR에 validation command와 result를 남깁니다.
+- 불확실한 architecture decision은 `ai-docs/decisions.md`에 기록합니다.
 
 ## What Codex Must Not Do
 
-- Do not expand scope beyond the active issue.
-- Do not introduce gameplay systems during bootstrap.
-- Do not add persistent storage, deployment platforms, or orchestration without an issue.
-- Do not mark work complete before tests and CI validation pass.
-- Do not treat local success as complete until PR review and CI pass.
+- 활성 issue 범위를 넘어서 확장하지 않습니다.
+- Linear issue 없이 gameplay system을 추가하지 않습니다.
+- Issue 없이 persistent storage, deployment platform, orchestration을 추가하지 않습니다.
+- Test와 CI validation이 통과하기 전에 완료로 표시하지 않습니다.
+- PR review와 CI가 통과하기 전에는 local success를 완료로 취급하지 않습니다.
 
 ## Default Flow
 
-1. Select a Linear issue.
-2. Confirm scope, acceptance criteria, and validation.
-3. Create a branch containing the issue ID.
-4. Make the smallest coherent change.
-5. Run local validation.
-6. Open a PR.
-7. Wait for CI and human review.
-8. Update Linear with status or blockers.
+1. Linear issue를 선택합니다.
+2. Scope, acceptance criteria, validation을 확인합니다.
+3. Issue ID를 포함한 branch를 만듭니다.
+4. 가장 작은 일관된 변경을 만듭니다.
+5. Local validation을 실행합니다.
+6. PR을 엽니다.
+7. CI와 human review를 기다립니다.
+8. Linear에 status 또는 blocker를 업데이트합니다.
 
 ## Linear Issue Workflow
 
-Linear is the source of truth for task intent.
+Linear는 task intent의 source of truth입니다.
 
-Each issue should include:
+각 issue는 다음을 포함해야 합니다.
 
 - Summary
 - Scope
 - Acceptance criteria
-- Validation commands or checks
-- Links to related issues or decisions
+- Validation command 또는 check
+- 관련 issue 또는 decision link
 
 Current project:
 
@@ -87,11 +85,11 @@ Current project:
 
 ## GitHub Branch And PR Workflow
 
-- Do not push directly to `main` after the initial repository bootstrap.
-- Branch names should include the Linear issue ID when possible.
-- PRs should be small enough to review in one sitting.
-- PRs should link the Linear issue.
-- Merge only after CI passes and a human review is complete.
+- Initial repository bootstrap 이후에는 `main`에 직접 push하지 않습니다.
+- 가능하면 branch name에 Linear issue ID를 포함합니다.
+- PR은 한 번에 review할 수 있을 만큼 작아야 합니다.
+- PR은 Linear issue와 연결해야 합니다.
+- CI 통과와 human review가 끝난 뒤 merge합니다.
 
 Suggested branch naming:
 
@@ -108,7 +106,7 @@ PR body checklist:
 
 ## CI Validation Rules
 
-CI must run on pull requests and pushes to `main`.
+CI는 pull request와 `main` push에서 실행되어야 합니다.
 
 Required checks:
 
@@ -126,18 +124,18 @@ make ci
 
 ## Documentation Update Rules
 
-Update docs when behavior, workflow, or architecture changes.
+Behavior, workflow, architecture가 바뀌면 docs를 업데이트합니다.
 
-- `AGENTS.md`: thin entrypoint for agents
-- `ai-docs/architecture.md`: server architecture overview
-- `ai-docs/workflow.md`: detailed collaboration workflow
-- `ai-docs/linear-control.md`: Linear SSOT and issue control model
-- `ai-docs/github.md`: GitHub PR and review conventions
-- `ai-docs/ci.md`: CI contract and local validation
-- `ai-docs/deployment.md`: Oracle VM CD and systemd deployment notes
-- `ai-docs/api-docs.md`: REST and WebSocket documentation policy
-- `ai-docs/protocol.md`: protocol planning notes
-- `ai-docs/server-todo.md`: near-term server work
+- `AGENTS.md`: agent를 위한 얇은 entrypoint
+- `ai-docs/architecture.md`: server architecture 개요
+- `ai-docs/workflow.md`: 상세 협업 workflow
+- `ai-docs/linear-control.md`: Linear SSOT 및 issue control model
+- `ai-docs/github.md`: GitHub PR 및 review convention
+- `ai-docs/ci.md`: CI contract 및 local validation
+- `ai-docs/deployment.md`: Oracle VM CD 및 systemd deployment note
+- `ai-docs/api-docs.md`: REST 및 WebSocket 문서화 정책
+- `ai-docs/protocol.md`: protocol planning note
+- `ai-docs/server-todo.md`: 가까운 server 작업
 - `ai-docs/decisions.md`: lightweight ADR log
 
 ## Task Template
