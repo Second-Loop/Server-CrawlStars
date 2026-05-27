@@ -135,6 +135,7 @@ Update docs when behavior, workflow, or architecture changes.
 - `ai-docs/github.md`: GitHub PR and review conventions
 - `ai-docs/ci.md`: CI contract and local validation
 - `ai-docs/deployment.md`: Oracle VM CD and systemd deployment notes
+- `ai-docs/api-docs.md`: REST and WebSocket documentation policy
 - `ai-docs/protocol.md`: protocol planning notes
 - `ai-docs/server-todo.md`: near-term server work
 - `ai-docs/decisions.md`: lightweight ADR log
