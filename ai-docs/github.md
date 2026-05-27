@@ -6,16 +6,16 @@
 - Visibility: public
 - Current local access check: `gh repo view` reports admin access.
 
-At bootstrap time, the repository has no committed default branch yet. After the initial baseline is pushed, new work should happen through branches and PRs.
+부트스트랩 시점에는 레포지토리에 committed default branch가 없었습니다. Initial baseline이 push된 이후 새 작업은 branch와 PR을 통해 진행해야 합니다.
 
 ## Current Settings Snapshot
 
-Checked on 2026-05-16 before the first PR, after switching the repository to public:
+2026-05-16 첫 PR 이전, repository를 public으로 전환한 뒤 확인한 내용:
 
-- Default branch: none through GraphQL, while REST reports the configured default branch name as `main`.
-- `main` branch protection: not present yet because the branch does not exist.
-- Branches: none on remote.
-- Workflows: none on remote yet.
+- Default branch: GraphQL에서는 없음, REST에서는 configured default branch name이 `main`으로 보고됨.
+- `main` branch protection: branch가 아직 없어서 존재하지 않음.
+- Branches: remote에 없음.
+- Workflows: remote에 아직 없음.
 - Repository issues: enabled.
 - Repository projects: enabled.
 - Repository wiki: disabled.
@@ -32,18 +32,18 @@ Checked on 2026-05-16 before the first PR, after switching the repository to pub
 - Webhooks: none.
 - Repository teams: none.
 - Direct collaborators: `Tolerblanc` admin, `SikPang` admin.
-- GitHub GraphQL access: works through `gh api graphql`.
-- Codex GitHub connector access: works after the repository was made public; branch search returns no branches because the baseline branch has not been pushed yet.
+- GitHub GraphQL access: `gh api graphql`로 동작 확인.
+- Codex GitHub connector access: repository가 public이 된 뒤 동작 확인. Baseline branch가 아직 push되지 않아 branch search는 branch 없음으로 반환.
 
-Recommended after the baseline commit lands:
+Baseline commit이 들어간 뒤 권장되는 확인:
 
-- Disable merge commits and rebase merges if the team wants squash-only merges.
-- Add required PR review and required CI checks for `main`.
-- Re-check whether Linear's GitHub integration is installed at the organization/repository level.
+- Team이 squash-only merge를 원한다면 merge commit과 rebase merge를 비활성화합니다.
+- `main`에 required PR review와 required CI checks를 추가합니다.
+- Linear GitHub integration이 organization/repository level에 설치되어 있는지 다시 확인합니다.
 
 ## PR Rules
 
-Every implementation PR should include:
+모든 implementation PR은 다음을 포함해야 합니다.
 
 - Linked Linear issue
 - Summary
@@ -51,15 +51,15 @@ Every implementation PR should include:
 - Validation commands and results
 - Known risks or follow-ups
 
-Do not merge when CI is failing. Do not treat work as complete before human review.
+CI가 실패하면 merge하지 않습니다. Human review 전에 작업을 완료로 취급하지 않습니다.
 
 ## Branch Protection Notes
 
-The desired rule is:
+원하는 rule:
 
-- no direct pushes to `main`
+- `main` 직접 push 금지
 - PR review required
 - CI required
 - squash merge preferred
 
-Branch protection could not be applied or verified because no remote branch exists yet. Re-check this after the first baseline branch is pushed.
+Remote branch가 없어서 branch protection을 적용하거나 검증할 수 없었습니다. 첫 baseline branch가 push된 뒤 다시 확인합니다.

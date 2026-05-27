@@ -1,10 +1,10 @@
 # Architecture
 
-## Phase
+## 단계
 
-This repository is in bootstrap phase. The server architecture is intentionally small.
+이 레포지토리는 부트스트랩을 마치고 E1 서버 권위 코어 루프 준비 단계로 이동하고 있습니다. 서버 architecture는 아직 의도적으로 작게 유지합니다.
 
-## Current Shape
+## 현재 구조
 
 ```text
 cmd/server
@@ -15,39 +15,39 @@ internal/health
   HTTP health handler
 ```
 
-The server currently exposes a minimal `/health` endpoint for local and CI validation. It does not implement gameplay, rooms, matchmaking, persistence, physics, or networking protocols for Unity clients.
+현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. 아직 Unity client를 위한 gameplay, room, matchmaking, persistence, physics, networking protocol은 구현하지 않았습니다.
 
-## Runtime Deployment Shape
+## Runtime 배포 구조
 
-The initial Oracle VM runtime is intentionally direct:
+초기 Oracle VM runtime은 의도적으로 단순합니다.
 
 ```text
 GitHub Actions
-  builds linux/amd64 tarball
-  publishes GitHub artifact and Release asset
+  linux/amd64 tarball build
+  GitHub artifact와 Release asset publish
 
 Oracle VM
-  pulls the Release asset
-  stores immutable releases under /opt/crawl-stars-server/releases/<sha>
-  switches /opt/crawl-stars-server/current
-  runs /opt/crawl-stars-server/current/crawl-stars-server through systemd
+  Release asset pull
+  /opt/crawl-stars-server/releases/<sha> 아래에 immutable release 저장
+  /opt/crawl-stars-server/current 전환
+  systemd로 /opt/crawl-stars-server/current/crawl-stars-server 실행
 
 Cloudflare
-  terminates public HTTPS for tolerblanc.com
-  routes api-crawlstars.tolerblanc.com through Cloudflare Tunnel to 127.0.0.1:8080
-  routes tolerblanc.com through Cloudflare Tunnel to local Caddy on 127.0.0.1:8081
+  tolerblanc.com public HTTPS 종료
+  Cloudflare Tunnel로 api-crawlstars.tolerblanc.com을 127.0.0.1:8080에 route
+  Cloudflare Tunnel로 tolerblanc.com을 local Caddy 127.0.0.1:8081에 route
 ```
 
-The systemd unit sets `SERVER_ADDR=127.0.0.1:8080`. Cloudflare Tunnel is the public exposure path. Caddy is local-only for the apex hello page. Tailscale, Docker, Kubernetes, and dashboards are outside the current scope.
+systemd unit은 `SERVER_ADDR=127.0.0.1:8080`을 설정합니다. Public exposure path는 Cloudflare Tunnel입니다. Caddy는 apex hello page를 위한 local-only 용도입니다. Tailscale, Docker, Kubernetes, dashboard는 현재 범위 밖입니다.
 
-## Near-Term Direction
+## 가까운 방향
 
-The next architecture work should define the first vertical slice before implementation:
+다음 architecture 작업은 구현 전에 첫 vertical slice를 정의해야 합니다.
 
 - process model
 - protocol boundary
 - room lifecycle vocabulary
-- validation and test strategy
+- validation 및 test strategy
 - observability basics
 
-Avoid generalizing the game architecture before the first slice is chosen.
+첫 slice가 선택되기 전에 game architecture를 과도하게 일반화하지 않습니다.
