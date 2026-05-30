@@ -71,3 +71,17 @@ Consequences:
 - E1 debug API는 승격 전까지 unstable 및 E1-only로 명확히 표시해야 합니다.
 - 처음 spec file을 추가하는 implementation issue는 OpenAPI와 AsyncAPI document validation을 함께 추가해야 합니다.
 - 선호되는 hosted path는 `/docs/rest`, `/docs/ws`, `/docs/openapi.yaml`, `/docs/asyncapi.yaml`입니다.
+
+## ADR-0006: Simulation Core는 Transport-Independent Step Contract로 시작
+
+Status: Accepted
+
+Context: E1 server work는 REST/WebSocket contract surface를 열기 전에 server-authoritative core loop skeleton을 unit test로 고정해야 합니다. SL-38은 room lifecycle, WebSocket, matching 없이 domain model과 `Step(inputs) -> Snapshot` 경계를 먼저 정의합니다.
+
+Decision: `internal/simulation` package에 최소 domain vocabulary와 `State.Step(inputs []InputCommand) Snapshot` 계약을 둡니다. 이 package는 HTTP, WebSocket, room manager, matching queue를 import하지 않습니다. SL-38에서는 tick 증가와 snapshot 생성만 고정하고, movement/collision, attack skeleton, REST room lifecycle, WebSocket runner는 후속 E1 하위 티켓에서 같은 계약 위에 얹습니다.
+
+Consequences:
+
+- Core simulation은 WebSocket 없이 Go unit test로 직접 검증할 수 있습니다.
+- Red 1명 + blue 1명 구성은 테스트하되, team slot model은 한 team당 여러 player를 막지 않습니다.
+- Network handler는 후속 티켓에서 `Step`을 호출하는 adapter가 되어야 하며, simulation package가 transport detail을 알면 안 됩니다.

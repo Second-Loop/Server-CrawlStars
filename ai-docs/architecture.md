@@ -13,9 +13,13 @@ cmd/server
 internal/health
   health status model
   HTTP health handler
+
+internal/simulation
+  transport-independent simulation domain model
+  manual Step(inputs) -> Snapshot contract
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. 아직 Unity client를 위한 gameplay, room, matchmaking, persistence, physics, networking protocol은 구현하지 않았습니다.
+현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package로 시작했습니다. 아직 Unity client를 위한 room API, matchmaking, persistence, physics, networking protocol은 구현하지 않았습니다.
 
 ## Runtime 배포 구조
 
@@ -51,3 +55,19 @@ systemd unit은 `SERVER_ADDR=127.0.0.1:8080`을 설정합니다. Public exposure
 - observability basics
 
 첫 slice가 선택되기 전에 game architecture를 과도하게 일반화하지 않습니다.
+
+## E1 Simulation Core Boundary
+
+E1 server-authoritative core는 `internal/simulation.State`가 소유합니다. 현재 계약은 수동 호출 가능한 `Step(inputs []InputCommand) Snapshot`입니다.
+
+이 package가 정의하는 최소 domain vocabulary는 다음과 같습니다.
+
+- `Tick`
+- `PlayerID`
+- `Team` / `Slot`
+- `Vector2`
+- `InputCommand`
+- `PlayerState`
+- `Snapshot`
+
+`Step`은 transport-independent contract입니다. REST handler, WebSocket connection, room lifecycle, matching queue는 이 package 안으로 들어오지 않습니다. SL-38에서는 tick 증가와 snapshot 생성을 고정하고, 실제 movement, wall collision, attack skeleton, room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.
