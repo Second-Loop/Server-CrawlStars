@@ -30,47 +30,48 @@ const (
 )
 
 type Vector2 struct {
-	X float64
-	Y float64
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type InputCommand struct {
-	PlayerID      PlayerID
-	MoveDir       Vector2
-	AttackDir     Vector2
-	PressedAttack bool
+	PlayerID      PlayerID `json:"PlayerId"`
+	MoveDir       Vector2  `json:"MoveDir"`
+	AttackDir     Vector2  `json:"AttackDir"`
+	PressedAttack bool     `json:"PressedAttack"`
 }
 
 type PlayerData struct {
-	ID            PlayerID
-	Team          Team
-	Slot          int
-	Pos           Vector2
-	MoveDir       Vector2
-	AttackDir     Vector2
-	Speed         float64
-	Radius        float64
-	PressedAttack bool
+	ID            PlayerID `json:"Id"`
+	Team          Team     `json:"Team"`
+	Slot          int      `json:"Slot"`
+	Pos           Vector2  `json:"Pos"`
+	MoveDir       Vector2  `json:"MoveDir"`
+	AttackDir     Vector2  `json:"AttackDir"`
+	Speed         float64  `json:"Speed"`
+	Radius        float64  `json:"Radius"`
+	PressedAttack bool     `json:"PressedAttack"`
+	IsDead        bool     `json:"IsDead"`
 }
 
 type ProjectileType string
 
 type ProjectileData struct {
-	ID          ProjectileID
-	OwnerID     PlayerID
-	Pos         Vector2
-	Dir         Vector2
-	Speed       float64
-	Damage      float64
-	Radius      float64
-	Type        ProjectileType
-	IsDestroyed bool
+	ID          ProjectileID   `json:"Id"`
+	OwnerID     PlayerID       `json:"OwnerId"`
+	Pos         Vector2        `json:"Pos"`
+	Dir         Vector2        `json:"Dir"`
+	Speed       float64        `json:"Speed"`
+	Damage      float64        `json:"Damage"`
+	Radius      float64        `json:"Radius"`
+	Type        ProjectileType `json:"Type"`
+	IsDestroyed bool           `json:"IsDestroyed"`
 }
 
 type Snapshot struct {
-	Tick        Tick
-	Players     []PlayerData
-	Projectiles []ProjectileData
+	Tick        Tick             `json:"Tick"`
+	Players     []PlayerData     `json:"Players"`
+	Projectiles []ProjectileData `json:"Projectiles"`
 }
 
 type TileType uint8
@@ -82,12 +83,12 @@ const (
 )
 
 type MapData struct {
-	Width      int
-	Height     int
-	Index      int
-	MaxPlayers int
-	TileSize   float64
-	Map        [][]TileType
+	Width      int          `json:"width"`
+	Height     int          `json:"height"`
+	Index      int          `json:"index"`
+	MaxPlayers int          `json:"maxPlayers"`
+	TileSize   float64      `json:"tileSize"`
+	Map        [][]TileType `json:"map"`
 }
 
 type Config struct {
