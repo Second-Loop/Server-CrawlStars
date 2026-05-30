@@ -27,6 +27,7 @@ func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T
 
 	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	fakeClock.Tick()
 	first := readSnapshotMessage(t, conn)
@@ -102,6 +103,7 @@ func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 
 	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	fakeClock.Tick()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -126,6 +128,7 @@ func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 
 	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	writeText(t, conn, "{not-json")
 	fakeClock.Tick()
@@ -149,6 +152,7 @@ func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 
 	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	writeWSJSON(t, conn, inputMessage{MoveDir: simulation.Vector2{X: 1, Y: 0}})
 	waitForPendingInput(t, store, room.ID, player.ID)
@@ -173,6 +177,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 
 	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	writeText(t, conn, `{"MoveDir":{"x":1,"y":0},"AttackDir":{"x":0,"y":1},"PressedAttack":true}`)
 	waitForPendingInput(t, store, room.ID, player.ID)
@@ -257,6 +262,24 @@ func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID str
 	}
 
 	t.Fatalf("expected pending input for player %s", playerID)
+}
+
+func waitForAttachedClient(t *testing.T, store *Store, roomID string, playerID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		room := store.rooms[roomID]
+		conn := room.clients[playerID]
+		store.mu.Unlock()
+		if conn != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected attached websocket client for player %s", playerID)
 }
 
 func createPlayer(t *testing.T, handler http.Handler, roomID string) playerResponse {
