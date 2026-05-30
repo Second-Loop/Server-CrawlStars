@@ -17,9 +17,10 @@ internal/health
 internal/simulation
   transport-independent simulation domain model
   manual Step(inputs) -> Snapshot contract
+  E1 static tile map movement and wall collision
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package로 시작했습니다. 아직 Unity client를 위한 room API, matchmaking, persistence, physics, networking protocol은 구현하지 않았습니다.
+현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision을 처리합니다. 아직 Unity client를 위한 room API, matchmaking, persistence, networking protocol은 구현하지 않았습니다.
 
 ## Runtime 배포 구조
 
@@ -67,7 +68,26 @@ E1 server-authoritative core는 `internal/simulation.State`가 소유합니다. 
 - `Team` / `Slot`
 - `Vector2`
 - `InputCommand`
-- `PlayerState`
+- `PlayerData`
+- `MapData`
+- `TileType`
 - `Snapshot`
 
-`Step`은 transport-independent contract입니다. REST handler, WebSocket connection, room lifecycle, matching queue는 이 package 안으로 들어오지 않습니다. SL-38에서는 tick 증가와 snapshot 생성을 고정하고, 실제 movement, wall collision, attack skeleton, room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.
+`Step`은 transport-independent contract입니다. REST handler, WebSocket connection, room lifecycle, matching queue는 이 package 안으로 들어오지 않습니다.
+
+SL-39 기준 movement/collision model은 다음과 같습니다.
+
+- Static `MapData` tile grid fixture를 사용할 수 있습니다.
+- `MapData`는 client prototype의 `width`, `height`, `index`, `maxPlayers`, `map` 의미를 서버 도메인 이름으로 고정합니다.
+- `TileType`은 `TileGround = 0`, `TileWall = 1`, `TileSpawnPoint = 2`로 client `MapData.TileType` 의미와 맞춥니다.
+- 좌표계는 client `MapHelper`와 맞춰 `TileSize = 1.2`를 사용하고, tile `(0, 0)`은 centered map의 좌상단 world position입니다.
+- `TileWall`은 tile-aligned rectangle wall입니다.
+- `PlayerData`는 `Pos`, `Speed`, `Radius`를 사용하며 기본값은 client `BasePlayerData`와 맞춰 `Speed = 2`, `Radius = 0.5`입니다.
+- `InputCommand.MoveDir`은 client `PlayerData.MoveDir`와 같은 의미의 이동 방향입니다.
+- Movement는 30Hz tick에서 `MoveDir * Speed * TickDuration`으로 계산하고, client physics처럼 X축과 Y축을 분리해 적용합니다.
+- Next position이 wall 또는 map 밖과 충돌하면 해당 axis movement만 무시하고 이전 위치를 유지합니다.
+- Player circle이 wall rectangle에 닿기만 해도 collision으로 처리합니다.
+- Invalid/non-finite movement input은 state를 오염시키지 않고 무시합니다.
+- Player-player collision은 E1 범위에서 제외합니다.
+
+Attack skeleton, room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.

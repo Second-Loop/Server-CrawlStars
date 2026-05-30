@@ -85,3 +85,17 @@ Consequences:
 - Core simulation은 WebSocket 없이 Go unit test로 직접 검증할 수 있습니다.
 - Red 1명 + blue 1명 구성은 테스트하되, team slot model은 한 team당 여러 player를 막지 않습니다.
 - Network handler는 후속 티켓에서 `Step`을 호출하는 adapter가 되어야 하며, simulation package가 transport detail을 알면 안 됩니다.
+
+## ADR-0007: E1 Movement Collision은 Tile Grid와 Circle-vs-Rectangle으로 고정
+
+Status: Accepted
+
+Context: SL-39는 server core `Step`이 static map fixture, movement input, wall collision을 처리해야 합니다. SL-9 client prototype은 file-based tile map, 30Hz simulator tick, player circle vs wall rectangle collision 방향을 사용했습니다. E1 server는 실제 Unity integration 없이 unit test로 같은 최소 개념을 재현해야 합니다.
+
+Decision: `internal/simulation`은 static `MapData` tile grid를 받는 `Config`를 지원합니다. `MapData`는 client prototype의 `width`, `height`, `index`, `maxPlayers`, `map` 의미를 서버 도메인 이름으로 고정합니다. `TileType`은 `TileGround = 0`, `TileWall = 1`, `TileSpawnPoint = 2`로 client `Ground`, `Wall`, `SpawnPoint` 값과 맞춥니다. `TileSize = 1.2`, `TickRate = 30`, default player `Speed = 2`, default player `Radius = 0.5`를 사용합니다. `TileWall`은 tile-aligned rectangle으로 보고, player는 radius를 가진 circle로 봅니다. `InputCommand.MoveDir`은 client `PlayerData.MoveDir`와 같은 이동 방향이며, movement는 `MoveDir * Speed * TickDuration`으로 계산합니다. Client physics와 맞춰 X축 이동과 Y축 이동은 분리해 collision을 검사합니다. Next position이 wall 또는 map 밖과 충돌하면 해당 axis movement를 무시하고 이전 position을 유지합니다. Player circle이 wall rectangle에 tangent contact만 해도 collision으로 처리합니다. Unknown player input과 invalid/non-finite movement input은 state를 변경하지 않습니다. Client `ProjectileData` 기본값(`Speed = 13`, `Damage = 10`, `Radius = 0.3`)은 SL-40 attack skeleton에서 다루며 SL-39에서는 projectile behavior를 구현하지 않습니다.
+
+Consequences:
+
+- Movement와 wall collision은 WebSocket 없이 unit test로 검증됩니다.
+- Server fixture는 client prototype의 이름과 핵심 값을 맞추되, 실제 Unity integration은 후속 티켓에서 adapter로 다룹니다.
+- Player-player collision, attack, damage, HP, death, respawn, score는 이 결정에 포함하지 않습니다.
