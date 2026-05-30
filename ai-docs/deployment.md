@@ -9,12 +9,13 @@ SL-6은 Go server를 위한 첫 Oracle VM CD path를 구현합니다. SL-35는 O
 이 레포지토리는 VM pull deployment를 사용합니다.
 
 1. GitHub Actions가 `main` push 또는 수동 `workflow_dispatch`에서 실행됩니다.
-2. Actions가 `linux/amd64`용 `./cmd/server`를 build합니다.
-3. Actions가 binary를 `crawl-stars-server-linux-amd64.tar.gz`로 package합니다.
-4. Actions가 package를 short-lived workflow artifact와 GitHub Release asset으로 저장합니다.
-5. VM이 최신 Release asset을 pull하고 local에 install합니다.
-6. systemd가 server를 restart합니다.
-7. deploy script가 `http://127.0.0.1:8080/health`를 확인합니다.
+2. Actions가 docs UI와 raw spec embed 파일을 build합니다.
+3. Actions가 `linux/amd64`용 `./cmd/server`를 build합니다.
+4. Actions가 binary를 `crawl-stars-server-linux-amd64.tar.gz`로 package합니다.
+5. Actions가 package를 short-lived workflow artifact와 GitHub Release asset으로 저장합니다.
+6. VM이 최신 Release asset을 pull하고 local에 install합니다.
+7. systemd가 server를 restart합니다.
+8. deploy script가 `http://127.0.0.1:8080/health`를 확인합니다.
 
 이 방식은 SSH push deployment를 피하고 VM에 inbound application port를 요구하지 않습니다. 현재 repository는 public이므로 VM은 token 없이 Release asset을 download할 수 있습니다. Repository가 private이 되면 VM에 `GH_TOKEN`을 repository 밖에서 구성합니다.
 
@@ -84,6 +85,8 @@ sudo systemctl status crawl-stars-server
 sudo systemctl restart crawl-stars-server
 sudo journalctl -u crawl-stars-server -f
 curl -i http://127.0.0.1:8080/health
+curl -i http://127.0.0.1:8080/openapi
+curl -i http://127.0.0.1:8080/asyncapi
 ```
 
 ## Public HTTPS With Cloudflare Tunnel

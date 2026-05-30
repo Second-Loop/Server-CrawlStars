@@ -14,6 +14,10 @@ internal/health
   health status model
   HTTP health handler
 
+internal/docs
+  server-hosted OpenAPI/AsyncAPI raw specs
+  server-hosted human-readable docs UI
+
 internal/rooms
   E1 debug room lifecycle store
   REST room handler
@@ -26,7 +30,7 @@ internal/simulation
   E1 static tile map movement and wall collision
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint, E1 개발/검증용 room lifecycle REST endpoint, E1 WebSocket room endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision, attack skeleton을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store와 transport adapter이며, persistence, matchmaking queue, generic scheduler, production gameplay contract를 구현하지 않습니다.
+현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint, E1 개발/검증용 room lifecycle REST endpoint, E1 WebSocket room endpoint, server-hosted API docs endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision, attack skeleton을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store와 transport adapter이며, persistence, matchmaking queue, generic scheduler, production gameplay contract를 구현하지 않습니다.
 
 ## Runtime 배포 구조
 
@@ -150,3 +154,14 @@ SL-43 기준 `internal/rooms`는 in-memory E1 debug room이 public 환경에서 
 - Room 생성 후 1시간 hard lifetime을 적용합니다.
 - Connected client가 있으면 waiting idle TTL과 all-disconnected TTL로 즉시 삭제하지 않습니다.
 - Cleanup은 REST/WS/tick 진입점에서 fake clock으로 검증 가능한 bounded behavior로 구현하며, generic scheduler, runner, persistence, dashboard를 추가하지 않습니다.
+
+## E1 API Documentation Boundary
+
+SL-47 기준 API documentation은 source spec과 hosted docs UI로 나뉩니다.
+
+- Source spec은 `api/openapi.yaml`, `api/asyncapi.yaml`입니다.
+- `docs-ui` build는 source spec을 parse하고 `internal/docs/api/`, `internal/docs/static/`에 embed 대상 파일을 생성합니다.
+- Running server는 `GET /openapi`, `GET /asyncapi`, `GET /openapi.yaml`, `GET /asyncapi.yaml`을 노출합니다.
+- Docs UI는 no-CDN static HTML/CSS로 생성하고 server binary에 embed합니다.
+- 생성된 embed 파일은 commit하지 않으며 `make ci`와 GitHub Actions가 build stage에서 재생성합니다.
+- 이 문서화 작업은 E1 debug contract를 설명할 뿐, 인증, rate limit, matchmaking, persistence, dashboard를 추가하지 않습니다.

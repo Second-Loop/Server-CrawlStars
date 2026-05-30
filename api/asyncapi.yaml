@@ -1,0 +1,160 @@
+asyncapi: 3.0.0
+info:
+  title: Server Crawl Stars E1 WebSocket API
+  version: 0.1.0
+  description: E1 debug WebSocket contract for room input and snapshot streaming.
+x-stability: e1-debug
+servers:
+  local:
+    host: localhost:8080
+    protocol: ws
+channels:
+  roomPlayer:
+    address: /rooms/{roomID}/players/{playerID}
+    parameters:
+      roomID:
+        description: Room ID issued by POST /rooms.
+      playerID:
+        description: Player ID issued by POST /rooms/{roomID}/players.
+    messages:
+      input:
+        $ref: "#/components/messages/InputMessage"
+      snapshot:
+        $ref: "#/components/messages/SnapshotMessage"
+      error:
+        $ref: "#/components/messages/ErrorMessage"
+operations:
+  sendInput:
+    action: send
+    channel:
+      $ref: "#/channels/roomPlayer"
+    messages:
+      - $ref: "#/channels/roomPlayer/messages/input"
+  receiveSnapshot:
+    action: receive
+    channel:
+      $ref: "#/channels/roomPlayer"
+    messages:
+      - $ref: "#/channels/roomPlayer/messages/snapshot"
+      - $ref: "#/channels/roomPlayer/messages/error"
+components:
+  messages:
+    InputMessage:
+      name: InputMessage
+      payload:
+        $ref: "#/components/schemas/InputMessage"
+    SnapshotMessage:
+      name: SnapshotMessage
+      payload:
+        $ref: "#/components/schemas/SnapshotMessage"
+    ErrorMessage:
+      name: ErrorMessage
+      payload:
+        $ref: "#/components/schemas/ErrorMessage"
+  schemas:
+    Vector2:
+      type: object
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+    InputMessage:
+      type: object
+      properties:
+        MoveDir:
+          $ref: "#/components/schemas/Vector2"
+        AttackDir:
+          $ref: "#/components/schemas/Vector2"
+        PressedAttack:
+          type: boolean
+    SnapshotMessage:
+      type: object
+      required: [Type, Snapshot]
+      properties:
+        Type:
+          type: string
+          const: snapshot
+        Snapshot:
+          $ref: "#/components/schemas/Snapshot"
+    ErrorMessage:
+      type: object
+      required: [Type, Error]
+      properties:
+        Type:
+          type: string
+          const: error
+        Error:
+          $ref: "#/components/schemas/APIError"
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid_input]
+        message:
+          type: string
+    Snapshot:
+      type: object
+      required: [Tick, Players, Projectiles]
+      properties:
+        Tick:
+          type: integer
+          minimum: 0
+        Players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerData"
+        Projectiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectileData"
+    PlayerData:
+      type: object
+      required: [Id, Team, Slot, Pos, MoveDir, AttackDir, Speed, Radius, PressedAttack, IsDead]
+      properties:
+        Id:
+          type: string
+        Team:
+          type: string
+          enum: [red, blue]
+        Slot:
+          type: integer
+        Pos:
+          $ref: "#/components/schemas/Vector2"
+        MoveDir:
+          $ref: "#/components/schemas/Vector2"
+        AttackDir:
+          $ref: "#/components/schemas/Vector2"
+        Speed:
+          type: number
+        Radius:
+          type: number
+        PressedAttack:
+          type: boolean
+        IsDead:
+          type: boolean
+    ProjectileData:
+      type: object
+      required: [Id, OwnerId, Pos, Dir, Speed, Damage, Radius, Type, IsDestroyed]
+      properties:
+        Id:
+          type: string
+        OwnerId:
+          type: string
+        Pos:
+          $ref: "#/components/schemas/Vector2"
+        Dir:
+          $ref: "#/components/schemas/Vector2"
+        Speed:
+          type: number
+        Damage:
+          type: number
+        Radius:
+          type: number
+        Type:
+          type: string
+        IsDestroyed:
+          type: boolean
