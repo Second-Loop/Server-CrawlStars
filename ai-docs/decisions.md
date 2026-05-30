@@ -113,3 +113,17 @@ Consequences:
 - Attack input과 projectile skeleton은 WebSocket 없이 Go unit test로 직접 검증됩니다.
 - Snapshot은 player state와 projectile skeleton state를 함께 전달할 수 있습니다.
 - Combat result behavior는 후속 Linear issue에서 별도 acceptance criteria와 tests로 추가해야 합니다.
+
+## ADR-0009: E1 Room REST API는 Debug Lifecycle Surface로 제한
+
+Status: Accepted
+
+Context: SL-41은 E1 개발/검증을 위해 room을 직접 만들고, player를 발급하고, start 조건을 확인할 수 있는 REST API가 필요합니다. 이 API는 matching queue나 production gameplay contract가 아니라 WebSocket room flow를 붙이기 전의 수동 검증 surface입니다. Public Cloudflare Tunnel 뒤에서 호출될 수 있으므로 active room cap도 필요합니다.
+
+Decision: `internal/rooms` package에 in-memory room store와 REST handler를 둡니다. Server는 `GET /rooms`, `POST /rooms`, `GET /rooms/{roomID}`, `POST /rooms/{roomID}/players`, `POST /rooms/{roomID}/start`를 노출합니다. Active room cap은 5개입니다. Player 발급은 서버가 `player-*` ID와 red/blue alternating team, team별 slot을 부여합니다. Start는 player가 1명 이상일 때 room status를 `started`로 바꾸며, background scheduler나 tick runner를 시작하지 않습니다. Room detail은 latest snapshot summary를 `tick`, `playerCount`, `projectileCount`로만 제공합니다. REST error response는 `{\"error\":{\"code\",\"message\"}}` 형태의 JSON으로 통일합니다.
+
+Consequences:
+
+- E1 room lifecycle은 curl/httptest로 수동 검증할 수 있습니다.
+- Matching queue, persistence, scheduler, runner, production room orchestration은 여전히 제외됩니다.
+- Debug API response shape는 정식 gameplay contract로 승격되기 전까지 `ai-docs/api-docs.md`의 E1 debug note를 따라야 합니다.

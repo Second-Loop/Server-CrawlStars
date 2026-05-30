@@ -14,13 +14,17 @@ internal/health
   health status model
   HTTP health handler
 
+internal/rooms
+  E1 debug room lifecycle store
+  REST room handler
+
 internal/simulation
   transport-independent simulation domain model
   manual Step(inputs) -> Snapshot contract
   E1 static tile map movement and wall collision
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 최소 `/health` endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision을 처리합니다. 아직 Unity client를 위한 room API, matchmaking, persistence, networking protocol은 구현하지 않았습니다.
+현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint와 E1 개발/검증용 room lifecycle REST endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store이며, persistence, matchmaking queue, scheduler, runner, production gameplay contract를 구현하지 않습니다.
 
 ## Runtime 배포 구조
 
@@ -105,4 +109,18 @@ SL-40 기준 attack skeleton model은 다음과 같습니다.
 - SL-40의 `Damage` field는 data skeleton 값일 뿐이며 피격, 체력, 사망, 리스폰, 점수 계산은 하지 않습니다.
 - Existing projectile movement, projectile-wall collision, projectile-player collision, projectile destroy lifecycle은 후속 티켓 범위입니다.
 
-Room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.
+## E1 Room REST Debug API Boundary
+
+SL-41 기준 room REST API는 E1 개발/검증용 debug surface입니다.
+
+- `GET /rooms`: active room list를 반환합니다.
+- `POST /rooms`: room을 생성합니다. Active room cap은 5개입니다.
+- `GET /rooms/{roomID}`: room detail과 latest snapshot summary를 반환합니다.
+- `POST /rooms/{roomID}/players`: 서버가 `playerID`, `team`, `slot`을 발급합니다.
+- `POST /rooms/{roomID}/start`: player가 1명 이상이면 room status를 `started`로 바꿉니다.
+- 0명 room start, room cap 초과, missing room은 JSON error response로 반환합니다.
+- Latest snapshot summary는 debug 요약이며, 현재는 `tick`, `playerCount`, `projectileCount`만 포함합니다.
+- Room start는 scheduler나 background loop를 시작하지 않습니다.
+- 이 API는 실제 Unity gameplay client가 장기 의존할 정식 contract가 아닙니다.
+
+WebSocket integration은 후속 E1 하위 티켓에서 추가합니다.

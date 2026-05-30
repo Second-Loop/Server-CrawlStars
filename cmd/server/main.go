@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/health"
+	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 )
 
 const serviceName = "server-crawlstars"
@@ -18,6 +19,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/health", health.Handler(serviceName))
+	roomHandler := rooms.Handler(rooms.NewStore(5))
+	mux.Handle("/rooms", roomHandler)
+	mux.Handle("/rooms/", roomHandler)
 
 	log.Printf("%s listening on %s", serviceName, addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
