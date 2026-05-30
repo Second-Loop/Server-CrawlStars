@@ -90,6 +90,31 @@ REST error response는 다음 형태로 통일합니다.
 
 AsyncAPI는 channel, message, payload schema, bidirectional event stream을 설명할 수 있으므로 WebSocket에 적합합니다.
 
+## E1 WebSocket Debug API
+
+SL-42에서 구현한 WebSocket endpoint는 E1 debug API입니다.
+
+```text
+WS /rooms/{roomID}/players/{playerID}
+```
+
+이 endpoint는 REST room lifecycle로 생성한 room/player를 사용합니다. Unknown room/player와 duplicate same player connection은 upgrade 전에 JSON error response로 거부합니다. Room이 아직 `started`가 아니면 connection과 input 수신은 허용하지만 snapshot broadcast는 하지 않습니다.
+
+Client input payload는 client `PlayerData` 이름과 맞춘 `MoveDir`, `AttackDir`, `PressedAttack` field를 사용합니다. Unity `Vector2` 값은 `x`, `y` field로 전달합니다. Invalid JSON input은 connection을 끊지 않고 무시합니다.
+
+Server는 started room에서 30Hz tick마다 다음 wrapper 형태의 snapshot message를 broadcast합니다.
+
+```json
+{
+  "Type": "snapshot",
+  "Snapshot": {}
+}
+```
+
+Snapshot 내부의 `PlayerData`와 `ProjectileData` field는 client code와 맞춰 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed` 이름을 사용합니다. REST room debug API의 `id`, `status`, `players`, `latestSnapshot` field는 별도 debug surface로 유지합니다.
+
+이 schema는 AsyncAPI spec으로 승격되기 전까지 `e1-debug` 안정성입니다.
+
 ## OpenAPI WebSocket Boundary
 
 OpenAPI는 `ws://` 또는 `wss://` server URL을 설명할 수 있고, WebSocket connection 전에 room을 만들거나 player ID를 발급하는 HTTP endpoint를 문서화할 수 있습니다.

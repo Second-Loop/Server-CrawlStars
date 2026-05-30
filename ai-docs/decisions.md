@@ -127,3 +127,18 @@ Consequences:
 - E1 room lifecycle은 curl/httptest로 수동 검증할 수 있습니다.
 - Matching queue, persistence, scheduler, runner, production room orchestration은 여전히 제외됩니다.
 - Debug API response shape는 정식 gameplay contract로 승격되기 전까지 `ai-docs/api-docs.md`의 E1 debug note를 따라야 합니다.
+
+## ADR-0010: E1 WebSocket은 Room-Local Tick Loop와 Snapshot Broadcast로 제한
+
+Status: Accepted
+
+Context: SL-42는 REST로 생성한 room/player를 WebSocket에 연결하고, started room에서 30Hz snapshot stream을 검증해야 합니다. E1 scope는 실제 Unity integration demo, production matchmaking, persistence, generic scheduler/runner/orchestration을 포함하지 않습니다. Core simulation은 계속 WebSocket 없이 unit test 가능해야 합니다.
+
+Decision: `internal/rooms`가 `WS /rooms/{roomID}/players/{playerID}` upgrade를 처리합니다. WebSocket implementation은 `nhooyr.io/websocket`을 사용합니다. Room/player validation과 duplicate same player connection rejection은 upgrade 전에 수행합니다. Waiting room은 connection과 input 수신을 허용하지만 snapshot broadcast를 하지 않습니다. Started room은 room-local ticker를 만들고, `simulation.TickRate` 기준 30Hz로 `simulation.State.Step`을 호출해 `{\"Type\":\"snapshot\",\"Snapshot\":...}` message를 connected clients에 broadcast합니다. Client input field는 client `PlayerData`와 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`을 사용하고, Unity `Vector2` 값은 `x`, `y`로 직렬화합니다. Snapshot 내부 `PlayerData`/`ProjectileData` wire field는 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed`처럼 client code 이름을 따릅니다. Invalid input payload는 connection을 끊지 않고 무시합니다.
+
+Consequences:
+
+- Fake client integration test와 fake clock test로 WebSocket behavior를 검증할 수 있습니다.
+- `internal/simulation`은 WebSocket dependency를 import하지 않으므로 transport-independent contract가 유지됩니다.
+- SL-42 tick loop는 room-local gameplay loop이며, reusable scheduler/runner framework가 아닙니다.
+- AsyncAPI/OpenAPI spec file 생성과 hosted docs는 별도 implementation issue에서 다룹니다.

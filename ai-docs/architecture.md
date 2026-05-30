@@ -17,6 +17,8 @@ internal/health
 internal/rooms
   E1 debug room lifecycle store
   REST room handler
+  WebSocket room connection handler
+  per-room 30Hz tick loop
 
 internal/simulation
   transport-independent simulation domain model
@@ -24,7 +26,7 @@ internal/simulation
   E1 static tile map movement and wall collision
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint와 E1 개발/검증용 room lifecycle REST endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store이며, persistence, matchmaking queue, scheduler, runner, production gameplay contract를 구현하지 않습니다.
+현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint, E1 개발/검증용 room lifecycle REST endpoint, E1 WebSocket room endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision, attack skeleton을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store와 transport adapter이며, persistence, matchmaking queue, generic scheduler, production gameplay contract를 구현하지 않습니다.
 
 ## Runtime 배포 구조
 
@@ -104,7 +106,7 @@ SL-40 기준 attack skeleton model은 다음과 같습니다.
 - `PressedAttack = true`이고 `AttackDir`가 zero vector가 아니면 같은 tick 안에서 `ProjectileData` skeleton을 생성합니다.
 - Client simulator 흐름과 맞춰 player movement/collision을 먼저 적용하고, 새 projectile은 이동 후 player `Pos`에서 생성합니다.
 - `Snapshot`은 `Projectiles []ProjectileData`를 포함합니다.
-- `ProjectileData`는 client `ProjectileData`와 같은 의미의 `ID`, `OwnerID`, `Pos`, `Dir`, `Speed`, `Damage`, `Radius`, `Type`, `IsDestroyed` field를 둡니다.
+- `ProjectileData`는 client `ProjectileData`와 같은 의미의 `Id`, `OwnerId`, `Pos`, `Dir`, `Speed`, `Damage`, `Radius`, `Type`, `IsDestroyed` field를 wire JSON에 노출합니다.
 - Projectile 기본값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다.
 - SL-40의 `Damage` field는 data skeleton 값일 뿐이며 피격, 체력, 사망, 리스폰, 점수 계산은 하지 않습니다.
 - Existing projectile movement, projectile-wall collision, projectile-player collision, projectile destroy lifecycle은 후속 티켓 범위입니다.
@@ -120,7 +122,21 @@ SL-41 기준 room REST API는 E1 개발/검증용 debug surface입니다.
 - `POST /rooms/{roomID}/start`: player가 1명 이상이면 room status를 `started`로 바꿉니다.
 - 0명 room start, room cap 초과, missing room은 JSON error response로 반환합니다.
 - Latest snapshot summary는 debug 요약이며, 현재는 `tick`, `playerCount`, `projectileCount`만 포함합니다.
-- Room start는 scheduler나 background loop를 시작하지 않습니다.
 - 이 API는 실제 Unity gameplay client가 장기 의존할 정식 contract가 아닙니다.
 
-WebSocket integration은 후속 E1 하위 티켓에서 추가합니다.
+## E1 WebSocket Room Boundary
+
+SL-42 기준 WebSocket endpoint는 E2 client integration을 준비하는 E1 server contract surface입니다.
+
+- Endpoint는 `GET /rooms/{roomID}/players/{playerID}` WebSocket upgrade입니다.
+- WebSocket 연결은 REST에서 발급된 room/player만 허용합니다.
+- Unknown room/player는 upgrade 전에 JSON error response로 거부합니다.
+- 같은 room/player의 duplicate connection은 새 연결만 거부하고 기존 연결은 유지합니다.
+- Room이 `waiting`이면 WebSocket 연결과 input 수신은 허용하지만 gameplay snapshot broadcast는 하지 않습니다.
+- Room이 `started`가 되면 per-room ticker가 `TickRate = 30` 기준으로 `simulation.State.Step`을 호출합니다.
+- Input이 없어도 매 tick snapshot message를 broadcast합니다.
+- WebSocket input은 client `PlayerData`와 맞춰 `MoveDir`, `AttackDir`, `PressedAttack` field를 사용하고, Unity `Vector2` 값은 `x`, `y`로 직렬화합니다.
+- WebSocket snapshot wrapper는 `Type`, `Snapshot` field를 사용하며, snapshot 내부 `PlayerData`/`ProjectileData` wire field는 client code 이름과 맞춥니다.
+- Invalid input payload는 연결을 끊지 않고 무시하며 snapshot stream을 유지합니다.
+- WebSocket adapter는 `internal/simulation`을 호출하지만, `internal/simulation`은 WebSocket package를 import하지 않습니다.
+- 이 tick loop는 SL-42 room-local gameplay loop이며, generic scheduler/runner/orchestration framework가 아닙니다.
