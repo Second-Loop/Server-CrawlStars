@@ -323,6 +323,103 @@ func TestStepIgnoresNonFiniteMovementInput(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
 }
 
+func TestStepAcceptsAttackInputAndAddsProjectileSkeletonToSnapshot(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	snapshot := state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	projectile := snapshot.Projectiles[0]
+	if projectile.ID == "" {
+		t.Fatal("expected projectile ID to be set")
+	}
+	if projectile.OwnerID != PlayerID("red-1") {
+		t.Fatalf("expected projectile owner %q, got %q", PlayerID("red-1"), projectile.OwnerID)
+	}
+	assertVector(t, "projectile position", projectile.Pos, start)
+	assertVector(t, "projectile direction", projectile.Dir, Vector2{X: 1, Y: 0})
+	if projectile.Speed != DefaultProjectileSpeed {
+		t.Fatalf("expected projectile speed %f, got %f", DefaultProjectileSpeed, projectile.Speed)
+	}
+	if projectile.Damage != DefaultProjectileDamage {
+		t.Fatalf("expected projectile damage %f, got %f", DefaultProjectileDamage, projectile.Damage)
+	}
+	if projectile.Radius != DefaultProjectileRadius {
+		t.Fatalf("expected projectile radius %f, got %f", DefaultProjectileRadius, projectile.Radius)
+	}
+	if projectile.IsDestroyed {
+		t.Fatal("expected new projectile to start not destroyed")
+	}
+}
+
+func TestStepDoesNotCreateProjectileWhenAttackIsNotPressed(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed, Slot: 0},
+	})
+
+	snapshot := state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: false,
+		},
+	})
+
+	if len(snapshot.Projectiles) != 0 {
+		t.Fatalf("expected no projectiles, got %d", len(snapshot.Projectiles))
+	}
+}
+
+func TestStepProcessesMovementAndAttackInSameTick(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	snapshot := state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			MoveDir:       Vector2{X: 1, Y: 0},
+			AttackDir:     Vector2{X: 0, Y: 1},
+			PressedAttack: true,
+		},
+	})
+
+	moved := Vector2{X: start.X + DefaultPlayerSpeed*TickDuration, Y: start.Y}
+	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, moved)
+	assertPlayerInput(t, snapshot, PlayerID("red-1"), Vector2{X: 1, Y: 0}, Vector2{X: 0, Y: 1}, true)
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	assertVector(t, "projectile position", snapshot.Projectiles[0].Pos, moved)
+	assertVector(t, "projectile direction", snapshot.Projectiles[0].Dir, Vector2{X: 0, Y: 1})
+}
+
 func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot int, position Vector2) {
 	t.Helper()
 
@@ -336,11 +433,35 @@ func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot 
 		if player.Slot != slot {
 			t.Fatalf("expected %s slot %d, got %d", id, slot, player.Slot)
 		}
-		if math.Abs(player.Pos.X-position.X) > positionEpsilon || math.Abs(player.Pos.Y-position.Y) > positionEpsilon {
-			t.Fatalf("expected %s position %+v, got %+v", id, position, player.Pos)
+		assertVector(t, string(id)+" position", player.Pos, position)
+		return
+	}
+
+	t.Fatalf("expected snapshot to include player %s", id)
+}
+
+func assertPlayerInput(t *testing.T, snapshot Snapshot, id PlayerID, moveDir Vector2, attackDir Vector2, pressedAttack bool) {
+	t.Helper()
+
+	for _, player := range snapshot.Players {
+		if player.ID != id {
+			continue
+		}
+		assertVector(t, string(id)+" move direction", player.MoveDir, moveDir)
+		assertVector(t, string(id)+" attack direction", player.AttackDir, attackDir)
+		if player.PressedAttack != pressedAttack {
+			t.Fatalf("expected %s pressed attack %t, got %t", id, pressedAttack, player.PressedAttack)
 		}
 		return
 	}
 
 	t.Fatalf("expected snapshot to include player %s", id)
+}
+
+func assertVector(t *testing.T, label string, got Vector2, want Vector2) {
+	t.Helper()
+
+	if math.Abs(got.X-want.X) > positionEpsilon || math.Abs(got.Y-want.Y) > positionEpsilon {
+		t.Fatalf("expected %s %+v, got %+v", label, want, got)
+	}
 }

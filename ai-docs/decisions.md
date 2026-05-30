@@ -99,3 +99,17 @@ Consequences:
 - Movement와 wall collision은 WebSocket 없이 unit test로 검증됩니다.
 - Server fixture는 client prototype의 이름과 핵심 값을 맞추되, 실제 Unity integration은 후속 티켓에서 adapter로 다룹니다.
 - Player-player collision, attack, damage, HP, death, respawn, score는 이 결정에 포함하지 않습니다.
+
+## ADR-0008: E1 Attack Skeleton은 ProjectileData Snapshot State로 시작
+
+Status: Accepted
+
+Context: SL-40은 core `Step` 안에서 일반 공격 입력을 movement/collision과 같은 tick 흐름으로 처리해야 합니다. Client prototype은 `PlayerData.AttackDir`, `PlayerData.PressedAttack`, `ProjectileData` vocabulary를 사용하고, simulator tick에서 player movement 이후 새 projectile을 생성합니다. E1 server는 실제 Unity integration, projectile physics, damage 판정 없이 snapshot에 공격 관련 최소 state를 노출해야 합니다.
+
+Decision: `internal/simulation.InputCommand`는 `AttackDir`와 `PressedAttack`을 받습니다. `PlayerData`는 client field와 같은 의미의 `MoveDir`, `AttackDir`, `PressedAttack`을 보존합니다. `PressedAttack = true`이고 `AttackDir`가 zero vector가 아니면 `Step`은 movement/collision 이후 이동된 player `Pos`에서 `ProjectileData` skeleton을 생성하고 `Snapshot.Projectiles`에 포함합니다. `ProjectileData`는 client `ProjectileData`와 같은 의미의 `ID`, `OwnerID`, `Pos`, `Dir`, `Speed`, `Damage`, `Radius`, `Type`, `IsDestroyed`를 둡니다. 기본 projectile 값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다. `Damage`는 skeleton data field일 뿐이며 SL-40은 projectile movement, projectile-wall collision, projectile-player collision, hit detection, HP, death, respawn, score를 구현하지 않습니다.
+
+Consequences:
+
+- Attack input과 projectile skeleton은 WebSocket 없이 Go unit test로 직접 검증됩니다.
+- Snapshot은 player state와 projectile skeleton state를 함께 전달할 수 있습니다.
+- Combat result behavior는 후속 Linear issue에서 별도 acceptance criteria와 tests로 추가해야 합니다.

@@ -1,18 +1,26 @@
 package simulation
 
-import "math"
+import (
+	"math"
+	"strconv"
+)
 
 type Tick uint64
 
 const (
-	TickRate            = 30
-	TickDuration        = 1.0 / TickRate
-	TileSize            = 1.2
-	DefaultPlayerSpeed  = 2.0
-	DefaultPlayerRadius = 0.5
+	TickRate                = 30
+	TickDuration            = 1.0 / TickRate
+	TileSize                = 1.2
+	DefaultPlayerSpeed      = 2.0
+	DefaultPlayerRadius     = 0.5
+	DefaultProjectileSpeed  = 13.0
+	DefaultProjectileDamage = 10.0
+	DefaultProjectileRadius = 0.3
 )
 
 type PlayerID string
+
+type ProjectileID string
 
 type Team string
 
@@ -27,22 +35,42 @@ type Vector2 struct {
 }
 
 type InputCommand struct {
-	PlayerID PlayerID
-	MoveDir  Vector2
+	PlayerID      PlayerID
+	MoveDir       Vector2
+	AttackDir     Vector2
+	PressedAttack bool
 }
 
 type PlayerData struct {
-	ID     PlayerID
-	Team   Team
-	Slot   int
-	Pos    Vector2
-	Speed  float64
-	Radius float64
+	ID            PlayerID
+	Team          Team
+	Slot          int
+	Pos           Vector2
+	MoveDir       Vector2
+	AttackDir     Vector2
+	Speed         float64
+	Radius        float64
+	PressedAttack bool
+}
+
+type ProjectileType string
+
+type ProjectileData struct {
+	ID          ProjectileID
+	OwnerID     PlayerID
+	Pos         Vector2
+	Dir         Vector2
+	Speed       float64
+	Damage      float64
+	Radius      float64
+	Type        ProjectileType
+	IsDestroyed bool
 }
 
 type Snapshot struct {
-	Tick    Tick
-	Players []PlayerData
+	Tick        Tick
+	Players     []PlayerData
+	Projectiles []ProjectileData
 }
 
 type TileType uint8
@@ -67,9 +95,11 @@ type Config struct {
 }
 
 type State struct {
-	tick    Tick
-	players []PlayerData
-	gameMap MapData
+	tick              Tick
+	players           []PlayerData
+	projectiles       []ProjectileData
+	nextProjectileSeq uint64
+	gameMap           MapData
 }
 
 func NewState(players []PlayerData) *State {
@@ -91,8 +121,9 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.tick++
 
 	return Snapshot{
-		Tick:    s.tick,
-		Players: clonePlayers(s.players),
+		Tick:        s.tick,
+		Players:     clonePlayers(s.players),
+		Projectiles: cloneProjectiles(s.projectiles),
 	}
 }
 
@@ -138,6 +169,16 @@ func clonePlayers(players []PlayerData) []PlayerData {
 	return cloned
 }
 
+func cloneProjectiles(projectiles []ProjectileData) []ProjectileData {
+	if len(projectiles) == 0 {
+		return nil
+	}
+
+	cloned := make([]ProjectileData, len(projectiles))
+	copy(cloned, projectiles)
+	return cloned
+}
+
 func normalizePlayers(players []PlayerData) []PlayerData {
 	cloned := clonePlayers(players)
 	for i := range cloned {
@@ -152,7 +193,7 @@ func normalizePlayers(players []PlayerData) []PlayerData {
 }
 
 func (s *State) applyInput(input InputCommand) {
-	if !isFinite(input.MoveDir) {
+	if !isFinite(input.MoveDir) || !isFinite(input.AttackDir) {
 		return
 	}
 
@@ -160,6 +201,10 @@ func (s *State) applyInput(input InputCommand) {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
+
+		s.players[i].MoveDir = input.MoveDir
+		s.players[i].AttackDir = input.AttackDir
+		s.players[i].PressedAttack = input.PressedAttack
 
 		movement := Vector2{
 			X: s.players[i].Speed * TickDuration * input.MoveDir.X,
@@ -175,7 +220,23 @@ func (s *State) applyInput(input InputCommand) {
 		if !s.collidesWithWall(nextY, s.players[i].Radius) {
 			s.players[i].Pos = nextY
 		}
+		if input.PressedAttack && input.AttackDir != (Vector2{}) {
+			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
+		}
 		return
+	}
+}
+
+func (s *State) newProjectile(owner PlayerData) ProjectileData {
+	s.nextProjectileSeq++
+	return ProjectileData{
+		ID:      ProjectileID("projectile-" + strconv.FormatUint(uint64(s.tick+1), 10) + "-" + string(owner.ID) + "-" + strconv.FormatUint(s.nextProjectileSeq, 10)),
+		OwnerID: owner.ID,
+		Pos:     owner.Pos,
+		Dir:     owner.AttackDir,
+		Speed:   DefaultProjectileSpeed,
+		Damage:  DefaultProjectileDamage,
+		Radius:  DefaultProjectileRadius,
 	}
 }
 
