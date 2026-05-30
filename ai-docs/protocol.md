@@ -2,6 +2,18 @@
 
 아직 gameplay protocol은 구현되어 있지 않습니다.
 
+## Core Simulation Contract
+
+SL-38에서 network protocol과 분리된 server-authoritative simulation contract를 먼저 추가했습니다.
+
+```text
+internal/simulation.State.Step(inputs []InputCommand) Snapshot
+```
+
+이 계약은 Go unit test에서 직접 호출합니다. REST endpoint, WebSocket endpoint, matching queue, room lifecycle에 의존하지 않습니다.
+
+현재 snapshot은 tick과 player state list를 포함합니다. Input command는 player ID와 movement vector를 담을 수 있지만, movement/collision 적용은 SL-39 범위입니다.
+
 ## Documentation Policy
 
 E1 REST API는 OpenAPI 3.x로 문서화하고, interactive page를 추가할 때 Swagger UI로 render합니다. E1 WebSocket message contract는 AsyncAPI로 문서화합니다.
