@@ -1,6 +1,16 @@
 package simulation
 
+import "math"
+
 type Tick uint64
+
+const (
+	TickRate            = 30
+	TickDuration        = 1.0 / TickRate
+	TileSize            = 1.2
+	DefaultPlayerSpeed  = 2.0
+	DefaultPlayerRadius = 0.5
+)
 
 type PlayerID string
 
@@ -18,34 +28,65 @@ type Vector2 struct {
 
 type InputCommand struct {
 	PlayerID PlayerID
-	Move     Vector2
+	MoveDir  Vector2
 }
 
-type PlayerState struct {
-	ID       PlayerID
-	Team     Team
-	Slot     int
-	Position Vector2
+type PlayerData struct {
+	ID     PlayerID
+	Team   Team
+	Slot   int
+	Pos    Vector2
+	Speed  float64
+	Radius float64
 }
 
 type Snapshot struct {
 	Tick    Tick
-	Players []PlayerState
+	Players []PlayerData
+}
+
+type TileType uint8
+
+const (
+	TileGround     TileType = 0
+	TileWall       TileType = 1
+	TileSpawnPoint TileType = 2
+)
+
+type MapData struct {
+	Width      int
+	Height     int
+	Index      int
+	MaxPlayers int
+	TileSize   float64
+	Map        [][]TileType
+}
+
+type Config struct {
+	Map MapData
 }
 
 type State struct {
 	tick    Tick
-	players []PlayerState
+	players []PlayerData
+	gameMap MapData
 }
 
-func NewState(players []PlayerState) *State {
+func NewState(players []PlayerData) *State {
+	return NewStateWithConfig(players, Config{})
+}
+
+func NewStateWithConfig(players []PlayerData, config Config) *State {
 	return &State{
-		players: clonePlayers(players),
+		players: normalizePlayers(players),
+		gameMap: normalizeMap(config.Map),
 	}
 }
 
 func (s *State) Step(inputs []InputCommand) Snapshot {
-	_ = inputs
+	for _, input := range inputs {
+		s.applyInput(input)
+	}
 
 	s.tick++
 
@@ -55,12 +96,180 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	}
 }
 
-func clonePlayers(players []PlayerState) []PlayerState {
+func StaticMapFixture() MapData {
+	return MapData{
+		Width:      5,
+		Height:     5,
+		Index:      0,
+		MaxPlayers: 6,
+		TileSize:   TileSize,
+		Map: [][]TileType{
+			{TileWall, TileWall, TileWall, TileWall, TileWall},
+			{TileWall, TileGround, TileGround, TileGround, TileWall},
+			{TileWall, TileGround, TileWall, TileGround, TileWall},
+			{TileWall, TileGround, TileGround, TileGround, TileWall},
+			{TileWall, TileWall, TileWall, TileWall, TileWall},
+		},
+	}
+}
+
+func (m MapData) WorldPos(x int, y int) Vector2 {
+	tileSize := m.TileSize
+	if tileSize <= 0 {
+		tileSize = TileSize
+	}
+	start := Vector2{
+		X: -tileSize * 0.5 * float64(m.Width-1),
+		Y: tileSize * 0.5 * float64(m.Height-1),
+	}
+	return Vector2{
+		X: start.X + float64(x)*tileSize,
+		Y: start.Y - float64(y)*tileSize,
+	}
+}
+
+func clonePlayers(players []PlayerData) []PlayerData {
 	if len(players) == 0 {
 		return nil
 	}
 
-	cloned := make([]PlayerState, len(players))
+	cloned := make([]PlayerData, len(players))
 	copy(cloned, players)
 	return cloned
+}
+
+func normalizePlayers(players []PlayerData) []PlayerData {
+	cloned := clonePlayers(players)
+	for i := range cloned {
+		if cloned[i].Speed <= 0 {
+			cloned[i].Speed = DefaultPlayerSpeed
+		}
+		if cloned[i].Radius <= 0 {
+			cloned[i].Radius = DefaultPlayerRadius
+		}
+	}
+	return cloned
+}
+
+func (s *State) applyInput(input InputCommand) {
+	if !isFinite(input.MoveDir) {
+		return
+	}
+
+	for i := range s.players {
+		if s.players[i].ID != input.PlayerID {
+			continue
+		}
+
+		movement := Vector2{
+			X: s.players[i].Speed * TickDuration * input.MoveDir.X,
+			Y: s.players[i].Speed * TickDuration * input.MoveDir.Y,
+		}
+
+		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
+		if !s.collidesWithWall(nextX, s.players[i].Radius) {
+			s.players[i].Pos = nextX
+		}
+
+		nextY := Vector2{X: s.players[i].Pos.X, Y: s.players[i].Pos.Y + movement.Y}
+		if !s.collidesWithWall(nextY, s.players[i].Radius) {
+			s.players[i].Pos = nextY
+		}
+		return
+	}
+}
+
+func (s *State) collidesWithWall(position Vector2, radius float64) bool {
+	if s.gameMap.Width == 0 || s.gameMap.Height == 0 {
+		return false
+	}
+
+	if radius < 0 {
+		radius = 0
+	}
+	tileSize := s.gameMap.TileSize
+	halfTileSize := tileSize * 0.5
+	minX := s.gameMap.WorldPos(0, 0).X - halfTileSize
+	maxX := s.gameMap.WorldPos(s.gameMap.Width-1, 0).X + halfTileSize
+	minY := s.gameMap.WorldPos(0, s.gameMap.Height-1).Y - halfTileSize
+	maxY := s.gameMap.WorldPos(0, 0).Y + halfTileSize
+	if position.X-radius < minX || position.X+radius > maxX || position.Y-radius < minY || position.Y+radius > maxY {
+		return true
+	}
+
+	for y, row := range s.gameMap.Map {
+		for x, tile := range row {
+			if tile != TileWall {
+				continue
+			}
+			if s.gameMap.circleIntersectsTile(position, radius, x, y) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (m MapData) circleIntersectsTile(position Vector2, radius float64, tileX int, tileY int) bool {
+	center := m.WorldPos(tileX, tileY)
+	halfTileSize := m.TileSize * 0.5
+	minX := center.X - halfTileSize
+	minY := center.Y - halfTileSize
+	maxX := center.X + halfTileSize
+	maxY := center.Y + halfTileSize
+
+	nearestX := clamp(position.X, minX, maxX)
+	nearestY := clamp(position.Y, minY, maxY)
+	dx := position.X - nearestX
+	dy := position.Y - nearestY
+	return dx*dx+dy*dy <= radius*radius
+}
+
+func normalizeMap(gameMap MapData) MapData {
+	if gameMap.TileSize <= 0 {
+		gameMap.TileSize = TileSize
+	}
+	if gameMap.Height == 0 {
+		gameMap.Height = len(gameMap.Map)
+	}
+	if gameMap.Width == 0 {
+		for _, row := range gameMap.Map {
+			if len(row) > gameMap.Width {
+				gameMap.Width = len(row)
+			}
+		}
+	}
+	gameMap.Map = cloneTiles(gameMap.Map)
+	return gameMap
+}
+
+func cloneTiles(tiles [][]TileType) [][]TileType {
+	if len(tiles) == 0 {
+		return nil
+	}
+
+	cloned := make([][]TileType, len(tiles))
+	for i := range tiles {
+		if len(tiles[i]) == 0 {
+			continue
+		}
+		cloned[i] = make([]TileType, len(tiles[i]))
+		copy(cloned[i], tiles[i])
+	}
+	return cloned
+}
+
+func isFinite(vector Vector2) bool {
+	return !math.IsNaN(vector.X) && !math.IsNaN(vector.Y) && !math.IsInf(vector.X, 0) && !math.IsInf(vector.Y, 0)
+}
+
+func clamp(value float64, min float64, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
