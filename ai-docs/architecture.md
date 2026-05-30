@@ -69,6 +69,9 @@ E1 server-authoritative core는 `internal/simulation.State`가 소유합니다. 
 - `Vector2`
 - `InputCommand`
 - `PlayerData`
+- `ProjectileID`
+- `ProjectileData`
+- `ProjectileType`
 - `MapData`
 - `TileType`
 - `Snapshot`
@@ -90,4 +93,16 @@ SL-39 기준 movement/collision model은 다음과 같습니다.
 - Invalid/non-finite movement input은 state를 오염시키지 않고 무시합니다.
 - Player-player collision은 E1 범위에서 제외합니다.
 
-Attack skeleton, room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.
+SL-40 기준 attack skeleton model은 다음과 같습니다.
+
+- `InputCommand`는 `AttackDir`와 `PressedAttack`을 받습니다.
+- `PlayerData`는 client `PlayerData`와 같은 의미의 `MoveDir`, `AttackDir`, `PressedAttack` field를 보존합니다.
+- `PressedAttack = true`이고 `AttackDir`가 zero vector가 아니면 같은 tick 안에서 `ProjectileData` skeleton을 생성합니다.
+- Client simulator 흐름과 맞춰 player movement/collision을 먼저 적용하고, 새 projectile은 이동 후 player `Pos`에서 생성합니다.
+- `Snapshot`은 `Projectiles []ProjectileData`를 포함합니다.
+- `ProjectileData`는 client `ProjectileData`와 같은 의미의 `ID`, `OwnerID`, `Pos`, `Dir`, `Speed`, `Damage`, `Radius`, `Type`, `IsDestroyed` field를 둡니다.
+- Projectile 기본값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다.
+- SL-40의 `Damage` field는 data skeleton 값일 뿐이며 피격, 체력, 사망, 리스폰, 점수 계산은 하지 않습니다.
+- Existing projectile movement, projectile-wall collision, projectile-player collision, projectile destroy lifecycle은 후속 티켓 범위입니다.
+
+Room REST/WS integration은 후속 E1 하위 티켓에서 추가합니다.

@@ -12,11 +12,13 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 
 이 계약은 Go unit test에서 직접 호출합니다. REST endpoint, WebSocket endpoint, matching queue, room lifecycle에 의존하지 않습니다.
 
-현재 snapshot은 tick과 `PlayerData` list를 포함합니다. Input command는 player ID와 `MoveDir` movement direction vector를 담습니다.
+현재 snapshot은 tick, `PlayerData` list, `ProjectileData` list를 포함합니다. Input command는 player ID, `MoveDir` movement direction, `AttackDir` attack direction, `PressedAttack` attack trigger를 담습니다.
 
 SL-39부터 movement는 client prototype 이름과 값을 맞춘 `MoveDir * Speed * TickDuration`으로 계산됩니다. Core simulation은 `MapData` static tile grid 위에서 player circle과 wall rectangle collision을 검사합니다. `TileSize = 1.2`, `TickRate = 30`, default `Speed = 2`, default `Radius = 0.5`를 사용합니다. `TileType` 값은 `Ground = 0`, `Wall = 1`, `SpawnPoint = 2` 의미와 맞춥니다. Player circle이 wall rectangle에 닿기만 해도 collision으로 처리합니다. Collision이 발생하거나 movement vector가 non-finite이면 해당 input은 무시되고 기존 player state가 유지됩니다.
 
-Client `ProjectileData`의 `Speed = 13`, `Damage = 10`, `Radius = 0.3` 기본값은 SL-40 attack skeleton에서 다룹니다. SL-39는 projectile behavior를 구현하지 않습니다.
+SL-40부터 attack pressed input은 같은 `Step` tick에서 처리됩니다. `PressedAttack = true`이고 `AttackDir`가 zero vector가 아니면 `ProjectileData` skeleton이 snapshot에 추가됩니다. Client simulator 순서에 맞춰 player movement/collision을 먼저 처리하고, 새 projectile은 이동 후 player `Pos`에서 생성합니다. `ProjectileData`의 기본값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다.
+
+SL-40은 attack/projectile skeleton만 정의합니다. Projectile movement, projectile collision, hit detection, HP, death, respawn, score는 protocol behavior로 구현하지 않습니다.
 
 ## Documentation Policy
 
