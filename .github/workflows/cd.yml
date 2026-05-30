@@ -28,8 +28,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs-ui/package-lock.json
+
       - name: Download modules
         run: go mod download
+
+      - name: Build docs UI
+        run: |
+          npm --prefix docs-ui ci
+          npm --prefix docs-ui run validate
+          npm --prefix docs-ui run build
 
       - name: Test
         run: go test ./...

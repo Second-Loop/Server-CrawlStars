@@ -63,14 +63,14 @@ Status: Accepted
 
 Context: E1에는 room lifecycle, client input, server snapshot flow를 위한 작은 contract surface가 필요합니다. REST endpoint는 읽고 수동 호출하기 쉬워야 하지만, WebSocket gameplay traffic은 Swagger UI가 잘 모델링하지 못하는 bidirectional stream입니다.
 
-Decision: REST API는 OpenAPI 3.x를 사용하고, interactive REST page를 추가할 때 Swagger UI를 사용합니다. WebSocket channel과 message payload는 AsyncAPI를 사용합니다. OpenAPI는 `ws://` 또는 `wss://` server URL을 참조할 수 있지만, WebSocket input과 snapshot stream의 source of truth는 AsyncAPI입니다.
+Decision: REST API는 OpenAPI 3.x를 사용하고, interactive REST page를 추가할 때 server-hosted UI를 사용합니다. WebSocket channel과 message payload는 AsyncAPI를 사용합니다. OpenAPI는 `ws://` 또는 `wss://` server URL을 참조할 수 있지만, WebSocket input과 snapshot stream의 source of truth는 AsyncAPI입니다.
 
 Consequences:
 
 - REST와 WebSocket contract는 필요한 경우 schema vocabulary를 공유하면서도 독립적으로 발전할 수 있습니다.
 - E1 debug API는 승격 전까지 unstable 및 E1-only로 명확히 표시해야 합니다.
 - 처음 spec file을 추가하는 implementation issue는 OpenAPI와 AsyncAPI document validation을 함께 추가해야 합니다.
-- 선호되는 hosted path는 `/docs/rest`, `/docs/ws`, `/docs/openapi.yaml`, `/docs/asyncapi.yaml`입니다.
+- SL-47 기준 hosted path는 `/openapi`, `/asyncapi`, `/openapi.yaml`, `/asyncapi.yaml`입니다.
 
 ## ADR-0006: Simulation Core는 Transport-Independent Step Contract로 시작
 
@@ -156,3 +156,18 @@ Consequences:
 - Room cleanup은 API/WS/tick activity 시점에 수행되며 별도 scheduler나 persistent storage를 요구하지 않습니다.
 - Public debug API exposure risk는 room cap, per-room player cap, TTL로 낮춥니다.
 - Invalid input regression은 error message와 이후 snapshot stream을 함께 검증합니다.
+
+## ADR-0012: E1 API Docs는 Server-Hosted No-CDN Static UI로 제공
+
+Status: Accepted
+
+Context: SL-47은 REST raw spec, WebSocket raw spec, human-readable docs를 한 번에 제공해야 합니다. E1 server는 이미 Cloudflare Tunnel 뒤에서 실행되므로 별도 CDN이나 GitHub Pages를 먼저 만들 필요가 없습니다. Clean build에서 docs UI를 재생성할 수 있어야 하고, generated assets가 source of truth처럼 commit되면 spec drift가 생길 수 있습니다.
+
+Decision: Source spec은 `api/openapi.yaml`, `api/asyncapi.yaml`에 둡니다. `docs-ui` build는 source spec을 parse하고 `internal/docs/api/`, `internal/docs/static/` embed 대상 파일을 생성합니다. Server는 `GET /openapi`, `GET /asyncapi`로 human-readable static UI를, `GET /openapi.yaml`, `GET /asyncapi.yaml`로 raw spec을 제공합니다. Generated embed assets는 commit하지 않고 `make ci`, CI, CD build stage에서 재생성합니다. UI는 no-CDN static HTML/CSS로 유지합니다.
+
+Consequences:
+
+- Running server 하나만으로 API docs와 raw spec을 확인할 수 있습니다.
+- Clean checkout에서 Go compile/test/build 전 `make docs-build` 또는 `make ci`가 필요합니다.
+- CI/CD는 Node.js setup과 docs build를 Go validation/build 전에 수행해야 합니다.
+- 이 결정은 docs delivery만 다루며, 인증, rate limit, matching queue, persistence, dashboard는 추가하지 않습니다.

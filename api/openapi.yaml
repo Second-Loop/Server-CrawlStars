@@ -1,0 +1,217 @@
+openapi: 3.1.0
+info:
+  title: Server Crawl Stars E1 REST API
+  version: 0.1.0
+  description: E1 debug REST API for health checks and room lifecycle testing.
+x-stability: e1-debug
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+tags:
+  - name: Health
+  - name: Rooms
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Check server health
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /rooms:
+    get:
+      tags: [Rooms]
+      summary: List active E1 debug rooms
+      operationId: listRooms
+      responses:
+        "200":
+          description: Active room list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomList"
+    post:
+      tags: [Rooms]
+      summary: Create an E1 debug room
+      operationId: createRoom
+      responses:
+        "201":
+          description: Created room
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "409":
+          description: Active room cap reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /rooms/{roomID}:
+    get:
+      tags: [Rooms]
+      summary: Get E1 debug room detail
+      operationId: getRoom
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Room detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "404":
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /rooms/{roomID}/players:
+    post:
+      tags: [Rooms]
+      summary: Issue a player for an E1 debug room
+      operationId: createRoomPlayer
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "201":
+          description: Issued player
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Player"
+        "404":
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Room is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /rooms/{roomID}/start:
+    post:
+      tags: [Rooms]
+      summary: Start an E1 debug room
+      operationId: startRoom
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Started room
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Room"
+        "404":
+          description: Room not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Room has no players
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  parameters:
+    RoomID:
+      name: roomID
+      in: path
+      required: true
+      schema:
+        type: string
+        example: room-1
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: server-crawlstars
+    RoomList:
+      type: object
+      required: [rooms]
+      properties:
+        rooms:
+          type: array
+          items:
+            $ref: "#/components/schemas/Room"
+    Room:
+      type: object
+      required: [id, status, players, latestSnapshot]
+      properties:
+        id:
+          type: string
+          example: room-1
+        status:
+          type: string
+          enum: [waiting, started]
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/Player"
+        latestSnapshot:
+          $ref: "#/components/schemas/SnapshotSummary"
+    Player:
+      type: object
+      required: [id, team, slot]
+      properties:
+        id:
+          type: string
+          example: player-1
+        team:
+          type: string
+          enum: [red, blue]
+        slot:
+          type: integer
+          minimum: 0
+    SnapshotSummary:
+      type: object
+      required: [tick, playerCount, projectileCount]
+      properties:
+        tick:
+          type: integer
+          minimum: 0
+        playerCount:
+          type: integer
+          minimum: 0
+        projectileCount:
+          type: integer
+          minimum: 0
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/APIError"
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - room_not_found
+            - room_cap_reached
+            - room_full
+            - room_has_no_players
+            - method_not_allowed
+            - not_found
+        message:
+          type: string

@@ -108,9 +108,18 @@ SL-43 기준 room cleanup rule은 다음과 같습니다.
 
 ## Documentation Policy
 
-E1 REST API는 OpenAPI 3.x로 문서화하고, interactive page를 추가할 때 Swagger UI로 render합니다. E1 WebSocket message contract는 AsyncAPI로 문서화합니다.
+E1 REST API는 OpenAPI 3.x로 문서화합니다. E1 WebSocket message contract는 AsyncAPI로 문서화합니다. SL-47부터 running server가 human-readable docs UI와 raw spec을 함께 제공합니다.
 
 OpenAPI는 `ws://` 또는 `wss://` server URL을 언급할 수 있지만, client input과 server snapshot broadcast 같은 bidirectional WebSocket message stream의 source of truth는 AsyncAPI입니다.
+
+Server-hosted documentation path:
+
+```text
+GET /openapi
+GET /asyncapi
+GET /openapi.yaml
+GET /asyncapi.yaml
+```
 
 전체 documentation policy는 `ai-docs/api-docs.md`를 참고합니다.
 
@@ -118,6 +127,16 @@ OpenAPI는 `ws://` 또는 `wss://` server URL을 언급할 수 있지만, client
 
 ```text
 GET /health
+GET /openapi
+GET /asyncapi
+GET /openapi.yaml
+GET /asyncapi.yaml
+GET /rooms
+POST /rooms
+GET /rooms/{roomID}
+POST /rooms/{roomID}/players
+POST /rooms/{roomID}/start
+WS /rooms/{roomID}/players/{playerID}
 ```
 
 Response:

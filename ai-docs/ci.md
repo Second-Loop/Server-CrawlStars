@@ -6,7 +6,11 @@ GitHub Actions는 pull request와 `main` push에서 실행되어야 합니다.
 
 - checkout
 - `go.mod` 기준 Go setup
+- `docs-ui/package-lock.json` 기준 Node.js setup
 - `go mod download`
+- `npm --prefix docs-ui ci`
+- `npm --prefix docs-ui run validate`
+- `npm --prefix docs-ui run build`
 - gofmt check
 - `go vet ./...`
 - `go test ./...`
@@ -20,6 +24,8 @@ make ci
 ```
 
 Makefile은 `GOCACHE`를 레포지토리 내부로 설정합니다. 따라서 sandboxed local run이 user-level Go cache 권한에 의존하지 않습니다.
+
+SL-47부터 docs UI와 raw spec은 Go `embed` 대상 디렉터리에 build-time 생성됩니다. Clean checkout에서 직접 `go test ./...` 또는 `go build ./cmd/server`를 실행하면 embed 대상 파일이 없을 수 있으므로, 공식 local validation은 `make ci`입니다.
 
 # CD
 

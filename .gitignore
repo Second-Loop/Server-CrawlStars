@@ -1,3 +1,7 @@
 .cache/
+.playwright-cli/
+docs-ui/node_modules/
+internal/docs/api/
+internal/docs/static/
 /server
 coverage.out
