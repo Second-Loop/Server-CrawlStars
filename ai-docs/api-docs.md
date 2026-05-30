@@ -75,9 +75,17 @@ REST error response는 다음 형태로 통일합니다.
 
 - `room_not_found`
 - `room_cap_reached`
+- `room_full`
 - `room_has_no_players`
 - `method_not_allowed`
 - `not_found`
+
+SL-43부터 E1 room store는 public debug API에 room이 무한히 쌓이지 않도록 다음 cleanup rule을 적용합니다.
+
+- waiting room idle TTL: 10분
+- started room all-disconnected TTL: 마지막 WebSocket client disconnect 후 5분
+- hard room lifetime: room 생성 후 1시간
+- connected client가 있으면 waiting idle TTL과 all-disconnected TTL로 즉시 삭제하지 않습니다.
 
 ## WebSocket Documentation
 
@@ -100,7 +108,7 @@ WS /rooms/{roomID}/players/{playerID}
 
 이 endpoint는 REST room lifecycle로 생성한 room/player를 사용합니다. Unknown room/player와 duplicate same player connection은 upgrade 전에 JSON error response로 거부합니다. Room이 아직 `started`가 아니면 connection과 input 수신은 허용하지만 snapshot broadcast는 하지 않습니다.
 
-Client input payload는 client `PlayerData` 이름과 맞춘 `MoveDir`, `AttackDir`, `PressedAttack` field를 사용합니다. Unity `Vector2` 값은 `x`, `y` field로 전달합니다. Invalid JSON input은 connection을 끊지 않고 무시합니다.
+Client input payload는 client `PlayerData` 이름과 맞춘 `MoveDir`, `AttackDir`, `PressedAttack` field를 사용합니다. Unity `Vector2` 값은 `x`, `y` field로 전달합니다. Invalid JSON input은 connection을 끊지 않고 error message를 보낸 뒤 해당 input만 무시합니다.
 
 Server는 started room에서 30Hz tick마다 다음 wrapper 형태의 snapshot message를 broadcast합니다.
 
@@ -108,6 +116,18 @@ Server는 started room에서 30Hz tick마다 다음 wrapper 형태의 snapshot m
 {
   "Type": "snapshot",
   "Snapshot": {}
+}
+```
+
+Invalid input error message는 snapshot wrapper와 같은 top-level naming convention을 따릅니다.
+
+```json
+{
+  "Type": "error",
+  "Error": {
+    "code": "invalid_input",
+    "message": "invalid input"
+  }
 }
 ```
 

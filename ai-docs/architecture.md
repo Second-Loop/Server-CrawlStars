@@ -137,6 +137,16 @@ SL-42 기준 WebSocket endpoint는 E2 client integration을 준비하는 E1 serv
 - Input이 없어도 매 tick snapshot message를 broadcast합니다.
 - WebSocket input은 client `PlayerData`와 맞춰 `MoveDir`, `AttackDir`, `PressedAttack` field를 사용하고, Unity `Vector2` 값은 `x`, `y`로 직렬화합니다.
 - WebSocket snapshot wrapper는 `Type`, `Snapshot` field를 사용하며, snapshot 내부 `PlayerData`/`ProjectileData` wire field는 client code 이름과 맞춥니다.
-- Invalid input payload는 연결을 끊지 않고 무시하며 snapshot stream을 유지합니다.
+- Invalid input payload는 연결을 끊지 않고 `{"Type":"error","Error":...}` message를 보낸 뒤 해당 input만 무시하며 snapshot stream을 유지합니다.
 - WebSocket adapter는 `internal/simulation`을 호출하지만, `internal/simulation`은 WebSocket package를 import하지 않습니다.
 - 이 tick loop는 SL-42 room-local gameplay loop이며, generic scheduler/runner/orchestration framework가 아닙니다.
+
+## E1 Room TTL Cleanup Boundary
+
+SL-43 기준 `internal/rooms`는 in-memory E1 debug room이 public 환경에서 무한히 쌓이지 않도록 Store 진입점에서 cleanup을 수행합니다.
+
+- Waiting room idle TTL은 10분입니다.
+- Started room에서 모든 WebSocket client가 disconnect되면 5분 뒤 cleanup합니다.
+- Room 생성 후 1시간 hard lifetime을 적용합니다.
+- Connected client가 있으면 waiting idle TTL과 all-disconnected TTL로 즉시 삭제하지 않습니다.
+- Cleanup은 REST/WS/tick 진입점에서 fake clock으로 검증 가능한 bounded behavior로 구현하며, generic scheduler, runner, persistence, dashboard를 추가하지 않습니다.

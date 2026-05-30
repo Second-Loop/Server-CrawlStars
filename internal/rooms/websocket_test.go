@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,15 +61,17 @@ func TestWebSocketRejectsUnknownRoomOrPlayer(t *testing.T) {
 
 	room := createRoom(t, handler)
 
-	_, _, err := websocket.Dial(context.Background(), websocketURL(server.URL, "missing", "player-1"), nil)
+	_, resp, err := websocket.Dial(context.Background(), websocketURL(server.URL, "missing", "player-1"), nil)
 	if err == nil {
 		t.Fatal("expected unknown room dial to fail")
 	}
+	assertWebSocketErrorResponse(t, resp, http.StatusNotFound, "room_not_found")
 
-	_, _, err = websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, "missing-player"), nil)
+	_, resp, err = websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, "missing-player"), nil)
 	if err == nil {
 		t.Fatal("expected unknown player dial to fail")
 	}
+	assertWebSocketErrorResponse(t, resp, http.StatusNotFound, "player_not_found")
 }
 
 func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
@@ -131,10 +134,127 @@ func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
 	writeText(t, conn, "{not-json")
+	invalidInput := readErrorMessage(t, conn)
+	if invalidInput.Error.Code != "invalid_input" {
+		t.Fatalf("expected invalid_input error, got %+v", invalidInput.Error)
+	}
+
 	fakeClock.Tick()
 	message := readSnapshotMessage(t, conn)
 	if message.Snapshot.Tick != 1 {
 		t.Fatalf("expected stream to continue with tick 1, got %d", message.Snapshot.Tick)
+	}
+}
+
+func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
+
+	writeText(t, conn, "{not-json")
+	errorMessage := readErrorMessage(t, conn)
+	if errorMessage.Type != "error" {
+		t.Fatalf("expected error message type, got %q", errorMessage.Type)
+	}
+	if errorMessage.Error.Code != "invalid_input" {
+		t.Fatalf("expected invalid_input error, got %+v", errorMessage.Error)
+	}
+
+	fakeClock.Tick()
+	snapshot := readSnapshotMessage(t, conn)
+	if snapshot.Snapshot.Tick != 1 {
+		t.Fatalf("expected stream to continue with tick 1, got %d", snapshot.Snapshot.Tick)
+	}
+}
+
+func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
+	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	waitForAttachedClient(t, store, room.ID, player.ID)
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+	waitForDetachedClient(t, store, room.ID, player.ID)
+
+	fakeClock.Advance(5*time.Minute - time.Nanosecond)
+	if rec := request(handler, http.MethodGet, "/rooms/"+room.ID); rec.Code != http.StatusOK {
+		t.Fatalf("expected disconnected started room before TTL to exist, got status %d", rec.Code)
+	}
+
+	fakeClock.Advance(time.Nanosecond)
+	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected all-disconnected started room after TTL to be cleaned up, got status %d", rec.Code)
+	}
+	assertError(t, rec, "room_not_found")
+}
+
+func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
+	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
+
+	fakeClock.Advance(5 * time.Minute)
+	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected connected room to survive cleanup TTL, got status %d", rec.Code)
+	}
+}
+
+func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+
+	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
+
+	writeText(t, conn, `{"MoveDir":{"x":1,"y":0}}`)
+	waitForPendingInput(t, store, room.ID, player.ID)
+
+	fakeClock.Tick()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _, err := conn.Read(ctx)
+	if err == nil {
+		t.Fatal("expected no gameplay snapshot before room start")
 	}
 }
 
@@ -219,10 +339,19 @@ type fakeClock struct {
 	ticks     chan time.Time
 	duration  time.Duration
 	stopCount int
+	now       time.Time
 }
 
 func newFakeClock() *fakeClock {
-	return &fakeClock{ticks: make(chan time.Time, 8)}
+	return newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+}
+
+func newFakeClockAt(now time.Time) *fakeClock {
+	return &fakeClock{ticks: make(chan time.Time, 8), now: now}
+}
+
+func (c *fakeClock) Now() time.Time {
+	return c.now
 }
 
 func (c *fakeClock) NewTicker(duration time.Duration) ticker {
@@ -240,6 +369,10 @@ func (c *fakeClock) Stop() {
 
 func (c *fakeClock) Tick() {
 	c.ticks <- time.Now()
+}
+
+func (c *fakeClock) Advance(duration time.Duration) {
+	c.now = c.now.Add(duration)
 }
 
 func (c *fakeClock) RequestedDuration() time.Duration {
@@ -280,6 +413,24 @@ func waitForAttachedClient(t *testing.T, store *Store, roomID string, playerID s
 	}
 
 	t.Fatalf("expected attached websocket client for player %s", playerID)
+}
+
+func waitForDetachedClient(t *testing.T, store *Store, roomID string, playerID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		room := store.rooms[roomID]
+		_, ok := room.clients[playerID]
+		store.mu.Unlock()
+		if !ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected detached websocket client for player %s", playerID)
 }
 
 func createPlayer(t *testing.T, handler http.Handler, roomID string) playerResponse {
@@ -349,6 +500,18 @@ func readSnapshotMessage(t *testing.T, conn *websocket.Conn) snapshotMessage {
 	return message
 }
 
+func readErrorMessage(t *testing.T, conn *websocket.Conn) errorMessage {
+	t.Helper()
+
+	payload := readWebSocketPayload(t, conn)
+
+	var message errorMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode error message: %v", err)
+	}
+	return message
+}
+
 func readWebSocketPayload(t *testing.T, conn *websocket.Conn) []byte {
 	t.Helper()
 
@@ -359,4 +522,28 @@ func readWebSocketPayload(t *testing.T, conn *websocket.Conn) []byte {
 		t.Fatalf("read websocket message: %v", err)
 	}
 	return payload
+}
+
+func assertWebSocketErrorResponse(t *testing.T, resp *http.Response, status int, code string) {
+	t.Helper()
+
+	if resp == nil {
+		t.Fatalf("expected websocket error response with status %d", status)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != status {
+		t.Fatalf("expected websocket response status %d, got %d", status, resp.StatusCode)
+	}
+	var body errorResponse
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read websocket error response: %v", err)
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decode websocket error response: %v", err)
+	}
+	if body.Error.Code != code {
+		t.Fatalf("expected websocket error code %q, got %+v", code, body.Error)
+	}
 }

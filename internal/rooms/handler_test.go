@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+	"nhooyr.io/websocket"
 )
 
 func TestHandlerListsAndCreatesRooms(t *testing.T) {
@@ -104,6 +108,21 @@ func TestHandlerIssuesPlayersWithTeamAndSlot(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsPlayerJoinWhenRoomFull(t *testing.T) {
+	handler := Handler(NewStore(5))
+	room := createRoom(t, handler)
+
+	for i := 0; i < simulation.StaticMapFixture().MaxPlayers; i++ {
+		_ = createPlayer(t, handler, room.ID)
+	}
+
+	rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected room full status 409, got %d", rec.Code)
+	}
+	assertError(t, rec, "room_full")
+}
+
 func TestHandlerStartRequiresAtLeastOnePlayer(t *testing.T) {
 	handler := Handler(NewStore(5))
 	room := createRoom(t, handler)
@@ -138,6 +157,55 @@ func TestHandlerReturnsJSONErrors(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected application/json content type, got %q", got)
+	}
+	assertError(t, rec, "room_not_found")
+}
+
+func TestStoreCleansUpWaitingRoomAfterIdleTTL(t *testing.T) {
+	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+
+	room := createRoom(t, handler)
+
+	fakeClock.Advance(10*time.Minute - time.Nanosecond)
+	if rec := request(handler, http.MethodGet, "/rooms/"+room.ID); rec.Code != http.StatusOK {
+		t.Fatalf("expected waiting room before TTL to exist, got status %d", rec.Code)
+	}
+
+	fakeClock.Advance(time.Nanosecond)
+	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected waiting room after idle TTL to be cleaned up, got status %d", rec.Code)
+	}
+	assertError(t, rec, "room_not_found")
+}
+
+func TestStoreCleansUpHardLifetimeExpiredRoom(t *testing.T) {
+	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
+
+	fakeClock.Advance(time.Hour - time.Nanosecond)
+	if rec := request(handler, http.MethodGet, "/rooms/"+room.ID); rec.Code != http.StatusOK {
+		t.Fatalf("expected room before hard lifetime to exist, got status %d", rec.Code)
+	}
+
+	fakeClock.Advance(time.Nanosecond)
+	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected room after hard lifetime to be cleaned up, got status %d", rec.Code)
 	}
 	assertError(t, rec, "room_not_found")
 }
