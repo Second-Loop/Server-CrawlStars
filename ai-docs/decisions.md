@@ -142,3 +142,17 @@ Consequences:
 - `internal/simulation`은 WebSocket dependency를 import하지 않으므로 transport-independent contract가 유지됩니다.
 - SL-42 tick loop는 room-local gameplay loop이며, reusable scheduler/runner framework가 아닙니다.
 - AsyncAPI/OpenAPI spec file 생성과 hosted docs는 별도 implementation issue에서 다룹니다.
+
+## ADR-0011: E1 Room Cleanup은 Store 진입점 TTL로 제한
+
+Status: Accepted
+
+Context: SL-43은 public debug room API가 무한히 쌓이지 않도록 최소 cleanup을 추가해야 하지만, E1 범위는 persistence, scheduler, runner, dashboard, orchestration framework를 포함하지 않습니다. 또한 invalid input은 WebSocket stream을 깨지 않아야 합니다.
+
+Decision: `internal/rooms.Store`는 fake clock으로 검증 가능한 TTL rule을 Store 진입점에서 적용합니다. Waiting room idle TTL은 10분, started room all-disconnected TTL은 마지막 WebSocket client disconnect 후 5분, hard room lifetime은 생성 후 1시간입니다. Connected client가 있으면 waiting idle TTL과 all-disconnected TTL로 즉시 삭제하지 않습니다. Hard lifetime은 hard cap으로 유지합니다. Invalid JSON input은 `{"Type":"error","Error":{"code":"invalid_input","message":"invalid input"}}` message를 보내고 해당 input만 무시하며, connection과 snapshot stream은 유지합니다. Room/player validation, duplicate connection, room full은 REST 4xx JSON error 또는 WebSocket upgrade 전 JSON error response로 고정합니다.
+
+Consequences:
+
+- Room cleanup은 API/WS/tick activity 시점에 수행되며 별도 scheduler나 persistent storage를 요구하지 않습니다.
+- Public debug API exposure risk는 room cap, per-room player cap, TTL로 낮춥니다.
+- Invalid input regression은 error message와 이후 snapshot stream을 함께 검증합니다.

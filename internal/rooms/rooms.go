@@ -19,6 +19,13 @@ const (
 	RoomStatusStarted RoomStatus = "started"
 )
 
+const (
+	defaultWaitingRoomIdleTTL    = 10 * time.Minute
+	defaultDisconnectedRoomTTL   = 5 * time.Minute
+	defaultHardRoomLifetime      = time.Hour
+	defaultRoomWebSocketCloseMsg = "room expired"
+)
+
 type Store struct {
 	mu             sync.Mutex
 	maxActiveRooms int
@@ -30,14 +37,17 @@ type Store struct {
 }
 
 type room struct {
-	ID            string
-	Status        RoomStatus
-	Players       []playerResponse
-	state         *simulation.State
-	pendingInputs map[string]simulation.InputCommand
-	clients       map[string]*websocket.Conn
-	ticker        ticker
-	stop          chan struct{}
+	ID             string
+	Status         RoomStatus
+	Players        []playerResponse
+	state          *simulation.State
+	pendingInputs  map[string]simulation.InputCommand
+	clients        map[string]*websocket.Conn
+	createdAt      time.Time
+	lastActivityAt time.Time
+	disconnectedAt time.Time
+	ticker         ticker
+	stop           chan struct{}
 }
 
 type roomListResponse struct {
@@ -73,6 +83,7 @@ type apiError struct {
 }
 
 type clock interface {
+	Now() time.Time
 	NewTicker(duration time.Duration) ticker
 }
 
@@ -108,6 +119,10 @@ func NewStoreWithClock(maxActiveRooms int, clock clock) *Store {
 
 func (realClock) NewTicker(duration time.Duration) ticker {
 	return realTicker{Ticker: time.NewTicker(duration)}
+}
+
+func (realClock) Now() time.Time {
+	return time.Now()
 }
 
 func (t realTicker) C() <-chan time.Time {
@@ -185,7 +200,13 @@ func Handler(store *Store) http.Handler {
 			}
 			player, err := store.addPlayer(roomID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "room_not_found", err.Error())
+				status := http.StatusNotFound
+				code := "room_not_found"
+				if err.Error() == "room full" {
+					status = http.StatusConflict
+					code = "room_full"
+				}
+				writeError(w, status, code, err.Error())
 				return
 			}
 			writeJSON(w, http.StatusCreated, player)
@@ -213,6 +234,8 @@ func Handler(store *Store) http.Handler {
 }
 
 func (s *Store) listRooms() roomListResponse {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -231,36 +254,18 @@ func (s *Store) Close() {
 	}
 	s.closed = true
 
-	var tickers []ticker
-	var stops []chan struct{}
-	var conns []*websocket.Conn
+	var resources roomResources
 	for _, room := range s.rooms {
-		if room.ticker != nil {
-			tickers = append(tickers, room.ticker)
-		}
-		if room.stop != nil {
-			stops = append(stops, room.stop)
-			room.stop = nil
-		}
-		for _, conn := range room.clients {
-			conns = append(conns, conn)
-		}
-		room.clients = nil
+		resources.add(room)
 	}
 	s.mu.Unlock()
 
-	for _, ticker := range tickers {
-		ticker.Stop()
-	}
-	for _, stop := range stops {
-		close(stop)
-	}
-	for _, conn := range conns {
-		_ = conn.Close(websocket.StatusNormalClosure, "store closed")
-	}
+	resources.close("store closed")
 }
 
 func (s *Store) createRoom() (roomResponse, error) {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -269,17 +274,22 @@ func (s *Store) createRoom() (roomResponse, error) {
 	}
 
 	s.nextRoomSeq++
+	now := s.clock.Now()
 	room := &room{
-		ID:            "room-" + itoa(s.nextRoomSeq),
-		Status:        RoomStatusWaiting,
-		pendingInputs: make(map[string]simulation.InputCommand),
-		clients:       make(map[string]*websocket.Conn),
+		ID:             "room-" + itoa(s.nextRoomSeq),
+		Status:         RoomStatusWaiting,
+		pendingInputs:  make(map[string]simulation.InputCommand),
+		clients:        make(map[string]*websocket.Conn),
+		createdAt:      now,
+		lastActivityAt: now,
 	}
 	s.rooms[room.ID] = room
 	return room.toResponse(), nil
 }
 
 func (s *Store) getRoom(roomID string) (roomResponse, bool) {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -291,12 +301,17 @@ func (s *Store) getRoom(roomID string) (roomResponse, bool) {
 }
 
 func (s *Store) addPlayer(roomID string) (playerResponse, error) {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	room, ok := s.rooms[roomID]
 	if !ok {
 		return playerResponse{}, errString("room not found")
+	}
+	if len(room.Players) >= simulation.StaticMapFixture().MaxPlayers {
+		return playerResponse{}, errString("room full")
 	}
 
 	s.nextPlayerSeq++
@@ -307,10 +322,13 @@ func (s *Store) addPlayer(roomID string) (playerResponse, error) {
 		Slot: playerIndex / 2,
 	}
 	room.Players = append(room.Players, player)
+	room.lastActivityAt = s.clock.Now()
 	return player, nil
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -322,7 +340,14 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 		return roomResponse{}, errString("room has no players")
 	}
 
+	now := s.clock.Now()
 	room.Status = RoomStatusStarted
+	room.lastActivityAt = now
+	if len(room.clients) == 0 {
+		room.disconnectedAt = now
+	} else {
+		room.disconnectedAt = time.Time{}
+	}
 	if room.state == nil {
 		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players), simulation.Config{Map: simulation.StaticMapFixture()})
 	}
@@ -369,6 +394,13 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 
 		var input inputMessage
 		if err := json.Unmarshal(payload, &input); err != nil {
+			writeWebSocketJSON(conn, errorMessage{
+				Type: "error",
+				Error: apiError{
+					Code:    "invalid_input",
+					Message: "invalid input",
+				},
+			})
 			continue
 		}
 		s.setInput(roomID, playerID, input)
@@ -376,6 +408,8 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 }
 
 func (s *Store) reserveClient(roomID string, playerID string) error {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -390,6 +424,8 @@ func (s *Store) reserveClient(roomID string, playerID string) error {
 		return errString("player already connected")
 	}
 	room.clients[playerID] = nil
+	room.lastActivityAt = s.clock.Now()
+	room.disconnectedAt = time.Time{}
 	return nil
 }
 
@@ -402,6 +438,8 @@ func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Con
 		return
 	}
 	room.clients[playerID] = conn
+	room.lastActivityAt = s.clock.Now()
+	room.disconnectedAt = time.Time{}
 }
 
 func (s *Store) releaseClient(roomID string, playerID string) {
@@ -414,6 +452,9 @@ func (s *Store) releaseClient(roomID string, playerID string) {
 	}
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
+	if room.Status == RoomStatusStarted && len(room.clients) == 0 {
+		room.disconnectedAt = s.clock.Now()
+	}
 }
 
 func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
@@ -424,6 +465,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
 	if !ok || !room.hasPlayer(playerID) {
 		return
 	}
+	room.lastActivityAt = s.clock.Now()
 	room.pendingInputs[playerID] = simulation.InputCommand{
 		PlayerID:      simulation.PlayerID(playerID),
 		MoveDir:       input.MoveDir,
@@ -444,6 +486,8 @@ func (s *Store) runRoom(roomID string, ticker ticker, stop <-chan struct{}) {
 }
 
 func (s *Store) tickRoom(roomID string) {
+	s.cleanupExpired()
+
 	s.mu.Lock()
 
 	room, ok := s.rooms[roomID]
@@ -470,6 +514,58 @@ func (s *Store) tickRoom(roomID string) {
 
 	for _, conn := range clients {
 		writeWebSocketJSON(conn, message)
+	}
+}
+
+func (s *Store) cleanupExpired() {
+	now := s.clock.Now()
+
+	s.mu.Lock()
+	var resources roomResources
+	for id, room := range s.rooms {
+		if !room.isExpired(now) {
+			continue
+		}
+		delete(s.rooms, id)
+		resources.add(room)
+	}
+	s.mu.Unlock()
+
+	resources.close(defaultRoomWebSocketCloseMsg)
+}
+
+type roomResources struct {
+	tickers []ticker
+	stops   []chan struct{}
+	conns   []*websocket.Conn
+}
+
+func (r *roomResources) add(room *room) {
+	if room.ticker != nil {
+		r.tickers = append(r.tickers, room.ticker)
+		room.ticker = nil
+	}
+	if room.stop != nil {
+		r.stops = append(r.stops, room.stop)
+		room.stop = nil
+	}
+	for _, conn := range room.clients {
+		if conn != nil {
+			r.conns = append(r.conns, conn)
+		}
+	}
+	room.clients = nil
+}
+
+func (r roomResources) close(reason string) {
+	for _, ticker := range r.tickers {
+		ticker.Stop()
+	}
+	for _, stop := range r.stops {
+		close(stop)
+	}
+	for _, conn := range r.conns {
+		_ = conn.Close(websocket.StatusNormalClosure, reason)
 	}
 }
 
@@ -507,6 +603,22 @@ func (r *room) hasPlayer(playerID string) bool {
 	return false
 }
 
+func (r *room) isExpired(now time.Time) bool {
+	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
+		return true
+	}
+	if len(r.clients) > 0 {
+		return false
+	}
+	if r.Status == RoomStatusWaiting {
+		return !now.Before(r.lastActivityAt.Add(defaultWaitingRoomIdleTTL))
+	}
+	if r.Status == RoomStatusStarted && !r.disconnectedAt.IsZero() {
+		return !now.Before(r.disconnectedAt.Add(defaultDisconnectedRoomTTL))
+	}
+	return false
+}
+
 type inputMessage struct {
 	MoveDir       simulation.Vector2 `json:"MoveDir"`
 	AttackDir     simulation.Vector2 `json:"AttackDir"`
@@ -516,6 +628,11 @@ type inputMessage struct {
 type snapshotMessage struct {
 	Type     string              `json:"Type"`
 	Snapshot simulation.Snapshot `json:"Snapshot"`
+}
+
+type errorMessage struct {
+	Type  string   `json:"Type"`
+	Error apiError `json:"Error"`
 }
 
 func simulationPlayers(players []playerResponse) []simulation.PlayerData {

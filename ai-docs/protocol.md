@@ -85,7 +85,26 @@ Server snapshot message는 다음 wrapper를 사용합니다. Snapshot 안의 cl
 }
 ```
 
-Invalid input payload는 connection을 끊지 않고 무시합니다. Snapshot stream은 다음 valid tick에서도 계속 유지되어야 합니다.
+Invalid input payload는 connection을 끊지 않고 error message를 보낸 뒤 해당 input만 무시합니다.
+
+```json
+{
+  "Type": "error",
+  "Error": {
+    "code": "invalid_input",
+    "message": "invalid input"
+  }
+}
+```
+
+Snapshot stream은 다음 valid tick에서도 계속 유지되어야 합니다.
+
+SL-43 기준 room cleanup rule은 다음과 같습니다.
+
+- waiting room idle TTL은 10분입니다.
+- started room에서 모든 WebSocket client가 disconnect되면 5분 뒤 cleanup 대상이 됩니다.
+- room 생성 후 1시간 hard lifetime이 지나면 cleanup 대상이 됩니다.
+- connected client가 있으면 waiting idle TTL과 all-disconnected TTL로 즉시 삭제하지 않습니다.
 
 ## Documentation Policy
 
