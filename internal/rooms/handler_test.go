@@ -86,6 +86,97 @@ func TestHandlerRejectsRoomCreationAtCap(t *testing.T) {
 	assertError(t, rec, "room_cap_reached")
 }
 
+func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t *testing.T) {
+	handler := Handler(NewStore(5))
+
+	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
+	}
+
+	var joined matchmakingJoinResponse
+	decodeResponse(t, rec, &joined)
+	if joined.Room.ID == "" {
+		t.Fatal("expected room ID to be assigned")
+	}
+	if joined.Room.Status != RoomStatusWaiting {
+		t.Fatalf("expected waiting room, got %q", joined.Room.Status)
+	}
+	if joined.Player.ID == "" || joined.Player.Team != "red" || joined.Player.Slot != 0 {
+		t.Fatalf("unexpected player assignment: %+v", joined.Player)
+	}
+	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID
+	if joined.WebSocketPath != wantWebSocketPath {
+		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
+	}
+	if len(joined.Room.Players) != 1 || joined.Room.Players[0].ID != joined.Player.ID {
+		t.Fatalf("expected response room to contain joined player, got %+v", joined.Room.Players)
+	}
+}
+
+func TestHandlerMatchmakingSecondJoinUsesSameRoomAndStartsSimulation(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	defer store.Close()
+	handler := Handler(store)
+
+	first := joinMatchmaking(t, handler)
+	second := joinMatchmaking(t, handler)
+
+	if second.Room.ID != first.Room.ID {
+		t.Fatalf("expected second join to use room %q, got %q", first.Room.ID, second.Room.ID)
+	}
+	if second.Player.ID == first.Player.ID {
+		t.Fatalf("expected distinct player IDs, got %q", second.Player.ID)
+	}
+	if second.Room.Status != RoomStatusStarted {
+		t.Fatalf("expected room to auto-start on second join, got %q", second.Room.Status)
+	}
+	if len(second.Room.Players) != 2 || second.Room.LatestSnapshot.PlayerCount != 2 {
+		t.Fatalf("expected two players in started room, got %+v", second.Room)
+	}
+	if fakeClock.RequestedDuration() != time.Second/time.Duration(simulation.TickRate) {
+		t.Fatalf("expected auto-start to create 30Hz ticker, got %s", fakeClock.RequestedDuration())
+	}
+}
+
+func TestHandlerMatchmakingDoesNotLateJoinStartedRooms(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	handler := Handler(store)
+
+	first := joinMatchmaking(t, handler)
+	second := joinMatchmaking(t, handler)
+	third := joinMatchmaking(t, handler)
+
+	if second.Room.ID != first.Room.ID {
+		t.Fatalf("expected first pair to share room, got %q and %q", first.Room.ID, second.Room.ID)
+	}
+	if third.Room.ID == first.Room.ID {
+		t.Fatalf("expected third join to avoid started room %q", first.Room.ID)
+	}
+	if third.Room.Status != RoomStatusWaiting {
+		t.Fatalf("expected third join to create waiting room, got %q", third.Room.Status)
+	}
+	if len(third.Room.Players) != 1 {
+		t.Fatalf("expected new waiting room to contain one player, got %+v", third.Room.Players)
+	}
+}
+
+func TestHandlerMatchmakingKeepsFixtureMaxPlayersAtSix(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	handler := Handler(store)
+
+	joined := joinMatchmaking(t, handler)
+	if capacity := joined.Room.MaxPlayers; capacity != simulation.StaticMapFixture().MaxPlayers {
+		t.Fatalf("expected fixture max players %d, got %d", simulation.StaticMapFixture().MaxPlayers, capacity)
+	}
+	if joined.Room.MaxPlayers != 6 {
+		t.Fatalf("expected current matchmaking max players to remain 6, got %d", joined.Room.MaxPlayers)
+	}
+}
+
 func TestHandlerIssuesPlayersWithTeamAndSlot(t *testing.T) {
 	handler := Handler(NewStore(5))
 	room := createRoom(t, handler)
@@ -217,6 +308,18 @@ func createRoom(t *testing.T, handler http.Handler) roomResponse {
 	var room roomResponse
 	decodeResponse(t, rec, &room)
 	return room
+}
+
+func joinMatchmaking(t *testing.T, handler http.Handler) matchmakingJoinResponse {
+	t.Helper()
+
+	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
+	}
+	var joined matchmakingJoinResponse
+	decodeResponse(t, rec, &joined)
+	return joined
 }
 
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {

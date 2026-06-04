@@ -1,14 +1,15 @@
 openapi: 3.1.0
 info:
-  title: Server Crawl Stars E1 REST API
+  title: Server Crawl Stars REST API
   version: 0.1.0
-  description: E1 debug REST API for health checks and room lifecycle testing.
+  description: Development REST API for health checks, simple client matchmaking, and E1 room lifecycle testing.
 x-stability: e1-debug
 servers:
   - url: http://localhost:8080
     description: Local development server
 tags:
   - name: Health
+  - name: Matchmaking
   - name: Rooms
 paths:
   /health:
@@ -23,6 +24,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /matchmaking/join:
+    post:
+      tags: [Matchmaking]
+      summary: Join a simple client-facing match
+      description: Finds an available waiting room or creates one, assigns a player, and starts the room when the second player joins.
+      operationId: joinMatchmaking
+      responses:
+        "201":
+          description: Matched player and room connection details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchmakingJoin"
+        "409":
+          description: Active room cap reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /rooms:
     get:
       tags: [Rooms]
@@ -152,9 +172,20 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Room"
+    MatchmakingJoin:
+      type: object
+      required: [room, player, webSocketPath]
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        player:
+          $ref: "#/components/schemas/Player"
+        webSocketPath:
+          type: string
+          example: /rooms/room-1/players/player-1
     Room:
       type: object
-      required: [id, status, players, latestSnapshot]
+      required: [id, status, players, maxPlayers, latestSnapshot]
       properties:
         id:
           type: string
@@ -166,6 +197,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Player"
+        maxPlayers:
+          type: integer
+          minimum: 1
+          example: 6
         latestSnapshot:
           $ref: "#/components/schemas/SnapshotSummary"
     Player:

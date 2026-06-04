@@ -171,3 +171,18 @@ Consequences:
 - Clean checkout에서 Go compile/test/build 전 `make docs-build` 또는 `make ci`가 필요합니다.
 - CI/CD는 Node.js setup과 docs build를 Go validation/build 전에 수행해야 합니다.
 - 이 결정은 docs delivery만 다루며, 인증, rate limit, matching queue, persistence, dashboard는 추가하지 않습니다.
+
+## ADR-0013: SL-49 Matchmaking은 단순 Room Join Connector로 제한
+
+Status: Accepted
+
+Context: SL-49는 Unity client가 수동 debug `/rooms` flow를 직접 호출하지 않고도 room/player 정보와 WebSocket path를 받을 수 있어야 합니다. 동시에 E2 범위는 production matchmaking queue, rating algorithm, auth, persistence, scheduler/runner framework를 포함하지 않습니다. 현재 simulation fixture의 `MaxPlayers`는 6이며 10명 확장은 후속 issue입니다.
+
+Decision: Server는 `POST /matchmaking/join`을 추가합니다. Handler는 기존 `internal/rooms.Store`를 재사용해 waiting room 중 fixture max player cap 안에 여유가 있는 room을 찾고, 없으면 새 waiting room을 만듭니다. Player 발급 규칙은 manual `/rooms/{roomID}/players`와 동일하게 `player-*`, red/blue alternating team, team slot을 사용합니다. Matchmaking join으로 room player count가 2가 되면 room-local simulation ticker를 자동 start합니다. Matchmaking path는 `started` room에 late join하지 않고 다른 waiting room을 찾거나 새 room을 만듭니다. Response는 `room`, `player`, `webSocketPath`를 포함합니다.
+
+Consequences:
+
+- Client는 `POST /matchmaking/join` 응답만으로 `WS /rooms/{roomID}/players/{playerID}`에 연결할 수 있습니다.
+- Existing `/rooms` manual debug lifecycle과 WebSocket snapshot flow는 유지됩니다.
+- Active room cap, room TTL cleanup, fixture max player cap은 기존 in-memory store boundary를 따릅니다.
+- Production matching queue, persistence, auth, dashboard, scheduler/runner/orchestration은 여전히 제외됩니다.

@@ -9,6 +9,7 @@ const asyncAPI = YAML.parse(asyncAPIText);
 
 const requiredRESTPaths = [
   "/health",
+  "/matchmaking/join",
   "/rooms",
   "/rooms/{roomID}",
   "/rooms/{roomID}/players",

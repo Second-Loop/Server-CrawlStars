@@ -36,7 +36,7 @@ function renderOpenAPI(spec) {
   return page({
     title: "OpenAPI",
     eyebrow: "REST API",
-    description: "E1 debug REST API for health checks and room lifecycle testing.",
+    description: spec.info?.description ?? "Development REST API.",
     rawPath: "/openapi.yaml",
     content: `
       <section class="panel">
