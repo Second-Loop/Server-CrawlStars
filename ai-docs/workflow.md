@@ -126,6 +126,16 @@ make ci
 
 Behavior, workflow, architecture가 바뀌면 docs를 업데이트합니다.
 
+REST endpoint, response/error shape, WebSocket route, message payload, field name, stability marker가 바뀌면 같은 변경에서 다음을 확인합니다.
+
+- REST 계약 변경: `api/openapi.yaml`
+- WebSocket 계약 변경: `api/asyncapi.yaml`
+- 사람이 읽는 계약 설명: `ai-docs/api-reference.md`
+- 문서화 정책 또는 계약 경계 변경: `ai-docs/api-docs.md`
+- architecture/protocol decision에 영향이 있으면 `ai-docs/architecture.md`, `ai-docs/protocol.md`, `ai-docs/decisions.md`
+
+계약 변경이 포함된 작업은 `make ci` 또는 최소 `make docs-build` 결과를 PR/Linear에 남깁니다.
+
 - `AGENTS.md`: agent를 위한 얇은 entrypoint
 - `ai-docs/architecture.md`: server architecture 개요
 - `ai-docs/workflow.md`: 상세 협업 workflow

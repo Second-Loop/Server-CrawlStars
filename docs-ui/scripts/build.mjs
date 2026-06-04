@@ -1,11 +1,8 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import YAML from "yaml";
 
 const root = new URL("../../", import.meta.url);
 const openAPIText = await readFile(new URL("api/openapi.yaml", root), "utf8");
 const asyncAPIText = await readFile(new URL("api/asyncapi.yaml", root), "utf8");
-const openAPI = YAML.parse(openAPIText);
-const asyncAPI = YAML.parse(asyncAPIText);
 
 const embedAPI = new URL("internal/docs/api/", root);
 const embedStatic = new URL("internal/docs/static/", root);
@@ -17,54 +14,48 @@ await mkdir(embedStatic, { recursive: true });
 
 await writeFile(new URL("openapi.yaml", embedAPI), openAPIText);
 await writeFile(new URL("asyncapi.yaml", embedAPI), asyncAPIText);
-await writeFile(new URL("openapi.html", embedStatic), renderOpenAPI(openAPI));
-await writeFile(new URL("asyncapi.html", embedStatic), renderAsyncAPI(asyncAPI));
+await writeFile(new URL("openapi.html", embedStatic), renderOpenAPI(openAPIText));
+await writeFile(new URL("asyncapi.html", embedStatic), renderAsyncAPI(asyncAPIText));
 
-function renderOpenAPI(spec) {
-  const operations = [];
-  for (const [path, methods] of Object.entries(spec.paths ?? {})) {
-    for (const [method, operation] of Object.entries(methods)) {
-      operations.push({
-        method: method.toUpperCase(),
-        path,
-        summary: operation.summary ?? "",
-        responses: Object.keys(operation.responses ?? {}),
+function renderOpenAPI(specText) {
+  assertSpecPresent(specText, "openapi: 3.1.0", "OpenAPI");
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+    <title>OpenAPI - Server Crawl Stars</title>
+    <style>
+      body { margin: 0; background: #f7f9fc; }
+      .topbar { display: none; }
+      .swagger-ui .info { margin: 32px 0 18px; }
+      .swagger-ui .scheme-container { box-shadow: none; border: 1px solid #d8dde8; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      window.ui = SwaggerUIBundle({
+        url: "/openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        displayRequestDuration: true,
+        tryItOutEnabled: true,
+        persistAuthorization: false,
       });
-    }
-  }
-
-  return page({
-    title: "OpenAPI",
-    eyebrow: "REST API",
-    description: "E1 debug REST API for health checks and room lifecycle testing.",
-    rawPath: "/openapi.yaml",
-    content: `
-      <section class="panel">
-        <h2>REST endpoints</h2>
-        <div class="operation-list">
-          ${operations.map((op) => `
-            <article class="operation">
-              <div class="method">${escapeHTML(op.method)}</div>
-              <div>
-                <h3>${escapeHTML(op.path)}</h3>
-                <p>${escapeHTML(op.summary)}</p>
-                <small>Responses: ${escapeHTML(op.responses.join(", "))}</small>
-              </div>
-            </article>
-          `).join("")}
-        </div>
-      </section>
-      <section class="panel">
-        <h2>Error codes</h2>
-        <p><code>room_not_found</code>, <code>room_cap_reached</code>, <code>room_full</code>, <code>room_has_no_players</code>, <code>method_not_allowed</code>, <code>not_found</code></p>
-      </section>
-    `,
-  });
+    </script>
+  </body>
+</html>
+`;
 }
 
-function renderAsyncAPI(spec) {
-  const channel = spec.channels?.roomPlayer;
-  const schemas = Object.keys(spec.components?.schemas ?? {});
+function renderAsyncAPI(specText) {
+  const channelAddress = extractLineValue(specText, "    address:");
+  const schemas = parseAsyncAPISchemas(specText);
 
   return page({
     title: "AsyncAPI",
@@ -77,7 +68,7 @@ function renderAsyncAPI(spec) {
         <article class="operation">
           <div class="method">WS</div>
           <div>
-            <h3>${escapeHTML(channel?.address ?? "")}</h3>
+            <h3>${escapeHTML(channelAddress)}</h3>
             <p>Connect with a REST-issued room ID and player ID.</p>
           </div>
         </article>
@@ -105,6 +96,39 @@ function renderAsyncAPI(spec) {
       </section>
     `,
   });
+}
+
+function parseAsyncAPISchemas(specText) {
+  const schemas = [];
+  let inSchemas = false;
+
+  for (const line of specText.split(/\r?\n/)) {
+    if (line === "  schemas:") {
+      inSchemas = true;
+      continue;
+    }
+    if (!inSchemas) {
+      continue;
+    }
+
+    const schemaMatch = /^    ([A-Za-z][A-Za-z0-9]*):$/.exec(line);
+    if (schemaMatch) {
+      schemas.push(schemaMatch[1]);
+    }
+  }
+
+  return schemas;
+}
+
+function assertSpecPresent(specText, marker, name) {
+  if (!specText.includes(marker)) {
+    throw new Error(`${name} spec is missing ${marker}`);
+  }
+}
+
+function extractLineValue(text, prefix) {
+  const line = text.split(/\r?\n/).find((candidate) => candidate.startsWith(prefix));
+  return line ? line.slice(prefix.length).trim() : "";
 }
 
 function page({ title, eyebrow, description, rawPath, content }) {

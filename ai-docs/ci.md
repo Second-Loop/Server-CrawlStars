@@ -6,11 +6,10 @@ GitHub Actions는 pull request와 `main` push에서 실행되어야 합니다.
 
 - checkout
 - `go.mod` 기준 Go setup
-- `docs-ui/package-lock.json` 기준 Node.js setup
+- `.mise.toml`/CI 설정 기준 Node.js setup
 - `go mod download`
-- `npm --prefix docs-ui ci`
-- `npm --prefix docs-ui run validate`
-- `npm --prefix docs-ui run build`
+- docs spec validation
+- docs embed asset build
 - gofmt check
 - `go vet ./...`
 - `go test ./...`
@@ -20,8 +19,12 @@ GitHub Actions는 pull request와 `main` push에서 실행되어야 합니다.
 ## 로컬 동등 명령
 
 ```sh
+mise trust
+mise install
 make ci
 ```
+
+Makefile은 PATH에 `go`, `gofmt`, `node`가 없으면 `mise exec -- ...`를 fallback으로 사용합니다. macOS에서 mise가 shell에 아직 연결되지 않은 초기 세팅도 고려해 `/opt/homebrew/bin/mise`를 찾습니다.
 
 Makefile은 `GOCACHE`를 레포지토리 내부로 설정합니다. 따라서 sandboxed local run이 user-level Go cache 권한에 의존하지 않습니다.
 
