@@ -2,7 +2,7 @@
 
 ## Scope
 
-이 문서는 SL-47 기준 E1 debug API를 사람이 읽기 쉬운 형태로 요약합니다. Raw machine-readable source of truth는 다음 파일입니다.
+이 문서는 SL-49 기준 simple client matchmaking API와 E1 debug API를 사람이 읽기 쉬운 형태로 요약합니다. Raw machine-readable source of truth는 다음 파일입니다.
 
 ```text
 api/openapi.yaml
@@ -22,16 +22,49 @@ GET /asyncapi.yaml
 
 ## REST API
 
-REST endpoint는 E1 room lifecycle을 수동 검증하기 위한 debug surface입니다.
+REST endpoint는 client-facing simple matchmaking surface와 E1 room lifecycle을 수동 검증하기 위한 debug surface를 함께 제공합니다.
 
 ```text
 GET /health
+POST /matchmaking/join
 GET /rooms
 POST /rooms
 GET /rooms/{roomID}
 POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
+
+Matchmaking join response shape:
+
+```json
+{
+  "room": {
+    "id": "room-1",
+    "status": "waiting",
+    "players": [
+      {
+        "id": "player-1",
+        "team": "red",
+        "slot": 0
+      }
+    ],
+    "maxPlayers": 6,
+    "latestSnapshot": {
+      "tick": 0,
+      "playerCount": 1,
+      "projectileCount": 0
+    }
+  },
+  "player": {
+    "id": "player-1",
+    "team": "red",
+    "slot": 0
+  },
+  "webSocketPath": "/rooms/room-1/players/player-1"
+}
+```
+
+`POST /matchmaking/join`은 waiting room 중 여유가 있는 room에 player를 배정하고, 없으면 새 room을 만듭니다. 두 번째 player가 같은 waiting room에 들어오면 room simulation을 자동으로 start합니다. Matchmaking path는 이미 `started`인 room에 late join하지 않고 새 waiting room을 찾거나 만듭니다.
 
 Room response shape:
 
@@ -46,6 +79,7 @@ Room response shape:
       "slot": 0
     }
   ],
+  "maxPlayers": 6,
   "latestSnapshot": {
     "tick": 0,
     "playerCount": 1,
@@ -127,7 +161,9 @@ Client-facing WebSocket field names intentionally follow the Unity prototype voc
 
 ## E1 Constraints
 
-These APIs are `e1-debug` surfaces. They do not implement production authentication, rate limiting, matchmaking queue, persistence, gameplay scoring, hit detection, death, respawn, admin dashboard, scheduler, or Kubernetes deployment.
+These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, hit detection, death, respawn, admin dashboard, scheduler, or Kubernetes deployment.
+
+The current player cap is `simulation.StaticMapFixture().MaxPlayers = 6`. Ten-player expansion is intentionally out of scope.
 
 Room cleanup follows the SL-43 in-memory TTL rules:
 

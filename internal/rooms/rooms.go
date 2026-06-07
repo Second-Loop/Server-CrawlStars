@@ -58,6 +58,7 @@ type roomResponse struct {
 	ID             string           `json:"id"`
 	Status         RoomStatus       `json:"status"`
 	Players        []playerResponse `json:"players"`
+	MaxPlayers     int              `json:"maxPlayers"`
 	LatestSnapshot snapshotSummary  `json:"latestSnapshot"`
 }
 
@@ -65,6 +66,12 @@ type playerResponse struct {
 	ID   string `json:"id"`
 	Team string `json:"team"`
 	Slot int    `json:"slot"`
+}
+
+type matchmakingJoinResponse struct {
+	Room          roomResponse   `json:"room"`
+	Player        playerResponse `json:"player"`
+	WebSocketPath string         `json:"webSocketPath"`
 }
 
 type snapshotSummary struct {
@@ -135,6 +142,20 @@ func Handler(store *Store) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/matchmaking/join" {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+				return
+			}
+			joined, err := store.joinMatchmaking()
+			if err != nil {
+				writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, joined)
+			return
+		}
+
 		if r.URL.Path == "/rooms" {
 			switch r.Method {
 			case http.MethodGet:
@@ -273,17 +294,7 @@ func (s *Store) createRoom() (roomResponse, error) {
 		return roomResponse{}, errString("active room cap reached")
 	}
 
-	s.nextRoomSeq++
-	now := s.clock.Now()
-	room := &room{
-		ID:             "room-" + itoa(s.nextRoomSeq),
-		Status:         RoomStatusWaiting,
-		pendingInputs:  make(map[string]simulation.InputCommand),
-		clients:        make(map[string]*websocket.Conn),
-		createdAt:      now,
-		lastActivityAt: now,
-	}
-	s.rooms[room.ID] = room
+	room := s.createRoomLocked()
 	return room.toResponse(), nil
 }
 
@@ -314,16 +325,43 @@ func (s *Store) addPlayer(roomID string) (playerResponse, error) {
 		return playerResponse{}, errString("room full")
 	}
 
-	s.nextPlayerSeq++
-	playerIndex := len(room.Players)
-	player := playerResponse{
-		ID:   "player-" + itoa(s.nextPlayerSeq),
-		Team: teamForIndex(playerIndex),
-		Slot: playerIndex / 2,
+	return s.addPlayerLocked(room), nil
+}
+
+func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
+	s.cleanupExpired()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room := s.findWaitingRoomWithCapacity()
+	if room == nil {
+		if len(s.rooms) >= s.maxActiveRooms {
+			return matchmakingJoinResponse{}, errString("active room cap reached")
+		}
+		room = s.createRoomLocked()
 	}
-	room.Players = append(room.Players, player)
-	room.lastActivityAt = s.clock.Now()
-	return player, nil
+
+	player := s.addPlayerLocked(room)
+	if len(room.Players) == 2 {
+		s.startRoomLocked(room)
+	}
+
+	roomResponse := room.toResponse()
+	return matchmakingJoinResponse{
+		Room:          roomResponse,
+		Player:        player,
+		WebSocketPath: webSocketPath(roomResponse.ID, player.ID),
+	}, nil
+}
+
+func (s *Store) findWaitingRoomWithCapacity() *room {
+	for _, room := range s.rooms {
+		if room.Status == RoomStatusWaiting && len(room.Players) < simulation.StaticMapFixture().MaxPlayers {
+			return room
+		}
+	}
+	return nil
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
@@ -340,6 +378,39 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 		return roomResponse{}, errString("room has no players")
 	}
 
+	s.startRoomLocked(room)
+	return room.toResponse(), nil
+}
+
+func (s *Store) createRoomLocked() *room {
+	now := s.clock.Now()
+	s.nextRoomSeq++
+	room := &room{
+		ID:             "room-" + itoa(s.nextRoomSeq),
+		Status:         RoomStatusWaiting,
+		pendingInputs:  make(map[string]simulation.InputCommand),
+		clients:        make(map[string]*websocket.Conn),
+		createdAt:      now,
+		lastActivityAt: now,
+	}
+	s.rooms[room.ID] = room
+	return room
+}
+
+func (s *Store) addPlayerLocked(room *room) playerResponse {
+	s.nextPlayerSeq++
+	playerIndex := len(room.Players)
+	player := playerResponse{
+		ID:   "player-" + itoa(s.nextPlayerSeq),
+		Team: teamForIndex(playerIndex),
+		Slot: playerIndex / 2,
+	}
+	room.Players = append(room.Players, player)
+	room.lastActivityAt = s.clock.Now()
+	return player
+}
+
+func (s *Store) startRoomLocked(room *room) {
 	now := s.clock.Now()
 	room.Status = RoomStatusStarted
 	room.lastActivityAt = now
@@ -354,9 +425,8 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 	if room.ticker == nil {
 		room.ticker = s.clock.NewTicker(time.Second / time.Duration(simulation.TickRate))
 		room.stop = make(chan struct{})
-		go s.runRoom(roomID, room.ticker, room.stop)
+		go s.runRoom(room.ID, room.ticker, room.stop)
 	}
-	return room.toResponse(), nil
 }
 
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
@@ -583,9 +653,10 @@ func (r *room) toResponse() roomResponse {
 	players := make([]playerResponse, len(r.Players))
 	copy(players, r.Players)
 	return roomResponse{
-		ID:      r.ID,
-		Status:  r.Status,
-		Players: players,
+		ID:         r.ID,
+		Status:     r.Status,
+		Players:    players,
+		MaxPlayers: simulation.StaticMapFixture().MaxPlayers,
 		LatestSnapshot: snapshotSummary{
 			Tick:            0,
 			PlayerCount:     len(players),
@@ -601,6 +672,10 @@ func (r *room) hasPlayer(playerID string) bool {
 		}
 	}
 	return false
+}
+
+func webSocketPath(roomID string, playerID string) string {
+	return "/rooms/" + roomID + "/players/" + playerID
 }
 
 func (r *room) isExpired(now time.Time) bool {

@@ -5,6 +5,7 @@ const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.me
 
 const requiredRESTPaths = [
   "/health",
+  "/matchmaking/join",
   "/rooms",
   "/rooms/{roomID}",
   "/rooms/{roomID}/players",

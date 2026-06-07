@@ -38,3 +38,22 @@ func TestNewMuxServesDocsRoutes(t *testing.T) {
 		})
 	}
 }
+
+func TestNewMuxServesMatchmakingJoin(t *testing.T) {
+	handler := newMux()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("expected json content type, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), `"webSocketPath":"/rooms/room-1/players/player-1"`) {
+		t.Fatalf("expected matchmaking connection info, got %s", rec.Body.String())
+	}
+}
