@@ -24,6 +24,12 @@ const requiredWebSocketFields = [
 
 assert(hasLine(openAPIText, "openapi: 3.1.0"), "api/openapi.yaml must use OpenAPI 3.1.0");
 assert(hasLine(openAPIText, "x-stability: e1-debug"), "api/openapi.yaml must mark x-stability: e1-debug");
+assert(hasLine(openAPIText, "  - url: /"), "api/openapi.yaml must default Swagger UI to the current server origin");
+assert(hasLine(openAPIText, "  - url: http://localhost:8080"), "api/openapi.yaml must keep localhost as a local development server");
+assert(
+  openAPIText.indexOf("  - url: /") < openAPIText.indexOf("  - url: http://localhost:8080"),
+  "api/openapi.yaml must list the current server origin before localhost",
+);
 for (const path of requiredRESTPaths) {
   assert(hasLine(openAPIText, `  ${path}:`), `api/openapi.yaml is missing ${path}`);
 }
