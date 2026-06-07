@@ -173,8 +173,8 @@ SL-43 기준 `internal/rooms`는 in-memory E1 debug room이 public 환경에서 
 SL-47 기준 API documentation은 source spec과 hosted docs UI로 나뉩니다.
 
 - Source spec은 `api/openapi.yaml`, `api/asyncapi.yaml`입니다.
-- `docs-ui` build는 source spec을 parse하고 `internal/docs/api/`, `internal/docs/static/`에 embed 대상 파일을 생성합니다.
+- `docs-ui` build는 dependency-free Node script로 source spec을 복사하고 `internal/docs/api/`, `internal/docs/static/`에 embed 대상 파일을 생성합니다.
 - Running server는 `GET /openapi`, `GET /asyncapi`, `GET /openapi.yaml`, `GET /asyncapi.yaml`을 노출합니다.
-- Docs UI는 no-CDN static HTML/CSS로 생성하고 server binary에 embed합니다.
+- REST docs UI는 Swagger UI CDN wrapper로, WebSocket docs UI는 repository-owned static HTML/CSS로 생성하고 server binary에 embed합니다.
 - 생성된 embed 파일은 commit하지 않으며 `make ci`와 GitHub Actions가 build stage에서 재생성합니다.
 - 이 문서화 작업은 E1 debug contract를 설명할 뿐, 인증, rate limit, matchmaking, persistence, dashboard를 추가하지 않습니다.
