@@ -5,6 +5,8 @@ info:
   description: E1 debug REST API for health checks and room lifecycle testing.
 x-stability: e1-debug
 servers:
+  - url: /
+    description: Current server origin
   - url: http://localhost:8080
     description: Local development server
 tags:

@@ -18,7 +18,7 @@ GET /openapi.yaml
 GET /asyncapi.yaml
 ```
 
-`/openapi`와 `/asyncapi`는 no-CDN static UI입니다. `/openapi.yaml`과 `/asyncapi.yaml`은 client, test, tool이 읽는 raw spec입니다.
+`/openapi`와 `/asyncapi`는 human-readable UI입니다. `/openapi` Swagger UI의 기본 server는 현재 접속한 server origin(`/`)이며, `http://localhost:8080`은 local development 선택지로 유지합니다. `/openapi.yaml`과 `/asyncapi.yaml`은 client, test, tool이 읽는 raw spec입니다.
 
 ## REST API
 
