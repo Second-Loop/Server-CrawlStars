@@ -131,6 +131,7 @@ GET /openapi
 GET /asyncapi
 GET /openapi.yaml
 GET /asyncapi.yaml
+POST /matchmaking/join
 GET /rooms
 POST /rooms
 GET /rooms/{roomID}
@@ -138,6 +139,8 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 WS /rooms/{roomID}/players/{playerID}
 ```
+
+`POST /matchmaking/join`은 client-facing simple matching endpoint입니다. Response의 `webSocketPath`는 같은 server origin에서 연결할 WebSocket path를 제공합니다.
 
 Response:
 

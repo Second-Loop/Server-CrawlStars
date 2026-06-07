@@ -128,6 +128,19 @@ SL-41 기준 room REST API는 E1 개발/검증용 debug surface입니다.
 - Latest snapshot summary는 debug 요약이며, 현재는 `tick`, `playerCount`, `projectileCount`만 포함합니다.
 - 이 API는 실제 Unity gameplay client가 장기 의존할 정식 contract가 아닙니다.
 
+## SL-49 Simple Matchmaking Boundary
+
+SL-49 기준 server는 Unity client가 room/player 발급과 WebSocket path를 한 번에 받을 수 있도록 `POST /matchmaking/join`을 제공합니다.
+
+- Waiting room 중 `simulation.StaticMapFixture().MaxPlayers` 기준 여유가 있는 room을 찾습니다.
+- 여유 room이 없으면 새 waiting room을 만듭니다.
+- Player 발급은 `/rooms/{roomID}/players`와 같은 `playerID`, `team`, `slot` 규칙을 사용합니다.
+- Room player count가 2가 되는 join에서 room simulation을 자동 start합니다.
+- Matchmaking path는 이미 `started`인 room에 late join하지 않습니다.
+- Response는 `room`, `player`, `webSocketPath`를 포함합니다.
+- 현재 cap은 fixture 기준 6명이며, 10명 확장은 후속 issue 범위입니다.
+- Matching algorithm, auth, persistence, production queue, scheduler/runner/dashboard는 추가하지 않습니다.
+
 ## E1 WebSocket Room Boundary
 
 SL-42 기준 WebSocket endpoint는 E2 client integration을 준비하는 E1 server contract surface입니다.

@@ -35,6 +35,7 @@ func newMux() http.Handler {
 	mux.Handle("/openapi.yaml", docsHandler)
 	mux.Handle("/asyncapi.yaml", docsHandler)
 	roomHandler := rooms.Handler(rooms.NewStore(5))
+	mux.Handle("/matchmaking/join", roomHandler)
 	mux.Handle("/rooms", roomHandler)
 	mux.Handle("/rooms/", roomHandler)
 	return mux
