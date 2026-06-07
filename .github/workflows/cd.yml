@@ -32,17 +32,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: docs-ui/package-lock.json
 
       - name: Download modules
         run: go mod download
 
       - name: Build docs UI
         run: |
-          npm --prefix docs-ui ci
-          npm --prefix docs-ui run validate
-          npm --prefix docs-ui run build
+          node docs-ui/scripts/validate.mjs
+          node docs-ui/scripts/build.mjs
 
       - name: Test
         run: go test ./...

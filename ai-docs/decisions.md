@@ -157,13 +157,13 @@ Consequences:
 - Public debug API exposure risk는 room cap, per-room player cap, TTL로 낮춥니다.
 - Invalid input regression은 error message와 이후 snapshot stream을 함께 검증합니다.
 
-## ADR-0012: E1 API Docs는 Server-Hosted No-CDN Static UI로 제공
+## ADR-0012: E1 API Docs는 Server-Hosted UI와 Raw Spec으로 제공
 
 Status: Accepted
 
-Context: SL-47은 REST raw spec, WebSocket raw spec, human-readable docs를 한 번에 제공해야 합니다. E1 server는 이미 Cloudflare Tunnel 뒤에서 실행되므로 별도 CDN이나 GitHub Pages를 먼저 만들 필요가 없습니다. Clean build에서 docs UI를 재생성할 수 있어야 하고, generated assets가 source of truth처럼 commit되면 spec drift가 생길 수 있습니다.
+Context: SL-47은 REST raw spec, WebSocket raw spec, human-readable docs를 한 번에 제공해야 합니다. E1 server는 이미 Cloudflare Tunnel 뒤에서 실행됩니다. Clean build에서 docs UI를 재생성할 수 있어야 하고, generated assets가 source of truth처럼 commit되면 spec drift가 생길 수 있습니다. SL-51에서는 REST 문서의 가독성과 browser 기반 debug request 경험을 위해 Swagger UI 사용을 허용합니다.
 
-Decision: Source spec은 `api/openapi.yaml`, `api/asyncapi.yaml`에 둡니다. `docs-ui` build는 source spec을 parse하고 `internal/docs/api/`, `internal/docs/static/` embed 대상 파일을 생성합니다. Server는 `GET /openapi`, `GET /asyncapi`로 human-readable static UI를, `GET /openapi.yaml`, `GET /asyncapi.yaml`로 raw spec을 제공합니다. Generated embed assets는 commit하지 않고 `make ci`, CI, CD build stage에서 재생성합니다. UI는 no-CDN static HTML/CSS로 유지합니다.
+Decision: Source spec은 `api/openapi.yaml`, `api/asyncapi.yaml`에 둡니다. `docs-ui` build는 dependency-free Node script로 `internal/docs/api/`, `internal/docs/static/` embed 대상 파일을 생성합니다. Server는 `GET /openapi`, `GET /asyncapi`로 human-readable UI를, `GET /openapi.yaml`, `GET /asyncapi.yaml`로 raw spec을 제공합니다. REST `/openapi`는 Swagger UI CDN wrapper로 제공하고, WebSocket `/asyncapi`는 repository-owned static HTML/CSS로 유지합니다. Generated embed assets는 commit하지 않고 `make ci`, CI, CD build stage에서 재생성합니다.
 
 Consequences:
 
