@@ -18,7 +18,9 @@ SL-39부터 movement는 client prototype 이름과 값을 맞춘 `MoveDir * Spee
 
 SL-40부터 attack pressed input은 같은 `Step` tick에서 처리됩니다. `PressedAttack = true`이고 `AttackDir`가 zero vector가 아니면 `ProjectileData` skeleton이 snapshot에 추가됩니다. Client simulator 순서에 맞춰 player movement/collision을 먼저 처리하고, 새 projectile은 이동 후 player `Pos`에서 생성합니다. `ProjectileData`의 기본값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다.
 
-SL-40은 attack/projectile skeleton만 정의합니다. Projectile movement, projectile collision, hit detection, HP, death, respawn, score는 protocol behavior로 구현하지 않습니다.
+SL-53부터 기존 projectile은 다음 `Step` tick부터 `Dir * Speed * TickDuration` 기준으로 이동합니다. 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다. Projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`로 표시되며, destroyed projectile은 이후 tick에서 더 이동하지 않습니다.
+
+SL-53은 projectile movement와 wall/boundary destroy lifecycle만 정의합니다. Projectile-player collision, hit detection, HP, death, respawn, score는 protocol behavior로 구현하지 않습니다.
 
 ## E1 WebSocket Room Contract
 

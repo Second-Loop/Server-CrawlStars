@@ -420,6 +420,124 @@ func TestStepProcessesMovementAndAttackInSameTick(t *testing.T) {
 	assertVector(t, "projectile direction", snapshot.Projectiles[0].Dir, Vector2{X: 0, Y: 1})
 }
 
+func TestStepMovesExistingProjectileOnNextTick(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	created := state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	assertVector(t, "new projectile position", created.Projectiles[0].Pos, start)
+
+	moved := state.Step(nil)
+
+	if len(moved.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(moved.Projectiles))
+	}
+	assertVector(t, "moved projectile position", moved.Projectiles[0].Pos, Vector2{
+		X: start.X + DefaultProjectileSpeed*TickDuration,
+		Y: start.Y,
+	})
+	if moved.Projectiles[0].IsDestroyed {
+		t.Fatal("expected projectile to remain active after open movement")
+	}
+}
+
+func TestStepDestroysProjectileWhenItHitsWall(t *testing.T) {
+	gameMap := StaticMapFixture()
+	wallCenter := gameMap.WorldPos(4, 1)
+	wallMinX := wallCenter.X - TileSize/2
+	start := Vector2{
+		X: wallMinX - DefaultProjectileRadius - DefaultProjectileSpeed*TickDuration + 0.001,
+		Y: wallCenter.Y,
+	}
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: gameMap,
+	})
+
+	state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	destroyed := state.Step(nil)
+
+	if len(destroyed.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(destroyed.Projectiles))
+	}
+	if !destroyed.Projectiles[0].IsDestroyed {
+		t.Fatal("expected projectile to be destroyed after hitting wall")
+	}
+	destroyedPosition := destroyed.Projectiles[0].Pos
+
+	afterDestroyed := state.Step(nil)
+
+	if len(afterDestroyed.Projectiles) != 1 {
+		t.Fatalf("expected destroyed projectile to remain in snapshot, got %d", len(afterDestroyed.Projectiles))
+	}
+	if !afterDestroyed.Projectiles[0].IsDestroyed {
+		t.Fatal("expected projectile to stay destroyed")
+	}
+	assertVector(t, "destroyed projectile position", afterDestroyed.Projectiles[0].Pos, destroyedPosition)
+}
+
+func TestStepDestroysProjectileWhenItLeavesMapBounds(t *testing.T) {
+	gameMap := StaticMapFixture()
+	mapMaxX := gameMap.WorldPos(gameMap.Width-1, 0).X + TileSize/2
+	start := Vector2{
+		X: mapMaxX - DefaultProjectileRadius - DefaultProjectileSpeed*TickDuration + 0.001,
+		Y: gameMap.WorldPos(3, 1).Y,
+	}
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: gameMap,
+	})
+
+	state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	snapshot := state.Step(nil)
+
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	if !snapshot.Projectiles[0].IsDestroyed {
+		t.Fatal("expected projectile to be destroyed after leaving map bounds")
+	}
+}
+
 func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot int, position Vector2) {
 	t.Helper()
 

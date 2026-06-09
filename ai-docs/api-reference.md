@@ -159,6 +159,8 @@ Invalid input error message:
 
 Client-facing WebSocket field names intentionally follow the Unity prototype vocabulary: `MoveDir`, `AttackDir`, `PressedAttack`, `Type`, `Snapshot`, `Error`, `Id`, `OwnerId`, `Pos`, `Dir`, `IsDestroyed`.
 
+Projectile snapshots keep destroyed projectiles visible with `IsDestroyed: true`. Existing projectiles move on later ticks by `Dir * Speed * TickDuration`, and wall or map-boundary collision marks them destroyed.
+
 ## E1 Constraints
 
 These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, hit detection, death, respawn, admin dashboard, scheduler, or Kubernetes deployment.

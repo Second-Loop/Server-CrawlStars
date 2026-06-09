@@ -186,3 +186,17 @@ Consequences:
 - Existing `/rooms` manual debug lifecycle과 WebSocket snapshot flow는 유지됩니다.
 - Active room cap, room TTL cleanup, fixture max player cap은 기존 in-memory store boundary를 따릅니다.
 - Production matching queue, persistence, auth, dashboard, scheduler/runner/orchestration은 여전히 제외됩니다.
+
+## ADR-0014: E1 Projectile Movement는 Existing Projectile Tick으로 처리
+
+Status: Accepted
+
+Context: SL-53은 SL-40에서 snapshot에만 추가되던 `ProjectileData` skeleton을 실제 tick 흐름에서 이동시키고, wall 또는 map boundary에 닿으면 destroyed state로 표시해야 합니다. 이 단계는 player hit, HP, death, respawn, score를 아직 포함하지 않습니다.
+
+Decision: `internal/simulation.State.Step`은 input으로 새 projectile을 만들기 전에 기존 projectile을 먼저 이동합니다. Projectile 이동은 `Dir * Speed * TickDuration` 기준입니다. 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다. 이동한 projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`로 표시합니다. Destroyed projectile은 snapshot에 남지만 이후 tick에서 더 이동하지 않습니다.
+
+Consequences:
+
+- Projectile 생성, 이동, 파괴 순서는 unit test로 재현할 수 있습니다.
+- WebSocket room tick loop는 같은 `State.Step` 결과를 broadcast하므로 별도 transport behavior가 필요하지 않습니다.
+- Projectile-player collision, HP, death behavior는 SL-54에서 별도 acceptance criteria와 tests로 추가해야 합니다.
