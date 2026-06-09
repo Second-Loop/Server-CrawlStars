@@ -336,6 +336,76 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 	}
 }
 
+func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	red := createPlayer(t, handler, room.ID)
+	blue := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	defer redConn.Close(websocket.StatusNormalClosure, "")
+	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	defer blueConn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, red.ID)
+	waitForAttachedClient(t, store, room.ID, blue.ID)
+
+	var movement snapshotMessage
+	for i := 0; i < 36; i++ {
+		writeWSJSON(t, redConn, inputMessage{MoveDir: simulation.Vector2{X: 1, Y: 0}})
+		waitForPendingInput(t, store, room.ID, red.ID)
+		movement = tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	}
+	redPlayer := findSnapshotPlayer(t, movement.Snapshot, simulation.PlayerID(red.ID))
+	bluePlayer := findSnapshotPlayer(t, movement.Snapshot, simulation.PlayerID(blue.ID))
+	if redPlayer.Pos.X <= 0 {
+		t.Fatalf("expected red movement to be visible in both snapshots, got %+v", redPlayer.Pos)
+	}
+	if bluePlayer.HP != simulation.DefaultPlayerHP || bluePlayer.IsDead {
+		t.Fatalf("expected blue to start alive at full HP, got %+v", bluePlayer)
+	}
+
+	expectedHP := simulation.DefaultPlayerHP
+	var hit snapshotMessage
+	for hitCount := 0; hitCount < 10; hitCount++ {
+		writeWSJSON(t, redConn, inputMessage{
+			AttackDir:     simulation.Vector2{X: 0, Y: -1},
+			PressedAttack: true,
+		})
+		waitForPendingInput(t, store, room.ID, red.ID)
+		hit = tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+
+		for i := 0; i < 8; i++ {
+			hit = tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+			bluePlayer = findSnapshotPlayer(t, hit.Snapshot, simulation.PlayerID(blue.ID))
+			if bluePlayer.HP < expectedHP {
+				expectedHP -= simulation.DefaultProjectileDamage
+				if bluePlayer.HP != expectedHP {
+					t.Fatalf("expected blue HP %f after hit %d, got %+v", expectedHP, hitCount+1, bluePlayer)
+				}
+				break
+			}
+		}
+		if bluePlayer.HP != expectedHP {
+			t.Fatalf("expected hit %d to be observed by both clients, last blue state %+v", hitCount+1, bluePlayer)
+		}
+	}
+
+	bluePlayer = findSnapshotPlayer(t, hit.Snapshot, simulation.PlayerID(blue.ID))
+	if bluePlayer.HP != 0 || !bluePlayer.IsDead {
+		t.Fatalf("expected blue death state in both snapshots, got %+v", bluePlayer)
+	}
+	if len(hit.Snapshot.Projectiles) == 0 {
+		t.Fatal("expected hit/death snapshot to include projectile history")
+	}
+}
+
 type fakeClock struct {
 	ticks     chan time.Time
 	duration  time.Duration
@@ -432,6 +502,44 @@ func waitForDetachedClient(t *testing.T, store *Store, roomID string, playerID s
 	}
 
 	t.Fatalf("expected detached websocket client for player %s", playerID)
+}
+
+func tickAndReadMatchingSnapshots(t *testing.T, fakeClock *fakeClock, first *websocket.Conn, second *websocket.Conn) snapshotMessage {
+	t.Helper()
+
+	fakeClock.Tick()
+	firstMessage := readSnapshotMessage(t, first)
+	secondMessage := readSnapshotMessage(t, second)
+	assertMatchingSnapshots(t, firstMessage, secondMessage)
+	return firstMessage
+}
+
+func assertMatchingSnapshots(t *testing.T, first snapshotMessage, second snapshotMessage) {
+	t.Helper()
+
+	firstPayload, err := json.Marshal(first.Snapshot)
+	if err != nil {
+		t.Fatalf("marshal first snapshot: %v", err)
+	}
+	secondPayload, err := json.Marshal(second.Snapshot)
+	if err != nil {
+		t.Fatalf("marshal second snapshot: %v", err)
+	}
+	if string(firstPayload) != string(secondPayload) {
+		t.Fatalf("expected matching snapshots, got first %s and second %s", firstPayload, secondPayload)
+	}
+}
+
+func findSnapshotPlayer(t *testing.T, snapshot simulation.Snapshot, playerID simulation.PlayerID) simulation.PlayerData {
+	t.Helper()
+
+	for _, player := range snapshot.Players {
+		if player.ID == playerID {
+			return player
+		}
+	}
+	t.Fatalf("expected snapshot to include player %s", playerID)
+	return simulation.PlayerData{}
 }
 
 func createPlayer(t *testing.T, handler http.Handler, roomID string) playerResponse {
