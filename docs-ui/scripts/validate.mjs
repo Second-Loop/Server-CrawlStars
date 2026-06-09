@@ -20,6 +20,7 @@ const requiredWebSocketFields = [
   "Error",
   "Id",
   "OwnerId",
+  "HP",
 ];
 
 assert(hasLine(openAPIText, "openapi: 3.1.0"), "api/openapi.yaml must use OpenAPI 3.1.0");

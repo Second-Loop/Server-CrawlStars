@@ -313,6 +313,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 		`"MoveDir":{"x":1`,
 		`"AttackDir":{"x":0,"y":1}`,
 		`"PressedAttack":true`,
+		`"HP":100`,
 		`"IsDead":false`,
 		`"OwnerId":"` + player.ID + `"`,
 		`"Dir":{"x":0,"y":1}`,

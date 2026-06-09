@@ -174,7 +174,7 @@ Invalid input error message는 snapshot wrapper와 같은 top-level naming conve
 }
 ```
 
-Snapshot 내부의 `PlayerData`와 `ProjectileData` field는 client code와 맞춰 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed` 이름을 사용합니다. REST room debug API의 `id`, `status`, `players`, `latestSnapshot` field는 별도 debug surface로 유지합니다.
+Snapshot 내부의 `PlayerData`와 `ProjectileData` field는 client code와 맞춰 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `HP`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed` 이름을 사용합니다. REST room debug API의 `id`, `status`, `players`, `latestSnapshot` field는 별도 debug surface로 유지합니다.
 
 이 schema는 AsyncAPI spec으로 승격되기 전까지 `e1-debug` 안정성입니다.
 

@@ -20,7 +20,9 @@ SL-40부터 attack pressed input은 같은 `Step` tick에서 처리됩니다. `P
 
 SL-53부터 기존 projectile은 다음 `Step` tick부터 `Dir * Speed * TickDuration` 기준으로 이동합니다. 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다. Projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`로 표시되며, destroyed projectile은 이후 tick에서 더 이동하지 않습니다.
 
-SL-53은 projectile movement와 wall/boundary destroy lifecycle만 정의합니다. Projectile-player collision, hit detection, HP, death, respawn, score는 protocol behavior로 구현하지 않습니다.
+SL-54부터 `PlayerData.HP`는 현재 체력 값으로 snapshot에 포함됩니다. 기본 HP는 `100`이고 projectile hit은 `Damage`만큼 target HP를 줄입니다. Projectile circle이 owner가 아닌 live player circle과 겹치면 hit으로 처리하며, hit projectile은 `IsDestroyed = true`가 됩니다. HP가 `0` 이하가 되면 `HP = 0`, `IsDead = true`로 표시합니다. Owner 본인은 자기 projectile의 hit target에서 제외합니다.
+
+SL-54는 projectile-player collision, HP 감소, death snapshot만 정의합니다. Respawn, score, win/loss, friendly-fire policy 확장, character-specific stats는 protocol behavior로 구현하지 않습니다.
 
 ## E1 WebSocket Room Contract
 
@@ -54,7 +56,7 @@ Client input message는 E1 debug JSON입니다. Field 이름은 client `PlayerDa
 }
 ```
 
-Server snapshot message는 다음 wrapper를 사용합니다. Snapshot 안의 client-facing data field는 client code의 이름을 따라 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed`처럼 직렬화합니다.
+Server snapshot message는 다음 wrapper를 사용합니다. Snapshot 안의 client-facing data field는 client code의 이름을 따라 `Id`, `Pos`, `MoveDir`, `AttackDir`, `PressedAttack`, `HP`, `IsDead`, `OwnerId`, `Dir`, `IsDestroyed`처럼 직렬화합니다.
 
 ```json
 {
@@ -78,6 +80,7 @@ Server snapshot message는 다음 wrapper를 사용합니다. Snapshot 안의 cl
         },
         "Speed": 2,
         "Radius": 0.5,
+        "HP": 100,
         "PressedAttack": false,
         "IsDead": false
       }
