@@ -27,10 +27,10 @@ internal/rooms
 internal/simulation
   transport-independent simulation domain model
   manual Step(inputs) -> Snapshot contract
-  E1 static tile map movement and wall collision
+  E1 static tile map movement, projectile, hit, HP/death state
 ```
 
-현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint, E1 개발/검증용 room lifecycle REST endpoint, E1 WebSocket room endpoint, server-hosted API docs endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision, attack skeleton을 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store와 transport adapter이며, persistence, matchmaking queue, generic scheduler, production gameplay contract를 구현하지 않습니다.
+현재 서버는 로컬 및 CI 검증을 위한 `/health` endpoint, E1 개발/검증용 room lifecycle REST endpoint, E1 WebSocket room endpoint, server-hosted API docs endpoint를 노출합니다. `internal/simulation`은 REST, WebSocket, room lifecycle, matching을 모르는 순수 domain package입니다. 이 package는 E1 기준 static tile map, movement input, wall collision, attack/projectile state, projectile movement, hit, HP/death snapshot state를 처리합니다. `internal/rooms`는 E1 debug API용 in-memory room store와 transport adapter이며, persistence, matchmaking queue, generic scheduler, production gameplay contract를 구현하지 않습니다.
 
 ## Runtime 배포 구조
 

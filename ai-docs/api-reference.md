@@ -163,11 +163,27 @@ Projectile snapshots keep destroyed projectiles visible with `IsDestroyed: true`
 
 Player snapshots expose `HP` as current health. Projectile hits against non-owner live players subtract `Damage`; hit projectiles are destroyed, and players at `HP <= 0` are reported with `HP: 0` and `IsDead: true`.
 
+## Two-Player Validation Scenario
+
+For a manual server check, create or join one room with two players, open both WebSocket paths, then compare the snapshot stream from both connections.
+
+Expected checks:
+
+- Both clients receive the same `Snapshot.Tick`, `Players`, and `Projectiles` data for each broadcast tick.
+- Movement input from one player changes that player's `Pos` in both streams.
+- Projectile hits reduce the target player's `HP` and mark the projectile `IsDestroyed: true` in both streams.
+- Repeated hits eventually report the target as `HP: 0` and `IsDead: true` in both streams.
+- Invalid JSON input returns an `invalid_input` error message without stopping later snapshot broadcasts.
+
+Map note: red starts at map `(1, 1)` and blue starts at map `(3, 3)`. A direct diagonal red-to-blue attack crosses the center wall, so manual hit validation should move red into blue's column before attacking downward. The automated regression for this scenario is covered by `go test ./internal/rooms`.
+
 ## E1 Constraints
 
 These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, respawn, admin dashboard, scheduler, or Kubernetes deployment.
 
 The current player cap is `simulation.StaticMapFixture().MaxPlayers = 6`. Ten-player expansion is intentionally out of scope.
+
+Shared constants such as tick rate, tile size, player speed/radius/HP, projectile speed/damage/radius, and max players are documented here as current server behavior. A shared client/server constants source or asset-driven config remains SL-30 scope.
 
 Room cleanup follows the SL-43 in-memory TTL rules:
 
