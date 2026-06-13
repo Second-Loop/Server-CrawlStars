@@ -69,6 +69,8 @@ Response:
 
 Matching은 waiting room 중 여유가 있는 room을 사용하고, 없으면 새 room을 만듭니다. 두 번째 player가 들어와 room player count가 2가 되면 room simulation을 자동 start합니다. Matchmaking path는 이미 `started`인 room에 late join하지 않습니다. 현재 cap은 `simulation.StaticMapFixture().MaxPlayers = 6`이며 10명 확장은 후속 issue 범위입니다.
 
+SL-12에서 논의된 match complete event, client loading/ready ACK, 5초 countdown, start 전 cancel 처리는 아직 이 endpoint에 포함되지 않습니다. 이 흐름은 `SL-58`에서 다루며, REST polling이나 SSE를 새로 늘리기보다 이미 gameplay snapshot에 사용하는 WebSocket channel 위에 match state message를 추가하는 방향을 우선 검토합니다.
+
 ## E1 Room Debug REST API
 
 SL-41에서 구현한 room REST endpoint는 E1 debug API입니다. 실제 Unity gameplay client가 장기 의존할 정식 gameplay contract가 아니며, OpenAPI 승격 전까지 response shape는 `e1-debug` 안정성으로 취급합니다.

@@ -2,18 +2,23 @@
 
 Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버 레포지토리입니다.
 
-이 레포지토리는 부트스트랩 단계를 지나 E1 서버 권위 코어 루프를 준비하는 중입니다. 현재 목표는 게임플레이 로직, 매치메이킹, 물리, 영속 저장소를 한 번에 구현하는 것이 아니라, Linear 이슈, GitHub pull request, CI, Oracle VM pull 방식 CD 경로와 함께 반복 가능한 서버 개발/배포 루프를 유지하는 것입니다.
+이 레포지토리는 E1 서버 권위 core loop skeleton을 main에 반영했고, 지금은 E2 client-server integration을 위해 필요한 서버 surface를 작게 확장하는 단계입니다. 목표는 production matchmaking, persistence, full game service를 한 번에 만드는 것이 아니라, Linear issue 단위로 서버 기능과 계약을 검증 가능하게 늘리는 것입니다.
+
+오랜만에 들어왔다면 먼저 `ai-docs/project-map.md`를 읽습니다. 현재 구조, 게임루프 흐름, 완료된 Linear 이슈, 다음 티켓 후보를 한 번에 볼 수 있습니다.
 
 ## 현재 범위
 
 - Go module: `github.com/Second-Loop/Server-CrawlStars`
-- `cmd/server`의 최소 HTTP 서버 entrypoint
-- `internal/health`의 health package와 test
-- format, vet, test, build를 실행하는 GitHub Actions CI
-- linux/amd64 서버 release를 패키징하는 GitHub Actions CD
-- systemd가 관리하는 release를 위한 VM pull 배포 script
+- `cmd/server`의 HTTP server entrypoint
+- `/health`, `/openapi`, `/asyncapi`, `/matchmaking/join`, `/rooms`, room WebSocket endpoint
+- `internal/simulation`의 `Step(inputs) -> Snapshot` server-authoritative core loop
+- static map movement, wall collision, projectile movement, hit, HP/death snapshot
+- `internal/rooms`의 in-memory room lifecycle, simple matchmaking connector, 30Hz WebSocket snapshot broadcast
+- docs UI와 raw OpenAPI/AsyncAPI spec hosting
+- format, vet, test, docs build, binary build를 실행하는 validation loop
+- linux/amd64 서버 release packaging과 Oracle VM pull 방식 CD script
 - `AGENTS.md`의 얇은 agent entrypoint
-- `ai-docs/`의 공유 workflow 문서
+- `ai-docs/`의 architecture, protocol, workflow, deployment 문서
 
 ## 명령어
 
@@ -45,9 +50,25 @@ Health check:
 curl http://127.0.0.1:8080/health
 ```
 
+간단한 client-facing 매칭 connector:
+
+```sh
+curl -X POST http://127.0.0.1:8080/matchmaking/join
+```
+
 서버는 기본적으로 `127.0.0.1:8080`에 bind합니다. 다른 host에서 접근 가능해야 하는 경우에만 의도적으로 `SERVER_ADDR=:8080 go run ./cmd/server`를 사용합니다.
 
 배포 문서는 `ai-docs/deployment.md`에 있습니다. production systemd unit도 `SERVER_ADDR=127.0.0.1:8080`을 설정합니다. Cloudflare Tunnel은 `api-crawlstars.tolerblanc.com`을 Go 서버로, `tolerblanc.com`을 local-only Caddy hello page로 노출합니다.
+
+## 문서 지도
+
+- `ai-docs/project-map.md`: 현재 repo A-Z, 게임루프, Linear 흐름, 다음 작업 후보
+- `ai-docs/architecture.md`: package 책임과 서버 경계
+- `ai-docs/protocol.md`: Step/snapshot/WebSocket/matchmaking protocol planning
+- `ai-docs/api-reference.md`: 사람이 읽는 REST/WebSocket API 요약
+- `ai-docs/api-docs.md`: OpenAPI/AsyncAPI 문서화 정책
+- `ai-docs/server-todo.md`: 완료된 흐름과 다음 후보 티켓
+- `ai-docs/workflow.md`: Linear/GitHub/CI 협업 규칙
 
 ## 작업 합의
 

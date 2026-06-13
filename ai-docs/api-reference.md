@@ -181,6 +181,8 @@ Map note: red starts at map `(1, 1)` and blue starts at map `(3, 3)`. A direct d
 
 These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, respawn, admin dashboard, scheduler, or Kubernetes deployment.
 
+`POST /matchmaking/join` currently starts the room as soon as the second player joins. It does not yet send match-state WebSocket events, wait for client loading/ready ACKs, run a countdown, or remove a waiting player when the WebSocket closes before start. Those SL-12 discussion items are tracked as `SL-58`.
+
 The current player cap is `simulation.StaticMapFixture().MaxPlayers = 6`. Ten-player expansion is intentionally out of scope.
 
 Shared constants such as tick rate, tile size, player speed/radius/HP, projectile speed/damage/radius, and max players are documented here as current server behavior. A shared client/server constants source or asset-driven config remains SL-30 scope.
