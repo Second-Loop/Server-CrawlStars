@@ -115,6 +115,8 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 }
 
 func (s *State) Step(inputs []InputCommand) Snapshot {
+	s.moveProjectiles()
+
 	for _, input := range inputs {
 		s.applyInput(input)
 	}
@@ -225,6 +227,23 @@ func (s *State) applyInput(input InputCommand) {
 			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
 		}
 		return
+	}
+}
+
+func (s *State) moveProjectiles() {
+	for i := range s.projectiles {
+		if s.projectiles[i].IsDestroyed {
+			continue
+		}
+
+		next := Vector2{
+			X: s.projectiles[i].Pos.X + s.projectiles[i].Dir.X*s.projectiles[i].Speed*TickDuration,
+			Y: s.projectiles[i].Pos.Y + s.projectiles[i].Dir.Y*s.projectiles[i].Speed*TickDuration,
+		}
+		s.projectiles[i].Pos = next
+		if s.collidesWithWall(next, s.projectiles[i].Radius) {
+			s.projectiles[i].IsDestroyed = true
+		}
 	}
 }
 

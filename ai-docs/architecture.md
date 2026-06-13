@@ -113,7 +113,14 @@ SL-40 기준 attack skeleton model은 다음과 같습니다.
 - `ProjectileData`는 client `ProjectileData`와 같은 의미의 `Id`, `OwnerId`, `Pos`, `Dir`, `Speed`, `Damage`, `Radius`, `Type`, `IsDestroyed` field를 wire JSON에 노출합니다.
 - Projectile 기본값은 client `BaseProjectile`과 맞춰 `Speed = 13`, `Damage = 10`, `Radius = 0.3`입니다.
 - SL-40의 `Damage` field는 data skeleton 값일 뿐이며 피격, 체력, 사망, 리스폰, 점수 계산은 하지 않습니다.
-- Existing projectile movement, projectile-wall collision, projectile-player collision, projectile destroy lifecycle은 후속 티켓 범위입니다.
+
+SL-53 기준 projectile movement/destroy model은 다음과 같습니다.
+
+- 기존 projectile은 tick마다 `Dir * Speed * TickDuration` 기준으로 이동합니다.
+- 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다.
+- Projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`가 됩니다.
+- Destroyed projectile은 snapshot에 남지만 이후 tick에서 위치가 변하지 않습니다.
+- Projectile-player collision, 피격, HP, 사망, 리스폰, 점수 계산은 후속 티켓 범위입니다.
 
 ## E1 Room REST Debug API Boundary
 
