@@ -8,11 +8,11 @@
 
 `Server-CrawlStars`는 Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go server repository입니다. Unity client는 별도 레포지토리에서 관리합니다.
 
-현재 레포지토리는 E1 서버 권위 core loop skeleton을 준비하는 단계입니다. 안정적인 인간 + Codex 개발 workflow를 유지하면서, issue 단위로 gameplay server 기반을 확장합니다.
+현재 레포지토리는 E1 서버 권위 core loop skeleton을 main에 반영했고, E2 client-server integration에 필요한 개발용 server surface를 issue 단위로 확장하는 단계입니다. 안정적인 인간 + Codex 개발 workflow를 유지하면서, 작은 ticket 단위로 gameplay server 기반을 확장합니다.
 
 ## Current Phase
 
-Phase E1: server-authoritative core loop skeleton.
+Phase E2: client-server integration support on top of the E1 server-authoritative core loop skeleton.
 
 이미 완료된 E0 범위:
 
@@ -26,10 +26,25 @@ Phase E1: server-authoritative core loop skeleton.
 - GitHub branch and PR workflow
 - Shared documentation in `ai-docs/`
 
-E1에서 아직 scope가 명시되기 전에는 제외되는 작업:
+이미 완료된 E1/E2 server 범위:
+
+- `Step(inputs) -> Snapshot` simulation contract
+- Static map movement and wall collision
+- Attack/projectile snapshot skeleton
+- Room REST debug lifecycle
+- Room WebSocket snapshot stream
+- Room TTL cleanup
+- Simple `/matchmaking/join` connector
+- Projectile movement and wall/boundary destruction
+- Projectile-player hit, HP, death snapshot
+- 2-player WebSocket synchronization regression
+
+아직 별도 issue scope가 명시되기 전에는 제외되는 작업:
 
 - Production matchmaking
-- Full gameplay loop
+- Match ready/loading/countdown state transition
+- Start-before-game cancel and ready timeout
+- Respawn, score, win/loss
 - Persistence
 - Database and ORM
 - Kubernetes

@@ -1,6 +1,8 @@
 # Protocol Planning
 
-아직 gameplay protocol은 구현되어 있지 않습니다.
+현재 서버는 E2 client-server integration을 위한 development protocol surface를 제공합니다. 구현된 범위는 simple matchmaking join, room/player WebSocket, server-authoritative snapshot stream, static map movement/collision, projectile movement, hit, HP/death snapshot입니다.
+
+아직 구현하지 않은 범위는 match ready/loading ACK, countdown start event, start-before-game cancel flow, respawn, score, win/loss, production matchmaking queue입니다.
 
 ## Core Simulation Contract
 
@@ -134,6 +136,19 @@ Invalid input payload는 connection을 끊지 않고 error message를 보낸 뒤
 
 Snapshot stream은 다음 valid tick에서도 계속 유지되어야 합니다.
 
+## Current Snapshot Field Boundary
+
+`AttackDir`와 `PressedAttack`은 의도적으로 분리되어 있습니다.
+
+- `AttackDir`는 현재 조준 방향입니다.
+- `PressedAttack`은 이번 tick에 발사 버튼을 눌렀다는 trigger입니다.
+
+공격을 `AttackDir != zero`로만 추론하면, client가 조준 방향을 유지하는 동안 매 tick projectile이 발사될 수 있습니다. 그래서 input 계약에서는 `PressedAttack`을 유지합니다.
+
+`IsDead`는 `HP <= 0`에서 유도할 수 있지만 snapshot에는 명시적으로 유지합니다. Client가 death rule을 매번 재해석하지 않아도 되고, 나중에 respawn, down, invulnerable, spectator 같은 상태가 생길 때 protocol 의미를 더 안정적으로 확장할 수 있기 때문입니다.
+
+Snapshot의 `PressedAttack`은 현재 input echo/debug state에 가깝습니다. 장기적으로 제거하거나 다른 player action state로 바꿀 수 있지만, 이는 WebSocket schema 변경이므로 별도 Linear issue에서 다룹니다.
+
 SL-43 기준 room cleanup rule은 다음과 같습니다.
 
 - waiting room idle TTL은 10분입니다.
@@ -181,22 +196,55 @@ Response:
 
 ```json
 {
-  "status": "ok",
-  "service": "server-crawlstars"
+  "room": {
+    "id": "room-1",
+    "status": "waiting",
+    "players": [
+      {
+        "id": "player-1",
+        "team": "red",
+        "slot": 0
+      }
+    ],
+    "maxPlayers": 6,
+    "latestSnapshot": {
+      "tick": 0,
+      "playerCount": 1,
+      "projectileCount": 0
+    }
+  },
+  "player": {
+    "id": "player-1",
+    "team": "red",
+    "slot": 0
+  },
+  "webSocketPath": "/rooms/room-1/players/player-1"
 }
 ```
 
+## SL-12 Matchmaking Discussion Boundary
+
+현재 `POST /matchmaking/join`은 SL-49의 simple connector입니다. 요청한 client에게 room/player 정보와 WebSocket path를 반환하고, 같은 waiting room에 두 번째 player가 들어오면 room simulation을 바로 start합니다.
+
+SL-12 댓글에서 논의된 다음 흐름은 아직 구현되어 있지 않습니다.
+
+- server가 WebSocket으로 `matched`, `loading`, `starting`, `started` 같은 match state event를 보내는 흐름
+- client가 asset load/render 준비 후 ready ACK를 보내는 흐름
+- 모든 client ready 이후 5초 countdown 후 simulation을 start하는 흐름
+- start 전 WebSocket close를 match cancel로 처리하고 waiting room player를 제거하는 흐름
+- start 이후 disconnect를 bot 전환, timeout, ping/pong으로 처리하는 흐름
+
+이 논의는 `POST /matchmaking/join` 자체를 크게 바꾸기보다, `SL-58`에서 WebSocket room state message와 start state transition을 추가하는 방식으로 다룹니다. Gameplay snapshot stream은 이미 WebSocket을 사용하므로, match ready/start event도 같은 WebSocket channel 위에 얹는 방향이 현재 구조와 가장 단순하게 맞습니다.
+
 ## 향후 계획 주제
 
-- HTTP와 WebSocket 책임 분리
-- OpenAPI REST contract shape
-- AsyncAPI WebSocket message contract shape
-- authentication boundary
-- room 생성 및 join flow
-- match state snapshot
-- client input message
-- server tick model
+- match ready/loading/countdown state event
+- start 전 cancel과 ready timeout
+- start 이후 disconnect 처리
+- respawn, score, win/loss
 - reconciliation 및 prediction 가정
-- versioning strategy
+- shared constants/config source of truth
+- authentication boundary
+- protocol versioning strategy
 
-첫 vertical slice가 Linear에서 승인되기 전에는 protocol message를 구현하지 않습니다.
+후속 protocol message는 Linear issue에서 scope와 acceptance criteria를 먼저 정한 뒤 구현합니다.
