@@ -1,159 +1,109 @@
-# Project Map
+# 프로젝트 맵
 
-이 문서는 `Server-CrawlStars`를 오랜만에 다시 보는 사람이 현재 상태를 빠르게 복구하기 위한 지도입니다. 세부 계약은 각 전용 문서가 source of truth이고, 이 문서는 전체 흐름을 연결해서 설명합니다.
+이 문서는 `Server-CrawlStars`를 다시 볼 때 가장 먼저 읽는 지도입니다. 자세한 계약은 `api/`, `ai-docs/protocol.md`, `ai-docs/api-reference.md`를 따릅니다.
 
 ## 한 줄 요약
 
-서버는 지금 E1 core loop skeleton을 넘어 E2 client-server integration을 준비하는 단계입니다. `POST /matchmaking/join`으로 room/player/WebSocket path를 받고, WebSocket으로 input을 보내면 서버가 30Hz room tick에서 `Step(inputs) -> Snapshot`을 돌려 snapshot을 broadcast합니다.
+클라이언트는 `POST /matchmaking/join`으로 `room`, `player`, `webSocketPath`를 받고, WebSocket으로 input을 보냅니다. 서버는 room마다 30Hz tick에서 `State.Step(inputs) -> Snapshot`을 실행하고 같은 snapshot을 연결된 client에게 broadcast합니다.
 
-## 현재 되는 것
+## 현재 상태
 
-- Health check: `GET /health`
-- Server-hosted docs: `GET /openapi`, `GET /asyncapi`, `GET /openapi.yaml`, `GET /asyncapi.yaml`
-- Simple matchmaking connector: `POST /matchmaking/join`
-- Manual room debug API: `GET/POST /rooms`, `GET /rooms/{roomID}`, `POST /rooms/{roomID}/players`, `POST /rooms/{roomID}/start`
-- WebSocket room stream: `WS /rooms/{roomID}/players/{playerID}`
-- Server-authoritative simulation core:
-  - static 5x5 map fixture
-  - red spawn `(1, 1)`, blue spawn `(3, 3)`
-  - movement at 30Hz
-  - wall and map-boundary collision
-  - attack input and projectile creation
-  - projectile movement
-  - projectile-wall/boundary destruction
-  - projectile-player hit
-  - HP and `IsDead` snapshot
-  - 2-player WebSocket synchronization regression test
+되는 것:
 
-## 아직 안 되는 것
+- health check와 server-hosted API docs
+- 단순 matchmaking join
+- room/player debug REST API
+- room/player WebSocket 연결
+- movement, wall collision
+- projectile 생성, 이동, wall/boundary destroy
+- projectile hit, HP 감소, `IsDead` snapshot
+- 2-player WebSocket sync regression test
 
-- Production matchmaking queue or rating algorithm
-- Match complete/loading/ready/countdown WebSocket event
-- Client ready ACK before simulation start
-- Start-before-game cancel and ready timeout
-- Start-after-game disconnect policy, ping/pong timeout, bot replacement
-- Respawn, score, win/loss
-- Persistence, database, auth, rate limit
-- Shared client/server constants file or asset-driven config
-- Unity prediction/interpolation
+아직 안 되는 것:
 
-## Repository Map
+- match ready/loading/countdown state event
+- client ready ACK 후 simulation start
+- start 전 WebSocket close cancel/removal
+- start 후 disconnect 정책, ping/pong timeout, bot replacement
+- respawn, score, win/loss
+- production matchmaking queue, rating, auth, persistence
+- client/server shared constants artifact
+
+## 레포 구조
 
 ```text
 cmd/server
-  main.go
-    HTTP server entrypoint
-    wires health, docs, matchmaking, rooms
+  main.go                  HTTP server entrypoint
 
-internal/health
-  minimal health model and handler
+internal/health            /health
 
-internal/docs
-  embeds built OpenAPI/AsyncAPI specs and docs UI
+internal/docs              OpenAPI/AsyncAPI raw spec과 docs UI embed
 
 internal/rooms
   REST room lifecycle
   simple matchmaking connector
-  WebSocket connection management
+  WebSocket connection 관리
   room-local 30Hz ticker
-  input collection and snapshot broadcast
-  in-memory room TTL cleanup
+  pending input 수집과 snapshot broadcast
+  in-memory TTL cleanup
 
 internal/simulation
-  transport-independent gameplay core
+  transport를 모르는 gameplay core
   State.Step(inputs) -> Snapshot
-  map, movement, collision, projectile, hit, HP/death rules
+  map, movement, projectile, hit, HP/death rule
 
 api
   openapi.yaml
   asyncapi.yaml
 
-docs-ui
-  dependency-light docs validation and build scripts
-
-scripts/deploy
-  Oracle VM pull deployment and systemd scripts
-
-ai-docs
-  repo workflow, architecture, protocol, API, deployment, ticket planning docs
+docs-ui                   docs validation/build scripts
+scripts/deploy            VM pull deployment scripts
+ai-docs                   사람이 읽는 운영/설계 문서
 ```
 
-## Request Flow
+## 요청 흐름
 
-### 1. Server Boot
+### 1. 서버 시작
 
-`cmd/server/main.go` reads `SERVER_ADDR`; if absent it binds to `127.0.0.1:8080`.
+`cmd/server/main.go`는 `SERVER_ADDR`가 없으면 `127.0.0.1:8080`에 bind합니다. 하나의 `rooms.Store`를 만들고 `/health`, docs route, `/matchmaking/join`, `/rooms`, `/rooms/`를 mount합니다. active room cap은 5개입니다.
 
-It creates one `http.ServeMux` and mounts:
+### 2. 매칭 요청
 
-- `/health`
-- `/openapi`
-- `/asyncapi`
-- `/openapi.yaml`
-- `/asyncapi.yaml`
-- `/matchmaking/join`
-- `/rooms`
-- `/rooms/`
+`POST /matchmaking/join`은 production queue가 아니라 단순 connector입니다.
 
-The room routes share one `rooms.Store` with a max active room cap of 5.
+1. 만료된 room을 정리합니다.
+2. 여유 있는 waiting room을 찾습니다.
+3. 없으면 새 waiting room을 만듭니다.
+4. player를 발급합니다.
+5. player 수가 2명이 되면 즉시 room을 start합니다.
+6. `room`, `player`, `webSocketPath`를 반환합니다.
 
-### 2. Matchmaking Join
+Player ID는 `player-1`, `player-2`처럼 증가합니다. join index가 짝수면 red, 홀수면 blue이고, `slot`은 `playerIndex / 2`입니다.
 
-`POST /matchmaking/join` is a simple connector, not a production matchmaking queue.
+현재는 두 번째 player가 들어오면 바로 simulation이 시작됩니다. client loading/ready ACK를 기다리지 않습니다.
 
-Current behavior:
+### 3. WebSocket 연결
 
-1. Cleanup expired rooms.
-2. Find a waiting room with capacity.
-3. If none exists, create a waiting room.
-4. Add a player using the same rule as the manual room API.
-5. If the room now has exactly 2 players, start the room immediately.
-6. Return `room`, `player`, and `webSocketPath`.
-
-Player assignment:
-
-- `player-1`, `player-2`, ...
-- even join index: red
-- odd join index: blue
-- slot: `playerIndex / 2`
-
-Important boundary: the server currently starts the simulation as soon as the second player joins. It does not wait for client loading/ready ACK.
-
-### 3. WebSocket Attach
-
-Clients connect to:
+Client는 다음 path에 연결합니다.
 
 ```text
 WS /rooms/{roomID}/players/{playerID}
 ```
 
-Before accepting the upgrade, the server checks:
+서버는 upgrade 전에 room 존재 여부, player 소속 여부, 같은 player의 중복 연결 여부를 확인합니다. Waiting room도 연결과 input 수신은 허용하지만, started 전에는 gameplay snapshot을 보내지 않습니다.
 
-- room exists
-- player belongs to the room
-- the same room/player is not already connected
+### 4. Room start
 
-Waiting rooms accept WebSocket connections and input, but do not broadcast gameplay snapshots until the room is started.
+Room은 두 경로로 시작합니다.
 
-### 4. Room Start
+- debug: `POST /rooms/{roomID}/start`
+- matchmaking: 두 번째 player가 `POST /matchmaking/join`
 
-A room starts in two ways:
+Start 시점에는 `simulation.NewStateWithConfig`로 state를 만들고, `simulation.TickRate = 30` 기준 ticker를 시작합니다. 이 loop는 room-local gameplay loop이지 범용 scheduler나 runner가 아닙니다.
 
-- Manual debug path: `POST /rooms/{roomID}/start`
-- Simple matchmaking path: second player joins through `POST /matchmaking/join`
+### 5. Input 수집
 
-On start:
-
-1. Room status becomes `started`.
-2. `simulation.NewStateWithConfig` is created from issued players and `StaticMapFixture`.
-3. A room-local ticker starts at `1 / simulation.TickRate`.
-4. Each ticker event calls `Store.tickRoom`.
-
-This is a room-local gameplay loop. It is not a reusable scheduler, runner, daemon, or orchestration framework.
-
-### 5. Input Collection
-
-The WebSocket read loop accepts JSON input:
+WebSocket input:
 
 ```json
 {
@@ -163,197 +113,103 @@ The WebSocket read loop accepts JSON input:
 }
 ```
 
-Invalid JSON sends:
+한 tick 안에 같은 player가 여러 input을 보내면 마지막 input만 사용합니다. 잘못된 JSON은 `invalid_input` error message를 보내고 snapshot stream은 유지합니다.
 
-```json
-{
-  "Type": "error",
-  "Error": {
-    "code": "invalid_input",
-    "message": "invalid input"
-  }
-}
-```
+### 6. Tick 처리
 
-Valid input is stored as one pending input per player. If the same player sends multiple inputs before the next tick, the newest pending input wins.
+Started room의 tick 흐름:
 
-### 6. Tick And Simulation
+1. pending input을 복사합니다.
+2. pending input map을 비웁니다.
+3. `room.state.Step(inputs)`를 호출합니다.
+4. `{"Type":"snapshot","Snapshot":...}` 형태로 감쌉니다.
+5. 연결된 client 모두에게 같은 snapshot을 보냅니다.
 
-Each started room tick:
+`internal/simulation.State.Step` 순서:
 
-1. Copy all pending inputs.
-2. Clear pending inputs.
-3. Call `room.state.Step(inputs)`.
-4. Wrap the result as `{"Type":"snapshot","Snapshot":...}`.
-5. Broadcast the same snapshot to all connected clients.
+1. 기존 projectile 이동
+2. projectile wall/boundary destroy와 hit 처리
+3. player input 적용
+4. movement는 X축, Y축 순서로 wall collision 검사
+5. `PressedAttack = true`이고 `AttackDir`가 zero가 아니면 projectile 생성
+6. tick 증가
+7. snapshot clone 반환
 
-`internal/simulation.State.Step` is transport-independent. It does not know HTTP, WebSocket, rooms, or matchmaking.
+새 projectile은 생성된 tick에는 owner 위치에 보이고 다음 tick부터 이동합니다.
 
-Step order:
+### 7. Snapshot 필드 의미
 
-1. Move existing active projectiles.
-2. Destroy projectiles that hit walls or leave map bounds.
-3. Apply projectile-player hits for still-active projectiles.
-4. Apply each player input.
-5. For movement, process X axis then Y axis with wall collision.
-6. If `PressedAttack = true` and `AttackDir` is non-zero, create a new projectile at the moved player position.
-7. Increment tick.
-8. Return cloned player/projectile snapshot.
+`AttackDir`와 `PressedAttack`은 분리합니다.
 
-New projectiles do not move on the same tick they are created. They first appear at the owner position, then move on the next tick.
+- `AttackDir`: 현재 조준 방향
+- `PressedAttack`: 이번 tick의 발사 trigger
 
-### 7. Snapshot Shape
+`AttackDir != zero`만으로 발사를 추론하면 조준 방향을 유지하는 동안 매 tick 발사될 수 있습니다. 그래서 input의 `PressedAttack`은 유지합니다.
 
-Server snapshot wrapper:
+`IsDead`는 `HP <= 0`에서 유도할 수 있지만 snapshot에 명시합니다. Client가 death rule을 재해석하지 않아도 되고, 나중에 respawn, down, invulnerable 같은 상태로 확장하기 쉽습니다.
 
-```json
-{
-  "Type": "snapshot",
-  "Snapshot": {
-    "Tick": 1,
-    "Players": [],
-    "Projectiles": []
-  }
-}
-```
+Snapshot의 `PressedAttack`은 input echo/debug 성격이 강합니다. 제거하려면 WebSocket schema 변경이므로 별도 issue에서 다룹니다.
 
-`PlayerData` currently exposes:
+### 8. Cleanup
 
-- `Id`
-- `Team`
-- `Slot`
-- `Pos`
-- `MoveDir`
-- `AttackDir`
-- `Speed`
-- `Radius`
-- `HP`
-- `PressedAttack`
-- `IsDead`
+Room store는 in-memory입니다.
 
-`ProjectileData` currently exposes:
+- waiting room idle TTL: 10분
+- started room all-disconnected TTL: 5분
+- hard room lifetime: 1시간
+- connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-- `Id`
-- `OwnerId`
-- `Pos`
-- `Dir`
-- `Speed`
-- `Damage`
-- `Radius`
-- `Type`
-- `IsDestroyed`
+현재 WebSocket close는 client connection과 pending input만 제거합니다. started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. start 전 waiting player 제거와 match cancel은 아직 없습니다.
 
-### 8. Field Semantics
+## Linear 흐름
 
-`AttackDir` and `PressedAttack` are separate on purpose.
+완료된 큰 흐름:
 
-- `AttackDir` means the current aim direction.
-- `PressedAttack` means the fire trigger for this tick.
-
-If attack were inferred from `AttackDir != zero`, a client that keeps aim direction could accidentally fire every tick. Keeping a separate trigger lets the client preserve aim without firing.
-
-`IsDead` is explicit even though it can be derived from `HP <= 0`.
-
-- It keeps client rendering simple.
-- It avoids duplicating death rules in every client.
-- It leaves space for future states such as downed, respawning, invulnerable, or spectator-like states.
-
-The snapshot `PressedAttack` field may be revisited later because it is mostly input echo/debug state, but removing it is a protocol change and should be a separate issue.
-
-### 9. Room Cleanup
-
-The server is in-memory only.
-
-Cleanup rules:
-
-- Waiting room idle TTL: 10 minutes
-- Started room all-disconnected TTL: 5 minutes after last WebSocket client disconnects
-- Hard room lifetime: 1 hour
-- Connected clients prevent waiting idle TTL and all-disconnected TTL cleanup
-
-Current WebSocket close behavior:
-
-- It removes the client connection.
-- It removes that player pending input.
-- If the room is started and all clients are gone, it starts the disconnected TTL.
-- It does not remove a waiting player from a pre-start match.
-- It does not convert a started disconnected player into a bot.
-
-## Linear History
-
-### E0
-
-- `SL-1`: project kickoff/bootstrap epic
-- Server bootstrap, CI, CD packaging, Oracle VM pull deployment, Cloudflare Tunnel, Linear/GitHub workflow were established.
-
-### E1
-
-- `SL-7`: E1 server/client foundation epic
-- `SL-38`: simulation domain and `Step(inputs) -> Snapshot`
+- `SL-38`: simulation `Step(inputs) -> Snapshot`
 - `SL-39`: map, movement, wall collision
 - `SL-40`: attack/projectile skeleton
 - `SL-41`: room REST debug lifecycle
 - `SL-42`: WebSocket snapshot broadcast
-- `SL-43`: room TTL cleanup and invalid input regression
-- `SL-47`: OpenAPI/AsyncAPI hosted docs
-- `SL-51`, `SL-52`: docs tooling and Swagger deployed-origin fixes
+- `SL-43`: room TTL cleanup과 invalid input regression
+- `SL-47`, `SL-51`, `SL-52`: API docs hosting/build
+- `SL-49`: simple `/matchmaking/join`
+- `SL-53`: projectile movement와 wall collision
+- `SL-54`: hit, HP, death snapshot
+- `SL-55`: 2-player WebSocket sync regression
+- `SL-56`: protocol validation docs
 
-### E2 Current
+현재 E2 흐름:
 
-- `SL-10`: client-server integration epic
-- `SL-12`: user matchmaking parent issue
-  - `SL-49` server simple matchmaking is done.
-  - `SL-50` client matchmaking is in review.
-  - `SL-58` server ready/loading/countdown/cancel follow-up is next.
-- `SL-14`: client prototype logic migrated to server
-  - `SL-53`: projectile movement and wall collision done.
-  - `SL-54`: hit, HP, death snapshot done.
-  - `SL-55`: 2-player WebSocket synchronization regression done.
-  - `SL-56`: protocol validation docs done.
-  - `SL-57` client logic split is in review.
-- `SL-30`: shared constants/data management is in progress but still needs scope refinement.
+- `SL-12`: user matchmaking parent
+  - `SL-49`: server simple matchmaking
+  - `SL-50`: client matchmaking
+  - `SL-58`: server ready/loading/countdown/cancel
+- `SL-14`: client prototype logic server migration
+  - server child issues `SL-53` to `SL-56`
+  - `SL-57`: client logic split
+- `SL-30`: shared constants/data management
 
-## Recommended Next Ticket
+각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
-Pick `SL-58` next: `E2-2-3 [Server] 매칭 준비/카운트다운 상태 전이`.
+## 다음 추천 작업
 
-Why this first:
+1. `SL-58`: match start state transition
+   - `POST /matchmaking/join` response shape 유지
+   - WebSocket match state message 추가
+   - client ready/loading-complete input 추가
+   - 모두 ready면 countdown 후 simulation start
+   - start 전 WebSocket close는 cancel/removal 처리
 
-- The server already has simple join and gameplay snapshot stream.
-- Client discussion expects match complete, loading/ready ACK, and countdown.
-- This closes the biggest gap between "two clients can connect" and "a human-friendly match start flow exists".
+2. `SL-30`: shared constants/config v1
+   - tick rate, tile size, player/projectile defaults, max players, map fixture를 한 artifact로 정리
+   - Go 상수와 artifact drift 검증
+   - Unity가 읽을 field/unit 문서화
 
-Suggested scope:
+3. `SL-14` closeout
+   - `SL-57` client PR 상태 확인
+   - server/client acceptance criteria가 모두 닫히면 parent issue 정리
 
-- Keep `POST /matchmaking/join` response shape.
-- Add WebSocket server message type for match state.
-- Let waiting/matched clients send ready/loading-complete input.
-- Start countdown only when all required clients are ready.
-- Start simulation after countdown.
-- Treat WebSocket close before start as match cancel/removal.
-
-Out of scope:
-
-- Post-start disconnect policy
-- Bot replacement
-- Ping/pong timeout
-- Respawn, score, win/loss
-- Production matchmaking queue
-- Persistence
-
-## Second Next Ticket
-
-Pick `SL-30` after the match start flow is clear.
-
-Suggested v1:
-
-- Define one shared game config artifact with tick rate, tile size, map, player defaults, projectile defaults, and max players.
-- Add validation that Go constants/defaults and the artifact do not drift.
-- Document field names and units for Unity.
-
-Do not start with hot reload, editor tooling, or 10-player expansion. Those are separate follow-ups.
-
-## Useful Commands
+## 자주 쓰는 명령
 
 ```sh
 make docs-build
@@ -361,14 +217,12 @@ make ci
 go test ./internal/simulation
 go test ./internal/rooms
 go run ./cmd/server
-curl http://127.0.0.1:8080/health
-curl -X POST http://127.0.0.1:8080/matchmaking/join
 ```
 
-## Where To Read Next
+## 다음에 읽을 문서
 
-- `ai-docs/architecture.md`: package ownership and boundaries
-- `ai-docs/protocol.md`: protocol state and future message planning
-- `ai-docs/api-reference.md`: API shapes and manual validation
-- `ai-docs/decisions.md`: ADR-style history
-- `ai-docs/server-todo.md`: current ticket board
+- `ai-docs/workflow.md`: 작업 방식
+- `ai-docs/architecture.md`: package와 runtime 책임
+- `ai-docs/protocol.md`: protocol 경계
+- `ai-docs/api-reference.md`: API shape
+- `ai-docs/decisions.md`: 왜 이렇게 정했는지

@@ -1,15 +1,8 @@
-# API Reference
+# API 요약
 
-## Scope
+Machine-readable 기준은 `api/openapi.yaml`, `api/asyncapi.yaml`입니다. 이 문서는 사람이 빠르게 읽기 위한 요약입니다.
 
-이 문서는 SL-49 기준 simple client matchmaking API와 E1 debug API를 사람이 읽기 쉬운 형태로 요약합니다. Raw machine-readable source of truth는 다음 파일입니다.
-
-```text
-api/openapi.yaml
-api/asyncapi.yaml
-```
-
-Running server는 같은 내용을 다음 path로 제공합니다.
+## Docs
 
 ```text
 GET /openapi
@@ -18,11 +11,9 @@ GET /openapi.yaml
 GET /asyncapi.yaml
 ```
 
-`/openapi`와 `/asyncapi`는 human-readable UI입니다. `/openapi` Swagger UI의 기본 server는 현재 접속한 server origin(`/`)이며, `http://localhost:8080`은 local development 선택지로 유지합니다. `/openapi.yaml`과 `/asyncapi.yaml`은 client, test, tool이 읽는 raw spec입니다.
+`/openapi`와 `/asyncapi`는 UI이고, `*.yaml`은 raw spec입니다.
 
-## REST API
-
-REST endpoint는 client-facing simple matchmaking surface와 E1 room lifecycle을 수동 검증하기 위한 debug surface를 함께 제공합니다.
+## REST
 
 ```text
 GET /health
@@ -34,7 +25,9 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-Matchmaking join response shape:
+### `POST /matchmaking/join`
+
+Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유 waiting room이 없으면 새 room을 만듭니다. 같은 room에 두 번째 player가 들어오면 simulation을 바로 start합니다.
 
 ```json
 {
@@ -64,9 +57,11 @@ Matchmaking join response shape:
 }
 ```
 
-`POST /matchmaking/join`은 waiting room 중 여유가 있는 room에 player를 배정하고, 없으면 새 room을 만듭니다. 두 번째 player가 같은 waiting room에 들어오면 room simulation을 자동으로 start합니다. Matchmaking path는 이미 `started`인 room에 late join하지 않고 새 waiting room을 찾거나 만듭니다.
+현재는 match-state WebSocket event, client ready ACK, countdown, start 전 cancel을 지원하지 않습니다. 이 흐름은 `SL-58`에서 다룹니다.
 
-Room response shape:
+### Room debug API
+
+Room response:
 
 ```json
 {
@@ -88,7 +83,7 @@ Room response shape:
 }
 ```
 
-Error response shape:
+Error response:
 
 ```json
 {
@@ -99,7 +94,7 @@ Error response shape:
 }
 ```
 
-Current REST error codes:
+현재 error code:
 
 - `room_not_found`
 - `room_cap_reached`
@@ -108,31 +103,25 @@ Current REST error codes:
 - `method_not_allowed`
 - `not_found`
 
-## WebSocket API
-
-WebSocket endpoint는 REST로 생성한 room/player를 사용합니다.
+## WebSocket
 
 ```text
 WS /rooms/{roomID}/players/{playerID}
 ```
 
-Client input message:
+연결 전에 room과 player가 REST로 발급되어 있어야 합니다. 같은 room/player의 중복 연결은 거부합니다.
+
+Client input:
 
 ```json
 {
-  "MoveDir": {
-    "x": 1,
-    "y": 0
-  },
-  "AttackDir": {
-    "x": 0,
-    "y": 1
-  },
+  "MoveDir": { "x": 1, "y": 0 },
+  "AttackDir": { "x": 0, "y": 1 },
   "PressedAttack": false
 }
 ```
 
-Server snapshot message:
+Server snapshot:
 
 ```json
 {
@@ -145,7 +134,7 @@ Server snapshot message:
 }
 ```
 
-Invalid input error message:
+Invalid input:
 
 ```json
 {
@@ -157,49 +146,33 @@ Invalid input error message:
 }
 ```
 
-Client-facing WebSocket field names intentionally follow the Unity prototype vocabulary: `MoveDir`, `AttackDir`, `PressedAttack`, `Type`, `Snapshot`, `Error`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`.
+Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
 
-Projectile snapshots keep destroyed projectiles visible with `IsDestroyed: true`. Existing projectiles move on later ticks by `Dir * Speed * TickDuration`, and wall or map-boundary collision marks them destroyed.
+## 현재 gameplay 값
 
-Player snapshots expose `HP` as current health. Projectile hits against non-owner live players subtract `Damage`; hit projectiles are destroyed, and players at `HP <= 0` are reported with `HP: 0` and `IsDead: true`.
+- tick rate: 30Hz
+- tile size: 1.2
+- player speed: 2
+- player radius: 0.5
+- player HP: 100
+- projectile speed: 13
+- projectile damage: 10
+- projectile radius: 0.3
+- fixture max players: 6
 
-## Two-Player Validation Scenario
+공통 client/server constants artifact는 아직 없고 `SL-30`에서 다룹니다.
 
-For a manual server check, create or join one room with two players, open both WebSocket paths, then compare the snapshot stream from both connections.
+## 수동 검증 시나리오
 
-Expected checks:
+1. `POST /matchmaking/join`을 두 번 호출합니다.
+2. 두 응답의 `webSocketPath`로 WebSocket을 엽니다.
+3. 한 client가 movement input을 보내면 두 연결이 같은 snapshot을 받아야 합니다.
+4. 공격이 target에 닿으면 두 연결에서 projectile `IsDestroyed: true`, target `HP` 감소가 보여야 합니다.
+5. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
+6. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
 
-- Both clients receive the same `Snapshot.Tick`, `Players`, and `Projectiles` data for each broadcast tick.
-- Movement input from one player changes that player's `Pos` in both streams.
-- Projectile hits reduce the target player's `HP` and mark the projectile `IsDestroyed: true` in both streams.
-- Repeated hits eventually report the target as `HP: 0` and `IsDead: true` in both streams.
-- Invalid JSON input returns an `invalid_input` error message without stopping later snapshot broadcasts.
+자동 회귀는 `go test ./internal/rooms`가 담당합니다.
 
-Map note: red starts at map `(1, 1)` and blue starts at map `(3, 3)`. A direct diagonal red-to-blue attack crosses the center wall, so manual hit validation should move red into blue's column before attacking downward. The automated regression for this scenario is covered by `go test ./internal/rooms`.
+## 제약
 
-## E1 Constraints
-
-These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, respawn, admin dashboard, scheduler, or Kubernetes deployment.
-
-`POST /matchmaking/join` currently starts the room as soon as the second player joins. It does not yet send match-state WebSocket events, wait for client loading/ready ACKs, run a countdown, or remove a waiting player when the WebSocket closes before start. Those SL-12 discussion items are tracked as `SL-58`.
-
-The current player cap is `simulation.StaticMapFixture().MaxPlayers = 6`. Ten-player expansion is intentionally out of scope.
-
-Shared constants such as tick rate, tile size, player speed/radius/HP, projectile speed/damage/radius, and max players are documented here as current server behavior. A shared client/server constants source or asset-driven config remains SL-30 scope.
-
-Room cleanup follows the SL-43 in-memory TTL rules:
-
-- Waiting room idle TTL: 10 minutes
-- Started room all-disconnected TTL: 5 minutes
-- Hard room lifetime: 1 hour
-
-## Build And Validation
-
-Docs source files are validated and rendered at build time.
-
-```sh
-make docs-build
-make ci
-```
-
-Generated embed files live under `internal/docs/api/` and `internal/docs/static/`, and are intentionally ignored by git.
+이 API는 development surface입니다. Auth, rate limit, production matchmaking, persistence, respawn, score, win/loss, dashboard, scheduler, Kubernetes는 없습니다.
