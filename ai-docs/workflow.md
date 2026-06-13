@@ -1,193 +1,131 @@
-# Workflow
+# 작업 흐름
 
-이 레포지토리는 OpenAI Symphony 운영 모델의 일부만 차용합니다. Issue가 task source of truth이고, 작업은 acceptance criteria 기준으로 scope가 정해지며, 완료에는 review와 validation이 필요합니다.
+이 문서는 Codex와 사람이 이 레포에서 일할 때 따르는 규칙입니다. 자세한 현재 상태는 `ai-docs/project-map.md`를 먼저 봅니다.
 
-이 레포지토리는 Symphony의 scheduler, runner, daemon, multi-agent orchestration, dashboard, automatic PR loop를 구현하지 않습니다.
+## 기준
 
-## Project Overview
+- Linear issue가 작업 범위와 acceptance criteria의 기준입니다.
+- GitHub PR은 구현 diff, review, CI 결과를 남기는 장소입니다.
+- `main`에는 직접 push하지 않습니다. 작은 branch와 PR을 사용합니다.
+- 완료를 주장하기 전에 validation을 실행하고 결과를 PR 또는 Linear에 남깁니다.
+- gameplay, matchmaking, persistence, deployment platform은 Linear issue 범위가 있을 때만 추가합니다.
 
-`Server-CrawlStars`는 Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go server repository입니다. Unity client는 별도 레포지토리에서 관리합니다.
+## 현재 단계
 
-현재 레포지토리는 E1 서버 권위 core loop skeleton을 main에 반영했고, E2 client-server integration에 필요한 개발용 server surface를 issue 단위로 확장하는 단계입니다. 안정적인 인간 + Codex 개발 workflow를 유지하면서, 작은 ticket 단위로 gameplay server 기반을 확장합니다.
+Phase E2: E1 server-authoritative core loop 위에 client-server integration surface를 붙이는 단계입니다.
 
-## Current Phase
+이미 있는 서버 범위:
 
-Phase E2: client-server integration support on top of the E1 server-authoritative core loop skeleton.
+- `Step(inputs) -> Snapshot`
+- movement, wall collision
+- projectile 생성, 이동, destroy
+- hit, HP, death snapshot
+- room REST debug API
+- room WebSocket snapshot stream
+- room TTL cleanup
+- simple `/matchmaking/join`
+- server-hosted OpenAPI/AsyncAPI docs
 
-이미 완료된 E0 범위:
+아직 issue 없이 추가하지 않는 범위:
 
-- Go project initialization
-- Minimal server entrypoint
-- Health check code and tests
-- GitHub Actions CI
-- GitHub Actions CD packaging
-- Oracle VM pull-based systemd deployment scripts
-- Linear issue workflow
-- GitHub branch and PR workflow
-- Shared documentation in `ai-docs/`
+- production matchmaking
+- ready/loading/countdown state transition
+- start 전 cancel과 ready timeout
+- start 후 disconnect, bot replacement, ping/pong timeout
+- respawn, score, win/loss
+- persistence, database, auth
+- Kubernetes, dashboard, scheduler, runner
 
-이미 완료된 E1/E2 server 범위:
+## Linear 규칙
 
-- `Step(inputs) -> Snapshot` simulation contract
-- Static map movement and wall collision
-- Attack/projectile snapshot skeleton
-- Room REST debug lifecycle
-- Room WebSocket snapshot stream
-- Room TTL cleanup
-- Simple `/matchmaking/join` connector
-- Projectile movement and wall/boundary destruction
-- Projectile-player hit, HP, death snapshot
-- 2-player WebSocket synchronization regression
+Issue에는 최소한 다음이 있어야 합니다.
 
-아직 별도 issue scope가 명시되기 전에는 제외되는 작업:
+- 요약
+- scope
+- out of scope
+- acceptance criteria
+- validation
+- 관련 issue 또는 PR link
 
-- Production matchmaking
-- Match ready/loading/countdown state transition
-- Start-before-game cancel and ready timeout
-- Respawn, score, win/loss
-- Persistence
-- Database and ORM
-- Kubernetes
-- Scheduler, runner, or multi-agent orchestration
-- Admin or web dashboards
+상태 의미:
 
-## What Codex Should Do
+- `Backlog`: 아직 scope가 덜 잡힘
+- `Todo`: 바로 시작 가능
+- `In Progress`: branch 또는 active work 있음
+- `In Review`: PR이 열림
+- `Done`: PR merge 또는 non-code work 완료
 
-- `AGENTS.md`를 먼저 읽습니다.
-- Linear access가 가능하면 구현 전에 활성 Linear issue를 읽습니다.
-- 편집 전에 scope, acceptance criteria, validation을 확인합니다.
-- 작고 issue 크기에 맞는 변경을 선호합니다.
-- code, tests, CI, docs를 함께 맞춥니다.
-- 최종 작업 요약 또는 PR에 validation command와 result를 남깁니다.
-- 불확실한 architecture decision은 `ai-docs/decisions.md`에 기록합니다.
+Local validation 통과만으로 `Done`으로 옮기지 않습니다.
 
-## What Codex Must Not Do
+## GitHub 규칙
 
-- 활성 issue 범위를 넘어서 확장하지 않습니다.
-- Linear issue 없이 gameplay system을 추가하지 않습니다.
-- Issue 없이 persistent storage, deployment platform, orchestration을 추가하지 않습니다.
-- Test와 CI validation이 통과하기 전에 완료로 표시하지 않습니다.
-- PR review와 CI가 통과하기 전에는 local success를 완료로 취급하지 않습니다.
+- Branch 이름은 가능하면 issue ID를 포함합니다. 예: `sl-58-match-start-state`
+- PR 제목은 issue ID를 포함합니다. 예: `[SL-58] 매칭 시작 상태 전이 추가`
+- PR은 한 번에 review 가능한 크기로 유지합니다.
+- CI 실패 상태에서는 merge하지 않습니다.
+- 후속 작업은 열린 PR을 계속 키우지 말고 Linear issue로 분리합니다.
 
-## Default Flow
+PR 본문에는 짧게 적습니다.
 
-1. Linear issue를 선택합니다.
-2. Scope, acceptance criteria, validation을 확인합니다.
-3. Issue ID를 포함한 branch를 만듭니다.
-4. 가장 작은 일관된 변경을 만듭니다.
-5. Local validation을 실행합니다.
-6. PR을 엽니다.
-7. CI와 human review를 기다립니다.
-8. Linear에 status 또는 blocker를 업데이트합니다.
+```md
+## 왜 해당 PR을 올렸나요?
 
-## Linear Issue Workflow
+- 핵심 이유를 1-3개 적습니다.
 
-Linear는 task intent의 source of truth입니다.
+## 무엇을 어떻게 수정했나요?
 
-각 issue는 다음을 포함해야 합니다.
-
-- Summary
-- Scope
-- Acceptance criteria
-- Validation command 또는 check
-- 관련 issue 또는 decision link
-
-Current project:
-
-- Linear project: `Crawl Stars`
-- Team: `Second Loop` (`SL`)
-- Server bootstrap issue: `SL-3`
-
-## GitHub Branch And PR Workflow
-
-- Initial repository bootstrap 이후에는 `main`에 직접 push하지 않습니다.
-- 가능하면 branch name에 Linear issue ID를 포함합니다.
-- PR은 한 번에 review할 수 있을 만큼 작아야 합니다.
-- PR은 Linear issue와 연결해야 합니다.
-- CI 통과와 human review가 끝난 뒤 merge합니다.
-
-Suggested branch naming:
-
-```text
-sl-3-server-bootstrap
+- 변경 내용을 bullet로 적습니다.
 ```
 
-PR body checklist:
+## Commit 규칙
 
-- Linked Linear issue
-- Summary of changes
-- Validation performed
-- Known risks or follow-ups
+Linear ticket이 있으면 commit title에 붙입니다.
 
-## CI Validation Rules
+```text
+[SL-58] feat(rooms): 매칭 시작 상태 전이 추가
 
-CI는 pull request와 `main` push에서 실행되어야 합니다.
+- ready state message 추가
+- countdown 이후 simulation start로 변경
+- pre-start close regression test 추가
+```
 
-Required checks:
+Ticket이 없으면 `[SL-58]` 부분만 생략합니다.
 
-- `go mod download`
-- `gofmt` check
-- `go vet ./...`
-- `go test ./...`
-- `go build ./cmd/server`
+## Validation
 
-Local equivalent:
+기본 local validation:
 
 ```sh
 make ci
 ```
 
-## Documentation Update Rules
+계약 문서만 확인할 때:
 
-Behavior, workflow, architecture가 바뀌면 docs를 업데이트합니다.
-
-REST endpoint, response/error shape, WebSocket route, message payload, field name, stability marker가 바뀌면 같은 변경에서 다음을 확인합니다.
-
-- REST 계약 변경: `api/openapi.yaml`
-- WebSocket 계약 변경: `api/asyncapi.yaml`
-- 사람이 읽는 계약 설명: `ai-docs/api-reference.md`
-- 문서화 정책 또는 계약 경계 변경: `ai-docs/api-docs.md`
-- architecture/protocol decision에 영향이 있으면 `ai-docs/architecture.md`, `ai-docs/protocol.md`, `ai-docs/decisions.md`
-
-계약 변경이 포함된 작업은 `make ci` 또는 최소 `make docs-build` 결과를 PR/Linear에 남깁니다.
-
-- `AGENTS.md`: agent를 위한 얇은 entrypoint
-- `ai-docs/architecture.md`: server architecture 개요
-- `ai-docs/workflow.md`: 상세 협업 workflow
-- `ai-docs/linear-control.md`: Linear SSOT 및 issue control model
-- `ai-docs/github.md`: GitHub PR 및 review convention
-- `ai-docs/ci.md`: CI contract 및 local validation
-- `ai-docs/deployment.md`: Oracle VM CD 및 systemd deployment note
-- `ai-docs/api-docs.md`: REST 및 WebSocket 문서화 정책
-- `ai-docs/protocol.md`: protocol planning note
-- `ai-docs/server-todo.md`: 가까운 server 작업
-- `ai-docs/decisions.md`: lightweight ADR log
-
-## Task Template
-
-```md
-## Summary
-
-## Scope
-
-## Out Of Scope
-
-## Acceptance Criteria
-
-- [ ]
-
-## Validation
-
-- [ ]
-
-## Notes / Risks
+```sh
+make docs-build
 ```
 
-## PR Checklist
+`make ci`는 docs validation/build, `go vet`, `go test`, server build, deploy script syntax check를 함께 실행합니다. Clean checkout에서 `go test ./...`만 바로 실행하면 Go embed 대상 docs 파일이 없을 수 있으므로 공식 검증은 `make ci`입니다.
 
-- [ ] Linear issue linked
-- [ ] Scope matches issue
-- [ ] Tests added or updated when behavior changes
-- [ ] `make ci` passes locally
-- [ ] Docs updated or confirmed unchanged
-- [ ] Risks and follow-ups documented
+## 문서 업데이트
+
+코드, workflow, architecture가 바뀌면 `ai-docs/`를 함께 확인합니다.
+
+REST/WebSocket 계약이 바뀌면 같은 PR에서 다음을 확인합니다.
+
+- `api/openapi.yaml`
+- `api/asyncapi.yaml`
+- `ai-docs/api-reference.md`
+- `ai-docs/api-docs.md`
+- 필요하면 `ai-docs/protocol.md`, `ai-docs/architecture.md`, `ai-docs/decisions.md`
+
+## 문서 역할
+
+- `ai-docs/project-map.md`: 현재 상태와 다음 작업
+- `ai-docs/workflow.md`: 지금 읽는 작업 규칙
+- `ai-docs/architecture.md`: package/runtime 책임
+- `ai-docs/protocol.md`: simulation, WebSocket, matchmaking protocol 경계
+- `ai-docs/api-reference.md`: 사람이 읽는 API 요약
+- `ai-docs/api-docs.md`: OpenAPI/AsyncAPI 문서화 기준
+- `ai-docs/deployment.md`: 배포와 Cloudflare Tunnel
+- `ai-docs/decisions.md`: ADR 기록
