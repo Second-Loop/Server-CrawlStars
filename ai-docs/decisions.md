@@ -200,3 +200,17 @@ Consequences:
 - Projectile 생성, 이동, 파괴 순서는 unit test로 재현할 수 있습니다.
 - WebSocket room tick loop는 같은 `State.Step` 결과를 broadcast하므로 별도 transport behavior가 필요하지 않습니다.
 - Projectile-player collision, HP, death behavior는 SL-54에서 별도 acceptance criteria와 tests로 추가해야 합니다.
+
+## ADR-0015: E1 Hit Result는 PlayerData HP와 IsDead Snapshot으로 표현
+
+Status: Accepted
+
+Context: SL-54는 projectile-player collision, HP 감소, 사망 state를 server-authoritative simulation snapshot에 반영해야 합니다. 이 단계는 respawn, score, win/loss, character-specific stats, production friendly-fire policy를 포함하지 않습니다.
+
+Decision: `PlayerData.HP`를 현재 체력 값으로 추가하고 기본값은 `100`으로 둡니다. 기존 projectile 이동 이후 active projectile circle이 owner가 아닌 live player circle과 겹치면 hit으로 처리합니다. Hit projectile은 `IsDestroyed = true`가 되고, target player HP는 projectile `Damage`만큼 감소합니다. HP가 `0` 이하가 되면 `HP = 0`, `IsDead = true`로 snapshot에 반영합니다. Owner 본인은 자기 projectile의 hit target에서 제외합니다.
+
+Consequences:
+
+- 2명 player hit flow는 `internal/simulation` unit test로 deterministic하게 검증됩니다.
+- WebSocket snapshot은 `HP` field를 포함하므로 AsyncAPI와 사람이 읽는 API docs를 함께 갱신해야 합니다.
+- Respawn, score, win/loss, character-specific stats는 후속 issue에서 별도 acceptance criteria와 tests로 추가해야 합니다.

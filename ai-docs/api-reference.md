@@ -157,13 +157,15 @@ Invalid input error message:
 }
 ```
 
-Client-facing WebSocket field names intentionally follow the Unity prototype vocabulary: `MoveDir`, `AttackDir`, `PressedAttack`, `Type`, `Snapshot`, `Error`, `Id`, `OwnerId`, `Pos`, `Dir`, `IsDestroyed`.
+Client-facing WebSocket field names intentionally follow the Unity prototype vocabulary: `MoveDir`, `AttackDir`, `PressedAttack`, `Type`, `Snapshot`, `Error`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`.
 
 Projectile snapshots keep destroyed projectiles visible with `IsDestroyed: true`. Existing projectiles move on later ticks by `Dir * Speed * TickDuration`, and wall or map-boundary collision marks them destroyed.
 
+Player snapshots expose `HP` as current health. Projectile hits against non-owner live players subtract `Damage`; hit projectiles are destroyed, and players at `HP <= 0` are reported with `HP: 0` and `IsDead: true`.
+
 ## E1 Constraints
 
-These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, hit detection, death, respawn, admin dashboard, scheduler, or Kubernetes deployment.
+These APIs are development surfaces. `POST /matchmaking/join` is a simple client-facing connector for SL-49, while `/rooms` remains the manual debug lifecycle API. They do not implement production authentication, rate limiting, matchmaking algorithm, production queue, persistence, gameplay scoring, respawn, admin dashboard, scheduler, or Kubernetes deployment.
 
 The current player cap is `simulation.StaticMapFixture().MaxPlayers = 6`. Ten-player expansion is intentionally out of scope.
 

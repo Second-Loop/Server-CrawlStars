@@ -95,7 +95,7 @@ SL-39 기준 movement/collision model은 다음과 같습니다.
 - `TileType`은 `TileGround = 0`, `TileWall = 1`, `TileSpawnPoint = 2`로 client `MapData.TileType` 의미와 맞춥니다.
 - 좌표계는 client `MapHelper`와 맞춰 `TileSize = 1.2`를 사용하고, tile `(0, 0)`은 centered map의 좌상단 world position입니다.
 - `TileWall`은 tile-aligned rectangle wall입니다.
-- `PlayerData`는 `Pos`, `Speed`, `Radius`를 사용하며 기본값은 client `BasePlayerData`와 맞춰 `Speed = 2`, `Radius = 0.5`입니다.
+- `PlayerData`는 `Pos`, `Speed`, `Radius`, `HP`를 사용하며 기본값은 client `BasePlayerData`와 맞춰 `Speed = 2`, `Radius = 0.5`, `HP = 100`입니다.
 - `InputCommand.MoveDir`은 client `PlayerData.MoveDir`와 같은 의미의 이동 방향입니다.
 - Movement는 30Hz tick에서 `MoveDir * Speed * TickDuration`으로 계산하고, client physics처럼 X축과 Y축을 분리해 적용합니다.
 - Next position이 wall 또는 map 밖과 충돌하면 해당 axis movement만 무시하고 이전 위치를 유지합니다.
@@ -120,7 +120,16 @@ SL-53 기준 projectile movement/destroy model은 다음과 같습니다.
 - 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다.
 - Projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`가 됩니다.
 - Destroyed projectile은 snapshot에 남지만 이후 tick에서 위치가 변하지 않습니다.
-- Projectile-player collision, 피격, HP, 사망, 리스폰, 점수 계산은 후속 티켓 범위입니다.
+
+SL-54 기준 hit/HP/death model은 다음과 같습니다.
+
+- `PlayerData.HP`는 현재 체력 값입니다.
+- Projectile circle이 owner가 아닌 live player circle과 겹치면 hit으로 처리합니다.
+- Hit projectile은 `IsDestroyed = true`가 됩니다.
+- Target player HP는 projectile `Damage`만큼 감소합니다.
+- HP가 `0` 이하가 되면 `HP = 0`, `IsDead = true`가 됩니다.
+- Owner 본인은 자기 projectile hit target에서 제외합니다.
+- Respawn, score, win/loss, character-specific stats는 후속 티켓 범위입니다.
 
 ## E1 Room REST Debug API Boundary
 

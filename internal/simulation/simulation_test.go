@@ -97,6 +97,9 @@ func TestNewStateUsesClientPlayerDefaults(t *testing.T) {
 		if player.Radius != DefaultPlayerRadius {
 			t.Fatalf("expected default radius %f, got %f", DefaultPlayerRadius, player.Radius)
 		}
+		if player.HP != DefaultPlayerHP {
+			t.Fatalf("expected default HP %f, got %f", DefaultPlayerHP, player.HP)
+		}
 		return
 	}
 
@@ -538,6 +541,125 @@ func TestStepDestroysProjectileWhenItLeavesMapBounds(t *testing.T) {
 	}
 }
 
+func TestStepProjectileHitReducesTargetHPAndDestroysProjectile(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	target := Vector2{
+		X: start.X + DefaultProjectileSpeed*TickDuration,
+		Y: start.Y,
+	}
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+		{
+			ID:   PlayerID("blue-1"),
+			Team: TeamBlue,
+			Slot: 0,
+			Pos:  target,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	snapshot := state.Step(nil)
+
+	assertPlayerHP(t, snapshot, PlayerID("red-1"), DefaultPlayerHP, false)
+	assertPlayerHP(t, snapshot, PlayerID("blue-1"), DefaultPlayerHP-DefaultProjectileDamage, false)
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	if !snapshot.Projectiles[0].IsDestroyed {
+		t.Fatal("expected projectile to be destroyed after hitting player")
+	}
+
+	next := state.Step(nil)
+
+	assertPlayerHP(t, next, PlayerID("blue-1"), DefaultPlayerHP-DefaultProjectileDamage, false)
+	if !next.Projectiles[0].IsDestroyed {
+		t.Fatal("expected hit projectile to stay destroyed")
+	}
+}
+
+func TestStepProjectileDoesNotSelfHitOwner(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	snapshot := state.Step(nil)
+
+	assertPlayerHP(t, snapshot, PlayerID("red-1"), DefaultPlayerHP, false)
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	if snapshot.Projectiles[0].IsDestroyed {
+		t.Fatal("expected owner-overlapping projectile to remain active")
+	}
+}
+
+func TestStepProjectileHitMarksTargetDeadWhenHPReachesZero(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	target := Vector2{
+		X: start.X + DefaultProjectileSpeed*TickDuration,
+		Y: start.Y,
+	}
+	state := NewStateWithConfig([]PlayerData{
+		{
+			ID:   PlayerID("red-1"),
+			Team: TeamRed,
+			Slot: 0,
+			Pos:  start,
+		},
+		{
+			ID:   PlayerID("blue-1"),
+			Team: TeamBlue,
+			Slot: 0,
+			Pos:  target,
+			HP:   DefaultProjectileDamage,
+		},
+	}, Config{
+		Map: StaticMapFixture(),
+	})
+
+	state.Step([]InputCommand{
+		{
+			PlayerID:      PlayerID("red-1"),
+			AttackDir:     Vector2{X: 1, Y: 0},
+			PressedAttack: true,
+		},
+	})
+	snapshot := state.Step(nil)
+
+	assertPlayerHP(t, snapshot, PlayerID("blue-1"), 0, true)
+	if !snapshot.Projectiles[0].IsDestroyed {
+		t.Fatal("expected lethal projectile to be destroyed after hit")
+	}
+}
+
 func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot int, position Vector2) {
 	t.Helper()
 
@@ -552,6 +674,25 @@ func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot 
 			t.Fatalf("expected %s slot %d, got %d", id, slot, player.Slot)
 		}
 		assertVector(t, string(id)+" position", player.Pos, position)
+		return
+	}
+
+	t.Fatalf("expected snapshot to include player %s", id)
+}
+
+func assertPlayerHP(t *testing.T, snapshot Snapshot, id PlayerID, hp float64, isDead bool) {
+	t.Helper()
+
+	for _, player := range snapshot.Players {
+		if player.ID != id {
+			continue
+		}
+		if player.HP != hp {
+			t.Fatalf("expected %s HP %f, got %f", id, hp, player.HP)
+		}
+		if player.IsDead != isDead {
+			t.Fatalf("expected %s IsDead %t, got %t", id, isDead, player.IsDead)
+		}
 		return
 	}
 

@@ -113,7 +113,7 @@ components:
             $ref: "#/components/schemas/ProjectileData"
     PlayerData:
       type: object
-      required: [Id, Team, Slot, Pos, MoveDir, AttackDir, Speed, Radius, PressedAttack, IsDead]
+      required: [Id, Team, Slot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]
       properties:
         Id:
           type: string
@@ -131,6 +131,8 @@ components:
         Speed:
           type: number
         Radius:
+          type: number
+        HP:
           type: number
         PressedAttack:
           type: boolean

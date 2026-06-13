@@ -13,6 +13,7 @@ const (
 	TileSize                = 1.2
 	DefaultPlayerSpeed      = 2.0
 	DefaultPlayerRadius     = 0.5
+	DefaultPlayerHP         = 100.0
 	DefaultProjectileSpeed  = 13.0
 	DefaultProjectileDamage = 10.0
 	DefaultProjectileRadius = 0.3
@@ -50,6 +51,7 @@ type PlayerData struct {
 	AttackDir     Vector2  `json:"AttackDir"`
 	Speed         float64  `json:"Speed"`
 	Radius        float64  `json:"Radius"`
+	HP            float64  `json:"HP"`
 	PressedAttack bool     `json:"PressedAttack"`
 	IsDead        bool     `json:"IsDead"`
 }
@@ -191,6 +193,9 @@ func normalizePlayers(players []PlayerData) []PlayerData {
 		if cloned[i].Radius <= 0 {
 			cloned[i].Radius = DefaultPlayerRadius
 		}
+		if cloned[i].HP <= 0 {
+			cloned[i].HP = DefaultPlayerHP
+		}
 	}
 	return cloned
 }
@@ -244,6 +249,28 @@ func (s *State) moveProjectiles() {
 		if s.collidesWithWall(next, s.projectiles[i].Radius) {
 			s.projectiles[i].IsDestroyed = true
 		}
+		if !s.projectiles[i].IsDestroyed {
+			s.applyProjectileHit(&s.projectiles[i])
+		}
+	}
+}
+
+func (s *State) applyProjectileHit(projectile *ProjectileData) {
+	for i := range s.players {
+		if s.players[i].ID == projectile.OwnerID || s.players[i].IsDead {
+			continue
+		}
+		if !circlesOverlap(projectile.Pos, projectile.Radius, s.players[i].Pos, s.players[i].Radius) {
+			continue
+		}
+
+		s.players[i].HP -= projectile.Damage
+		if s.players[i].HP <= 0 {
+			s.players[i].HP = 0
+			s.players[i].IsDead = true
+		}
+		projectile.IsDestroyed = true
+		return
 	}
 }
 
@@ -343,6 +370,19 @@ func cloneTiles(tiles [][]TileType) [][]TileType {
 
 func isFinite(vector Vector2) bool {
 	return !math.IsNaN(vector.X) && !math.IsNaN(vector.Y) && !math.IsInf(vector.X, 0) && !math.IsInf(vector.Y, 0)
+}
+
+func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool {
+	if aRadius < 0 {
+		aRadius = 0
+	}
+	if bRadius < 0 {
+		bRadius = 0
+	}
+	dx := a.X - b.X
+	dy := a.Y - b.Y
+	radius := aRadius + bRadius
+	return dx*dx+dy*dy <= radius*radius
 }
 
 func clamp(value float64, min float64, max float64) float64 {
