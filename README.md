@@ -31,6 +31,7 @@ make ci
 go run ./cmd/server
 curl http://127.0.0.1:8080/health
 curl -X POST http://127.0.0.1:8080/matchmaking/join
+curl -X DELETE http://127.0.0.1:8080/rooms
 ```
 
 서버는 기본적으로 `127.0.0.1:8080`에 bind합니다. 외부 bind가 필요할 때만 명시적으로 `SERVER_ADDR=:8080 go run ./cmd/server`를 사용합니다.

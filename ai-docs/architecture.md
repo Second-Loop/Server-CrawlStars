@@ -96,9 +96,13 @@ REST debug API:
 
 - `GET /rooms`
 - `POST /rooms`
+- `DELETE /rooms`
 - `GET /rooms/{roomID}`
+- `DELETE /rooms/{roomID}`
 - `POST /rooms/{roomID}/players`
 - `POST /rooms/{roomID}/start`
+
+Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
 
 Simple matchmaking:
 

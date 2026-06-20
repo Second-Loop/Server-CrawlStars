@@ -2,26 +2,29 @@ openapi: 3.1.0
 info:
   title: Server Crawl Stars REST API
   version: 0.1.0
-  description: Development REST API for health checks, simple client matchmaking, and E1 room lifecycle testing.
+  description: 클라이언트 연동 테스트용 REST API입니다. 매칭 join, room 상태 확인, debug room 생성/시작/삭제를 제공합니다.
 x-stability: e1-debug
 servers:
   - url: /
-    description: Current server origin
+    description: 현재 접속한 서버 origin
   - url: http://localhost:8080
-    description: Local development server
+    description: 로컬 개발 서버
 tags:
   - name: Health
+    description: 서버 생존 확인
   - name: Matchmaking
+    description: 클라이언트가 가장 먼저 호출하는 간단 매칭 API
   - name: Rooms
+    description: E1/E2 개발용 room debug API
 paths:
   /health:
     get:
       tags: [Health]
-      summary: Check server health
+      summary: 서버 상태 확인
       operationId: getHealth
       responses:
         "200":
-          description: Server health status
+          description: 서버가 살아 있으면 ok를 반환합니다.
           content:
             application/json:
               schema:
@@ -29,18 +32,23 @@ paths:
   /matchmaking/join:
     post:
       tags: [Matchmaking]
-      summary: Join a simple client-facing match
-      description: Finds an available waiting room or creates one, assigns a player, and starts the room when the second player joins.
+      summary: 매칭에 참가하고 WebSocket 경로 받기
+      description: |
+        여유 있는 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
+
+        첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
+        같은 room에 두 번째 참가자가 들어오면 서버가 room을 즉시 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
+        1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
       responses:
         "201":
-          description: Matched player and room connection details
+          description: 발급된 room, player, WebSocket 경로
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MatchmakingJoin"
         "409":
-          description: Active room cap reached
+          description: Active room cap에 도달했습니다. 테스트 중이면 `DELETE /rooms`로 debug room을 비울 수 있습니다.
           content:
             application/json:
               schema:
@@ -48,48 +56,85 @@ paths:
   /rooms:
     get:
       tags: [Rooms]
-      summary: List active E1 debug rooms
+      summary: active debug room 목록 보기
+      description: room 상태, player 목록, 서버가 사용하는 map 데이터, 최신 snapshot 요약을 확인합니다.
       operationId: listRooms
       responses:
         "200":
-          description: Active room list
+          description: active room 목록
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RoomList"
     post:
       tags: [Rooms]
-      summary: Create an E1 debug room
+      summary: debug room 직접 만들기
+      description: 매칭을 거치지 않고 수동 검증용 room을 만듭니다.
       operationId: createRoom
       responses:
         "201":
-          description: Created room
+          description: 생성된 room
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Room"
         "409":
-          description: Active room cap reached
+          description: Active room cap에 도달했습니다. `DELETE /rooms`로 debug room을 비울 수 있습니다.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Rooms]
+      summary: 모든 debug room 비우기
+      description: |
+        현재 메모리에 있는 모든 room을 삭제하고, 실행 중인 ticker와 WebSocket 연결을 닫습니다.
+        `room_cap_reached` 409가 난 뒤 테스트 환경을 즉시 회복할 때 사용합니다.
+      operationId: clearRooms
+      responses:
+        "200":
+          description: 삭제된 room 수
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClearRoomsResult"
   /rooms/{roomID}:
     get:
       tags: [Rooms]
-      summary: Get E1 debug room detail
+      summary: debug room 상세 보기
+      description: room 상태, player 목록, 서버 map 데이터, 최신 snapshot 요약을 확인합니다.
       operationId: getRoom
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
         "200":
-          description: Room detail
+          description: room 상세
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Room"
         "404":
-          description: Room not found
+          description: room을 찾을 수 없습니다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Rooms]
+      summary: debug room 하나 삭제
+      description: 지정한 room을 삭제하고, 해당 room의 ticker와 WebSocket 연결을 닫습니다.
+      operationId: deleteRoom
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: 삭제된 room 수
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClearRoomsResult"
+        "404":
+          description: room을 찾을 수 없습니다.
           content:
             application/json:
               schema:
@@ -97,25 +142,26 @@ paths:
   /rooms/{roomID}/players:
     post:
       tags: [Rooms]
-      summary: Issue a player for an E1 debug room
+      summary: debug room에 player 발급
+      description: 수동 room 검증용 player를 추가합니다. 현재 fixture 기준 최대 player 수는 6명입니다.
       operationId: createRoomPlayer
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
         "201":
-          description: Issued player
+          description: 발급된 player
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Player"
         "404":
-          description: Room not found
+          description: room을 찾을 수 없습니다.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Room is full
+          description: room player 수가 map의 maxPlayers에 도달했습니다.
           content:
             application/json:
               schema:
@@ -123,25 +169,28 @@ paths:
   /rooms/{roomID}/start:
     post:
       tags: [Rooms]
-      summary: Start an E1 debug room
+      summary: debug room 시뮬레이션 시작
+      description: |
+        player가 1명 이상 있는 room을 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
+        매칭 flow에서는 두 번째 `POST /matchmaking/join`이 같은 일을 자동으로 수행합니다.
       operationId: startRoom
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
         "200":
-          description: Started room
+          description: 시작된 room
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Room"
         "404":
-          description: Room not found
+          description: room을 찾을 수 없습니다.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Room has no players
+          description: player가 없어 시작할 수 없습니다.
           content:
             application/json:
               schema:
@@ -152,6 +201,7 @@ components:
       name: roomID
       in: path
       required: true
+      description: `POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID
       schema:
         type: string
         example: room-1
@@ -187,22 +237,28 @@ components:
           example: /rooms/room-1/players/player-1
     Room:
       type: object
-      required: [id, status, players, maxPlayers, latestSnapshot]
+      required: [id, status, players, maxPlayers, map, latestSnapshot]
+      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용합니다.
       properties:
         id:
           type: string
           example: room-1
         status:
           type: string
+          description: waiting이면 snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다.
           enum: [waiting, started]
         players:
           type: array
+          description: room에 발급된 player 목록입니다.
           items:
             $ref: "#/components/schemas/Player"
         maxPlayers:
           type: integer
+          description: 현재 map fixture가 허용하는 최대 player 수입니다.
           minimum: 1
           example: 6
+        map:
+          $ref: "#/components/schemas/MapData"
         latestSnapshot:
           $ref: "#/components/schemas/SnapshotSummary"
     Player:
@@ -214,13 +270,16 @@ components:
           example: player-1
         team:
           type: string
+          description: 임시 team 배정입니다. index 짝수는 red, 홀수는 blue입니다.
           enum: [red, blue]
         slot:
           type: integer
+          description: team 안에서의 slot입니다.
           minimum: 0
     SnapshotSummary:
       type: object
       required: [tick, playerCount, projectileCount]
+      description: 마지막으로 생성된 snapshot의 짧은 요약입니다. 아직 tick 전이면 tick은 0입니다.
       properties:
         tick:
           type: integer
@@ -231,6 +290,54 @@ components:
         projectileCount:
           type: integer
           minimum: 0
+    MapData:
+      type: object
+      required: [width, height, index, maxPlayers, tileSize, map]
+      description: 서버 simulation이 사용하는 tile map입니다. tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
+      properties:
+        width:
+          type: integer
+          minimum: 1
+          example: 5
+        height:
+          type: integer
+          minimum: 1
+          example: 5
+        index:
+          type: integer
+          minimum: 0
+          example: 0
+        maxPlayers:
+          type: integer
+          minimum: 1
+          example: 6
+        tileSize:
+          type: number
+          format: double
+          example: 1.2
+        map:
+          type: array
+          description: Row-major 2D tile grid입니다. 바깥 배열은 y(row), 안쪽 배열은 x(column)입니다.
+          items:
+            type: array
+            items:
+              type: integer
+              enum: [0, 1, 2]
+          example:
+            - [1, 1, 1, 1, 1]
+            - [1, 0, 0, 0, 1]
+            - [1, 0, 1, 0, 1]
+            - [1, 0, 0, 0, 1]
+            - [1, 1, 1, 1, 1]
+    ClearRoomsResult:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          minimum: 0
+          description: 삭제된 room 수입니다.
+          example: 5
     ErrorResponse:
       type: object
       required: [error]

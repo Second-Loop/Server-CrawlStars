@@ -69,6 +69,31 @@ func TestHandlerReturnsRoomDetailWithLatestSnapshotSummary(t *testing.T) {
 	}
 }
 
+func TestHandlerRoomDetailShowsLatestSnapshotSummaryAfterTicks(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := Handler(store)
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	_ = createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	store.tickRoom(room.ID)
+
+	detailRec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected detail status 200, got %d", detailRec.Code)
+	}
+	var detail roomResponse
+	decodeResponse(t, detailRec, &detail)
+	if detail.LatestSnapshot.Tick != 1 {
+		t.Fatalf("expected latest snapshot tick 1, got %d", detail.LatestSnapshot.Tick)
+	}
+	if detail.LatestSnapshot.PlayerCount != 1 {
+		t.Fatalf("expected latest snapshot player count 1, got %+v", detail.LatestSnapshot)
+	}
+}
+
 func TestHandlerRejectsRoomCreationAtCap(t *testing.T) {
 	handler := Handler(NewStore(5))
 
@@ -84,6 +109,72 @@ func TestHandlerRejectsRoomCreationAtCap(t *testing.T) {
 		t.Fatalf("expected cap status 409, got %d", rec.Code)
 	}
 	assertError(t, rec, "room_cap_reached")
+}
+
+func TestHandlerClearsRoomsForDebugCapRecovery(t *testing.T) {
+	handler := Handler(NewStore(5))
+
+	for i := 0; i < 5; i++ {
+		rec := request(handler, http.MethodPost, "/rooms")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected room %d create status 201, got %d", i+1, rec.Code)
+		}
+	}
+	if rec := request(handler, http.MethodPost, "/rooms"); rec.Code != http.StatusConflict {
+		t.Fatalf("expected cap status 409 before clear, got %d", rec.Code)
+	}
+
+	clearRec := request(handler, http.MethodDelete, "/rooms")
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("expected clear status 200, got %d", clearRec.Code)
+	}
+	var cleared clearRoomsResponse
+	decodeResponse(t, clearRec, &cleared)
+	if cleared.Deleted != 5 {
+		t.Fatalf("expected clear to delete 5 rooms, got %d", cleared.Deleted)
+	}
+
+	listRec := request(handler, http.MethodGet, "/rooms")
+	var list roomListResponse
+	decodeResponse(t, listRec, &list)
+	if len(list.Rooms) != 0 {
+		t.Fatalf("expected empty room list after clear, got %+v", list.Rooms)
+	}
+
+	createRec := request(handler, http.MethodPost, "/rooms")
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected room creation after clear to recover, got %d", createRec.Code)
+	}
+}
+
+func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := Handler(store)
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	_ = createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	deleteRec := request(handler, http.MethodDelete, "/rooms/"+room.ID)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected delete status 200, got %d", deleteRec.Code)
+	}
+	var deleted clearRoomsResponse
+	decodeResponse(t, deleteRec, &deleted)
+	if deleted.Deleted != 1 {
+		t.Fatalf("expected one deleted room, got %d", deleted.Deleted)
+	}
+	if fakeClock.stopCount != 1 {
+		t.Fatalf("expected room ticker to stop once, got %d", fakeClock.stopCount)
+	}
+
+	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted room status 404, got %d", rec.Code)
+	}
+	assertError(t, rec, "room_not_found")
 }
 
 func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t *testing.T) {
@@ -111,6 +202,36 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 	}
 	if len(joined.Room.Players) != 1 || joined.Room.Players[0].ID != joined.Player.ID {
 		t.Fatalf("expected response room to contain joined player, got %+v", joined.Room.Players)
+	}
+}
+
+func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.T) {
+	handler := Handler(NewStore(5))
+
+	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
+	}
+
+	var joined struct {
+		Room struct {
+			Map simulation.MapData `json:"map"`
+		} `json:"room"`
+	}
+	decodeResponse(t, rec, &joined)
+
+	fixture := simulation.StaticMapFixture()
+	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
+		t.Fatalf("expected map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	}
+	if joined.Room.Map.TileSize != fixture.TileSize {
+		t.Fatalf("expected map tile size %f, got %f", fixture.TileSize, joined.Room.Map.TileSize)
+	}
+	if len(joined.Room.Map.Map) != fixture.Height {
+		t.Fatalf("expected map rows %d, got %d", fixture.Height, len(joined.Room.Map.Map))
+	}
+	if joined.Room.Map.Map[0][0] != simulation.TileWall || joined.Room.Map.Map[1][1] != simulation.TileGround {
+		t.Fatalf("expected fixture tile values in response, got %+v", joined.Room.Map.Map)
 	}
 }
 

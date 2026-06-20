@@ -35,6 +35,9 @@ for (const path of requiredRESTPaths) {
   assert(hasLine(openAPIText, `  ${path}:`), `api/openapi.yaml is missing ${path}`);
 }
 assert(hasLine(openAPIText, "    ErrorResponse:"), "api/openapi.yaml is missing ErrorResponse schema");
+assert(openAPIText.includes("operationId: clearRooms"), "api/openapi.yaml must document DELETE /rooms");
+assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must document DELETE /rooms/{roomID}");
+assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
 
 assert(hasLine(asyncAPIText, "asyncapi: 3.0.0"), "api/asyncapi.yaml must use AsyncAPI 3.0.0");

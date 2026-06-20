@@ -24,6 +24,7 @@ const (
 	defaultDisconnectedRoomTTL   = 5 * time.Minute
 	defaultHardRoomLifetime      = time.Hour
 	defaultRoomWebSocketCloseMsg = "room expired"
+	defaultRoomDebugDeleteMsg    = "room deleted"
 )
 
 type Store struct {
@@ -43,6 +44,7 @@ type room struct {
 	state          *simulation.State
 	pendingInputs  map[string]simulation.InputCommand
 	clients        map[string]*websocket.Conn
+	latestSnapshot snapshotSummary
 	createdAt      time.Time
 	lastActivityAt time.Time
 	disconnectedAt time.Time
@@ -55,11 +57,12 @@ type roomListResponse struct {
 }
 
 type roomResponse struct {
-	ID             string           `json:"id"`
-	Status         RoomStatus       `json:"status"`
-	Players        []playerResponse `json:"players"`
-	MaxPlayers     int              `json:"maxPlayers"`
-	LatestSnapshot snapshotSummary  `json:"latestSnapshot"`
+	ID             string             `json:"id"`
+	Status         RoomStatus         `json:"status"`
+	Players        []playerResponse   `json:"players"`
+	MaxPlayers     int                `json:"maxPlayers"`
+	Map            simulation.MapData `json:"map"`
+	LatestSnapshot snapshotSummary    `json:"latestSnapshot"`
 }
 
 type playerResponse struct {
@@ -72,6 +75,10 @@ type matchmakingJoinResponse struct {
 	Room          roomResponse   `json:"room"`
 	Player        playerResponse `json:"player"`
 	WebSocketPath string         `json:"webSocketPath"`
+}
+
+type clearRoomsResponse struct {
+	Deleted int `json:"deleted"`
 }
 
 type snapshotSummary struct {
@@ -167,6 +174,8 @@ func Handler(store *Store) http.Handler {
 					return
 				}
 				writeJSON(w, http.StatusCreated, created)
+			case http.MethodDelete:
+				writeJSON(w, http.StatusOK, store.clearRooms())
 			default:
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			}
@@ -195,16 +204,25 @@ func Handler(store *Store) http.Handler {
 		}
 
 		if len(parts) == 1 {
-			if r.Method != http.MethodGet {
+			switch r.Method {
+			case http.MethodGet:
+				found, ok := store.getRoom(roomID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "room_not_found", "room not found")
+					return
+				}
+				writeJSON(w, http.StatusOK, found)
+			case http.MethodDelete:
+				deleted, ok := store.deleteRoom(roomID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "room_not_found", "room not found")
+					return
+				}
+				writeJSON(w, http.StatusOK, deleted)
+			default:
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 				return
 			}
-			found, ok := store.getRoom(roomID)
-			if !ok {
-				writeError(w, http.StatusNotFound, "room_not_found", "room not found")
-				return
-			}
-			writeJSON(w, http.StatusOK, found)
 			return
 		}
 
@@ -296,6 +314,40 @@ func (s *Store) createRoom() (roomResponse, error) {
 
 	room := s.createRoomLocked()
 	return room.toResponse(), nil
+}
+
+func (s *Store) clearRooms() clearRoomsResponse {
+	s.cleanupExpired()
+
+	s.mu.Lock()
+	deleted := len(s.rooms)
+	var resources roomResources
+	for _, room := range s.rooms {
+		resources.add(room)
+	}
+	s.rooms = make(map[string]*room)
+	s.mu.Unlock()
+
+	resources.close(defaultRoomDebugDeleteMsg)
+	return clearRoomsResponse{Deleted: deleted}
+}
+
+func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
+	s.cleanupExpired()
+
+	s.mu.Lock()
+	room, ok := s.rooms[roomID]
+	if !ok {
+		s.mu.Unlock()
+		return clearRoomsResponse{}, false
+	}
+	delete(s.rooms, roomID)
+	var resources roomResources
+	resources.add(room)
+	s.mu.Unlock()
+
+	resources.close(defaultRoomDebugDeleteMsg)
+	return clearRoomsResponse{Deleted: 1}, true
 }
 
 func (s *Store) getRoom(roomID string) (roomResponse, bool) {
@@ -572,6 +624,7 @@ func (s *Store) tickRoom(roomID string) {
 	}
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	snapshot := room.state.Step(inputs)
+	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := snapshotMessage{Type: "snapshot", Snapshot: snapshot}
 
 	clients := make([]*websocket.Conn, 0, len(room.clients))
@@ -652,16 +705,26 @@ func writeWebSocketJSON(conn *websocket.Conn, message any) {
 func (r *room) toResponse() roomResponse {
 	players := make([]playerResponse, len(r.Players))
 	copy(players, r.Players)
+	gameMap := simulation.StaticMapFixture()
+	latestSnapshot := r.latestSnapshot
+	if latestSnapshot == (snapshotSummary{}) {
+		latestSnapshot.PlayerCount = len(players)
+	}
 	return roomResponse{
-		ID:         r.ID,
-		Status:     r.Status,
-		Players:    players,
-		MaxPlayers: simulation.StaticMapFixture().MaxPlayers,
-		LatestSnapshot: snapshotSummary{
-			Tick:            0,
-			PlayerCount:     len(players),
-			ProjectileCount: 0,
-		},
+		ID:             r.ID,
+		Status:         r.Status,
+		Players:        players,
+		MaxPlayers:     gameMap.MaxPlayers,
+		Map:            gameMap,
+		LatestSnapshot: latestSnapshot,
+	}
+}
+
+func snapshotSummaryFromSnapshot(snapshot simulation.Snapshot) snapshotSummary {
+	return snapshotSummary{
+		Tick:            uint64(snapshot.Tick),
+		PlayerCount:     len(snapshot.Players),
+		ProjectileCount: len(snapshot.Projectiles),
 	}
 }
 
