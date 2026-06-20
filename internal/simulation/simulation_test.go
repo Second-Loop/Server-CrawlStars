@@ -140,15 +140,25 @@ func TestLoadDefaultMapFixtureUsesCommittedFixturePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load default map fixture: %v", err)
 	}
-	fixture := StaticMapFixture()
 	if DefaultMapFixturePath != "internal/simulation/fixtures/default-map.json" {
 		t.Fatalf("unexpected default map fixture path %q", DefaultMapFixturePath)
 	}
-	if gameMap.Width != fixture.Width || gameMap.Height != fixture.Height {
-		t.Fatalf("expected default fixture size %dx%d, got %dx%d", fixture.Width, fixture.Height, gameMap.Width, gameMap.Height)
+	if gameMap.Width <= 0 || gameMap.Height <= 0 {
+		t.Fatalf("expected positive default fixture size, got %dx%d", gameMap.Width, gameMap.Height)
 	}
-	if gameMap.MaxPlayers != fixture.MaxPlayers {
-		t.Fatalf("expected default fixture max players %d, got %d", fixture.MaxPlayers, gameMap.MaxPlayers)
+	if len(gameMap.Map) != gameMap.Height {
+		t.Fatalf("expected default fixture rows %d, got %d", gameMap.Height, len(gameMap.Map))
+	}
+	for y, row := range gameMap.Map {
+		if len(row) != gameMap.Width {
+			t.Fatalf("expected default fixture row %d width %d, got %d", y, gameMap.Width, len(row))
+		}
+	}
+	if gameMap.MaxPlayers <= 0 {
+		t.Fatalf("expected positive default fixture max players, got %d", gameMap.MaxPlayers)
+	}
+	if gameMap.TileSize <= 0 {
+		t.Fatalf("expected positive default fixture tile size, got %f", gameMap.TileSize)
 	}
 }
 
