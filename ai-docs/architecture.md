@@ -67,6 +67,7 @@ State.Step(inputs []InputCommand) Snapshot
 - projectile speed/damage/radius = `13`, `10`, `0.3`
 - default map fixture path = `internal/simulation/fixtures/default-map.json`
 - fixture load/validation failure fallback = 5x5 static map, max players `6`
+- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 없으면 legacy 5x5 좌표 fallback
 
 Movement:
 
@@ -122,6 +123,7 @@ WebSocket:
 - 발급된 room/player만 연결할 수 있습니다.
 - waiting room은 input을 받을 수 있지만 snapshot을 보내지 않습니다.
 - started room은 30Hz로 snapshot을 broadcast합니다.
+- WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
 ## Cleanup

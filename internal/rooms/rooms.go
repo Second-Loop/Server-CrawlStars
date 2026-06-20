@@ -25,6 +25,7 @@ const (
 	defaultHardRoomLifetime      = time.Hour
 	defaultRoomWebSocketCloseMsg = "room expired"
 	defaultRoomDebugDeleteMsg    = "room deleted"
+	webSocketWriteTimeout        = 10 * time.Millisecond
 )
 
 type Store struct {
@@ -715,7 +716,7 @@ func writeWebSocketJSON(conn *websocket.Conn, message any) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), webSocketWriteTimeout)
 	defer cancel()
 	_ = conn.Write(ctx, websocket.MessageText, payload)
 }
@@ -792,18 +793,34 @@ type errorMessage struct {
 
 func simulationPlayers(players []playerResponse, gameMap simulation.MapData) []simulation.PlayerData {
 	result := make([]simulation.PlayerData, 0, len(players))
-	for _, player := range players {
+	spawns := spawnPoints(gameMap)
+	for index, player := range players {
 		result = append(result, simulation.PlayerData{
 			ID:   simulation.PlayerID(player.ID),
 			Team: simulation.Team(player.Team),
 			Slot: player.Slot,
-			Pos:  spawnPosition(gameMap, player),
+			Pos:  spawnPosition(gameMap, spawns, index, player),
 		})
 	}
 	return result
 }
 
-func spawnPosition(gameMap simulation.MapData, player playerResponse) simulation.Vector2 {
+func spawnPoints(gameMap simulation.MapData) []simulation.Vector2 {
+	spawns := make([]simulation.Vector2, 0)
+	for y, row := range gameMap.Map {
+		for x, tile := range row {
+			if tile == simulation.TileSpawnPoint {
+				spawns = append(spawns, gameMap.WorldPos(x, y))
+			}
+		}
+	}
+	return spawns
+}
+
+func spawnPosition(gameMap simulation.MapData, spawns []simulation.Vector2, index int, player playerResponse) simulation.Vector2 {
+	if len(spawns) > 0 {
+		return spawns[index%len(spawns)]
+	}
 	if player.Team == "blue" {
 		return gameMap.WorldPos(3, 3)
 	}
