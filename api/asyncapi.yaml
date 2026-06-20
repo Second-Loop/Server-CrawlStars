@@ -15,9 +15,9 @@ channels:
     address: /rooms/{roomID}/players/{playerID}
     parameters:
       roomID:
-        description: `POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID입니다.
+        description: "`POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID입니다."
       playerID:
-        description: `POST /rooms/{roomID}/players` 또는 `POST /matchmaking/join`으로 받은 player ID입니다.
+        description: "`POST /rooms/{roomID}/players` 또는 `POST /matchmaking/join`으로 받은 player ID입니다."
     messages:
       input:
         $ref: "#/components/messages/InputMessage"

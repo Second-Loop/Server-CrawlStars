@@ -49,6 +49,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultProjectileDamage = 10`
 - `DefaultProjectileRadius = 0.3`
 - `StaticMapFixture().MaxPlayers = 6`
+- player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
 
 공통 constants artifact는 아직 없고 `SL-30` 범위입니다.
 
@@ -65,6 +66,7 @@ WS /rooms/{roomID}/players/{playerID}
 - 같은 room/player의 중복 연결은 거부합니다.
 - waiting room도 연결과 input은 허용합니다.
 - gameplay snapshot은 room이 started가 된 뒤에만 broadcast합니다.
+- snapshot WebSocket write deadline은 10ms입니다.
 
 Client input:
 
