@@ -2,7 +2,9 @@ asyncapi: 3.0.0
 info:
   title: Server Crawl Stars E1 WebSocket API
   version: 0.1.0
-  description: E1 debug WebSocket contract for room input and snapshot streaming.
+  description: |
+    E1/E2 개발용 WebSocket 계약입니다. Client는 input을 보내고 server는 started room에서 snapshot을 broadcast합니다.
+    Room이 waiting 상태이면 input은 받을 수 있지만 gameplay snapshot은 오지 않습니다.
 x-stability: e1-debug
 servers:
   local:
@@ -13,9 +15,9 @@ channels:
     address: /rooms/{roomID}/players/{playerID}
     parameters:
       roomID:
-        description: Room ID issued by POST /rooms.
+        description: `POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID입니다.
       playerID:
-        description: Player ID issued by POST /rooms/{roomID}/players.
+        description: `POST /rooms/{roomID}/players` 또는 `POST /matchmaking/join`으로 받은 player ID입니다.
     messages:
       input:
         $ref: "#/components/messages/InputMessage"
@@ -62,6 +64,7 @@ components:
           type: number
     InputMessage:
       type: object
+      description: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용됩니다.
       properties:
         MoveDir:
           $ref: "#/components/schemas/Vector2"
@@ -69,6 +72,7 @@ components:
           $ref: "#/components/schemas/Vector2"
         PressedAttack:
           type: boolean
+          description: 이번 tick 공격 trigger입니다. 조준 유지용 AttackDir와 분리합니다.
     SnapshotMessage:
       type: object
       required: [Type, Snapshot]
@@ -99,6 +103,7 @@ components:
     Snapshot:
       type: object
       required: [Tick, Players, Projectiles]
+      description: started room에서 30Hz로 broadcast되는 server-authoritative snapshot입니다.
       properties:
         Tick:
           type: integer

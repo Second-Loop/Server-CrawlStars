@@ -21,7 +21,7 @@ function renderOpenAPI(specText) {
   assertSpecPresent(specText, "openapi: 3.1.0", "OpenAPI");
 
   return `<!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -60,29 +60,29 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E1 debug WebSocket contract for room input and snapshot streaming.",
+    description: "E1/E2 개발용 WebSocket 계약입니다. started room에서 input과 snapshot 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
-        <h2>Channel</h2>
+        <h2>연결 채널</h2>
         <article class="operation">
           <div class="method">WS</div>
           <div>
             <h3>${escapeHTML(channelAddress)}</h3>
-            <p>Connect with a REST-issued room ID and player ID.</p>
+            <p>REST에서 받은 room ID와 player ID로 연결합니다. waiting room에서는 input만 받고 snapshot은 보내지 않습니다.</p>
           </div>
         </article>
       </section>
       <section class="panel">
-        <h2>Messages</h2>
+        <h2>메시지</h2>
         <div class="grid">
           <article>
             <h3>Input</h3>
-            <p><code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code></p>
+            <p><code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다.</p>
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Type: snapshot</code>, <code>Snapshot</code>, <code>Players</code>, <code>Projectiles</code></p>
+            <p>started room에서 <code>Type: snapshot</code>, <code>Players</code>, <code>Projectiles</code>를 받습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -91,7 +91,7 @@ function renderAsyncAPI(specText) {
         </div>
       </section>
       <section class="panel">
-        <h2>Schemas</h2>
+        <h2>스키마</h2>
         <p>${schemas.map((schema) => `<code>${escapeHTML(schema)}</code>`).join(" ")}</p>
       </section>
     `,
@@ -133,7 +133,7 @@ function extractLineValue(text, prefix) {
 
 function page({ title, eyebrow, description, rawPath, content }) {
   return `<!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

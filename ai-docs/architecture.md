@@ -26,6 +26,7 @@ internal/simulation
   transport-independent gameplay core
   State.Step(inputs) -> Snapshot
   map, movement, collision, projectile, hit, HP/death rule
+  default map fixture loader
 ```
 
 `internal/simulation`은 HTTP, WebSocket, room lifecycle, matchmaking을 모릅니다. `internal/rooms`가 REST/WebSocket transport와 room state를 맡고, tick마다 simulation을 호출합니다.
@@ -64,7 +65,8 @@ State.Step(inputs []InputCommand) Snapshot
 - `TileSize = 1.2`
 - player speed/radius/HP = `2`, `0.5`, `100`
 - projectile speed/damage/radius = `13`, `10`, `0.3`
-- static map fixture max players = `6`
+- default map fixture path = `internal/simulation/fixtures/default-map.json`
+- fixture load/validation failure fallback = 5x5 static map, max players `6`
 
 Movement:
 
@@ -96,9 +98,15 @@ REST debug API:
 
 - `GET /rooms`
 - `POST /rooms`
+- `DELETE /rooms`
 - `GET /rooms/{roomID}`
+- `DELETE /rooms/{roomID}`
 - `POST /rooms/{roomID}/players`
 - `POST /rooms/{roomID}/start`
+
+Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
+
+`cmd/server`는 시작할 때 `internal/simulation/fixtures/default-map.json`을 로드해 `rooms.StoreConfig`로 주입합니다. fixture를 읽지 못하거나 shape 검증에 실패하면 `internal/simulation.StaticMapFixture()`를 사용합니다.
 
 Simple matchmaking:
 

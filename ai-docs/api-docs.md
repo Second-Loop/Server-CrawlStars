@@ -34,12 +34,16 @@ GET /health
 POST /matchmaking/join
 GET /rooms
 POST /rooms
+DELETE /rooms
 GET /rooms/{roomID}
+DELETE /rooms/{roomID}
 POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
 `POST /matchmaking/join`은 Unity client가 room/player/WebSocket path를 한 번에 받을 수 있게 하는 simple connector입니다. Production queue, rating, auth, persistence는 없습니다. 두 번째 player가 들어오면 room simulation이 바로 start됩니다.
+
+`DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 debug API입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다.
 
 SL-12에서 논의된 match complete event, loading/ready ACK, 5초 countdown, start 전 cancel은 `SL-58` 범위입니다. 새 REST polling이나 SSE를 먼저 늘리기보다 기존 gameplay WebSocket 위에 match state message를 얹는 방향을 우선합니다.
 

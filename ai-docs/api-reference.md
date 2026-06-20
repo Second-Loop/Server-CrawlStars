@@ -20,7 +20,9 @@ GET /health
 POST /matchmaking/join
 GET /rooms
 POST /rooms
+DELETE /rooms
 GET /rooms/{roomID}
+DELETE /rooms/{roomID}
 POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
@@ -59,6 +61,12 @@ Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유
 
 현재는 match-state WebSocket event, client ready ACK, countdown, start 전 cancel을 지원하지 않습니다. 이 흐름은 `SL-58`에서 다룹니다.
 
+시뮬레이션 시작 트리거:
+
+- `/matchmaking/join`을 한 번만 호출하면 room은 `waiting`이고 gameplay snapshot은 아직 오지 않습니다.
+- 같은 waiting room에 두 번째 player가 들어오면 서버가 자동으로 `started`로 바꾸고 30Hz snapshot을 보냅니다.
+- 1명으로 디버그할 때는 `POST /rooms/{roomID}/start`를 호출하면 됩니다.
+
 ### Room debug API
 
 Room response:
@@ -73,15 +81,35 @@ Room response:
       "team": "red",
       "slot": 0
     }
-  ],
-  "maxPlayers": 6,
-  "latestSnapshot": {
-    "tick": 0,
-    "playerCount": 1,
+    ],
+    "maxPlayers": 6,
+    "map": {
+      "width": 5,
+      "height": 5,
+      "index": 0,
+      "maxPlayers": 6,
+      "tileSize": 1.2,
+      "map": [
+        [1, 1, 1, 1, 1],
+        [1, 0, 0, 0, 1],
+        [1, 0, 1, 0, 1],
+        [1, 0, 0, 0, 1],
+        [1, 1, 1, 1, 1]
+      ]
+    },
+    "latestSnapshot": {
+      "tick": 0,
+      "playerCount": 1,
     "projectileCount": 0
   }
 }
 ```
+
+`map`은 서버 simulation이 실제 collision에 쓰는 tile grid입니다. tile 값은 `0=ground`, `1=wall`, `2=spawnPoint`입니다.
+
+기본 맵 파일은 `internal/simulation/fixtures/default-map.json`입니다. 서버는 시작할 때 이 JSON fixture를 로드해 room store에 주입하고, 파일 로드나 검증에 실패하면 `internal/simulation.StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file과 공통 artifact로 맞추는 작업은 `SL-30` 범위입니다.
+
+`latestSnapshot`은 마지막으로 생성된 snapshot의 요약입니다. 아직 room이 started 전이거나 첫 tick 전이면 `tick: 0`입니다.
 
 Error response:
 
@@ -102,6 +130,25 @@ Error response:
 - `room_has_no_players`
 - `method_not_allowed`
 - `not_found`
+
+### 409 room cap 회복
+
+Active room cap은 5개입니다. 테스트 중 `room_cap_reached`가 나오면 debug API로 room을 비울 수 있습니다.
+
+```text
+DELETE /rooms
+DELETE /rooms/{roomID}
+```
+
+응답:
+
+```json
+{
+  "deleted": 5
+}
+```
+
+삭제 시 해당 room의 ticker와 WebSocket connection도 함께 닫습니다. 서버가 in-memory room만 사용하므로 persistence 삭제는 없습니다.
 
 ## WebSocket
 

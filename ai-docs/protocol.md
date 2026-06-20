@@ -139,6 +139,20 @@ POST /matchmaking/join
       }
     ],
     "maxPlayers": 6,
+    "map": {
+      "width": 5,
+      "height": 5,
+      "index": 0,
+      "maxPlayers": 6,
+      "tileSize": 1.2,
+      "map": [
+        [1, 1, 1, 1, 1],
+        [1, 0, 0, 0, 1],
+        [1, 0, 1, 0, 1],
+        [1, 0, 0, 0, 1],
+        [1, 1, 1, 1, 1]
+      ]
+    },
     "latestSnapshot": {
       "tick": 0,
       "playerCount": 1,
@@ -156,6 +170,10 @@ POST /matchmaking/join
 
 두 번째 player가 같은 waiting room에 들어오면 simulation이 바로 start됩니다. Match complete event, client loading/ready ACK, countdown, start 전 cancel은 아직 없습니다.
 
+첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
+
+Room response의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이며, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file 또는 shared constants artifact와 맞추는 작업은 `SL-30` 범위입니다.
+
 `SL-58`에서는 이 흐름을 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message로 추가합니다. REST polling이나 SSE를 먼저 늘리지 않습니다.
 
 ## Room cleanup
@@ -166,6 +184,15 @@ POST /matchmaking/join
 - connected client가 있으면 idle/all-disconnected TTL cleanup을 막습니다.
 
 현재 WebSocket close는 connection과 pending input만 제거합니다. start 전 player 제거와 match cancel은 `SL-58` 범위입니다.
+
+디버그 테스트 중 즉시 비워야 하면 REST debug API를 사용합니다.
+
+```text
+DELETE /rooms
+DELETE /rooms/{roomID}
+```
+
+삭제는 in-memory room, room-local ticker, WebSocket connection을 정리합니다. Persistence는 아직 없으므로 DB 삭제는 없습니다.
 
 ## 2인 검증 시나리오
 
