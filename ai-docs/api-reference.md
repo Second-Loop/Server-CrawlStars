@@ -29,7 +29,7 @@ POST /rooms/{roomID}/start
 
 ### `POST /matchmaking/join`
 
-Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유 waiting room이 없으면 새 room을 만듭니다. 같은 room에 두 번째 player가 들어오면 simulation을 바로 start합니다.
+Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유 waiting room이 없으면 새 room을 만듭니다. 같은 room에 두 번째 player가 들어오면 REST 응답 shape는 유지하되 room은 ready/countdown 전까지 `waiting`으로 남습니다.
 
 ```json
 {
@@ -42,45 +42,6 @@ Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유
         "team": "red",
         "slot": 0
       }
-    ],
-    "maxPlayers": 6,
-    "latestSnapshot": {
-      "tick": 0,
-      "playerCount": 1,
-      "projectileCount": 0
-    }
-  },
-  "player": {
-    "id": "player-1",
-    "team": "red",
-    "slot": 0
-  },
-  "webSocketPath": "/rooms/room-1/players/player-1"
-}
-```
-
-현재는 match-state WebSocket event, client ready ACK, countdown, start 전 cancel을 지원하지 않습니다. 이 흐름은 `SL-58`에서 다룹니다.
-
-시뮬레이션 시작 트리거:
-
-- `/matchmaking/join`을 한 번만 호출하면 room은 `waiting`이고 gameplay snapshot은 아직 오지 않습니다.
-- 같은 waiting room에 두 번째 player가 들어오면 서버가 자동으로 `started`로 바꾸고 30Hz snapshot을 보냅니다.
-- 1명으로 디버그할 때는 `POST /rooms/{roomID}/start`를 호출하면 됩니다.
-
-### Room debug API
-
-Room response:
-
-```json
-{
-  "id": "room-1",
-  "status": "waiting",
-  "players": [
-    {
-      "id": "player-1",
-      "team": "red",
-      "slot": 0
-    }
     ],
     "maxPlayers": 6,
     "map": {
@@ -100,12 +61,66 @@ Room response:
     "latestSnapshot": {
       "tick": 0,
       "playerCount": 1,
+      "projectileCount": 0
+    }
+  },
+  "player": {
+    "id": "player-1",
+    "team": "red",
+    "slot": 0
+  },
+  "webSocketPath": "/rooms/room-1/players/player-1"
+}
+```
+
+시뮬레이션 시작 트리거:
+
+- `/matchmaking/join`을 한 번만 호출하면 room은 `waiting`이고 gameplay snapshot은 아직 오지 않습니다.
+- 같은 waiting room에 두 번째 player가 들어오면 room은 matchmaking match로 잠기고 late join 대상에서 빠집니다.
+- 두 player가 WebSocket에 연결하면 `Type: "Ready"` event로 map과 player별 spawn 위치를 받습니다.
+- 두 client가 `{"Type":"ready"}`를 보내면 5초 countdown 후 `Snapshot.status: "started"`가 오고 30Hz snapshot이 시작됩니다.
+- start 전 WebSocket close는 match cancel로 room을 제거합니다.
+- 1명으로 디버그할 때는 `POST /rooms/{roomID}/start`를 호출하면 됩니다.
+
+### Room debug API
+
+Room response:
+
+```json
+{
+  "id": "room-1",
+  "status": "waiting",
+  "players": [
+    {
+      "id": "player-1",
+      "team": "red",
+      "slot": 0
+    }
+  ],
+  "maxPlayers": 6,
+  "map": {
+    "width": 5,
+    "height": 5,
+    "index": 0,
+    "maxPlayers": 6,
+    "tileSize": 1.2,
+    "map": [
+      [1, 1, 1, 1, 1],
+      [1, 0, 0, 0, 1],
+      [1, 0, 1, 0, 1],
+      [1, 0, 0, 0, 1],
+      [1, 1, 1, 1, 1]
+    ]
+  },
+  "latestSnapshot": {
+    "tick": 0,
+    "playerCount": 1,
     "projectileCount": 0
   }
 }
 ```
 
-`map`은 서버 simulation이 실제 collision에 쓰는 tile grid입니다. tile 값은 `0=ground`, `1=wall`, `2=spawnPoint`입니다.
+`map`은 서버 simulation이 실제 collision에 쓰는 tile grid입니다. tile 값은 `0=ground`, `1=wall`, `2=spawnPoint`입니다. `map` row는 Base64 문자열이 아니라 JSON number array입니다.
 
 기본 맵 파일은 `internal/simulation/fixtures/default-map.json`입니다. 서버는 시작할 때 이 JSON fixture를 로드해 room store에 주입하고, 파일 로드나 검증에 실패하면 `internal/simulation.StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file과 공통 artifact로 맞추는 작업은 `SL-30` 범위입니다.
 
@@ -168,16 +183,70 @@ Client input:
 }
 ```
 
+Ready event:
+
+```json
+{
+  "Type": "Ready",
+  "Map": {
+    "width": 5,
+    "height": 5,
+    "index": 0,
+    "maxPlayers": 6,
+    "tileSize": 1.2,
+    "map": [
+      [1, 1, 1, 1, 1],
+      [1, 0, 0, 0, 1],
+      [1, 0, 1, 0, 1],
+      [1, 0, 0, 0, 1],
+      [1, 1, 1, 1, 1]
+    ]
+  },
+  "Players": [
+    {
+      "Id": "player-1",
+      "Team": "red",
+      "Slot": 0,
+      "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    }
+  ]
+}
+```
+
 Server snapshot:
 
 ```json
 {
   "Type": "snapshot",
   "Snapshot": {
+    "status": "started",
     "Tick": 1,
     "Players": [],
     "Projectiles": []
   }
+}
+```
+
+Match status snapshot:
+
+```json
+{
+  "Type": "snapshot",
+  "Snapshot": {
+    "status": "starting",
+    "countdown": 5,
+    "Tick": 0,
+    "Players": null,
+    "Projectiles": null
+  }
+}
+```
+
+Ready ACK:
+
+```json
+{
+  "Type": "ready"
 }
 ```
 
@@ -194,6 +263,7 @@ Invalid input:
 ```
 
 Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
+단, match lifecycle field인 `Snapshot.status`와 `Snapshot.countdown`은 REST `room.status`와 맞춰 lowercase입니다.
 
 ## 현재 gameplay 값
 
@@ -213,10 +283,13 @@ Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack
 
 1. `POST /matchmaking/join`을 두 번 호출합니다.
 2. 두 응답의 `webSocketPath`로 WebSocket을 엽니다.
-3. 한 client가 movement input을 보내면 두 연결이 같은 snapshot을 받아야 합니다.
-4. 공격이 target에 닿으면 두 연결에서 projectile `IsDestroyed: true`, target `HP` 감소가 보여야 합니다.
-5. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
-6. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
+3. 두 연결이 같은 `Type: "Ready"` event를 받아야 합니다.
+4. Ready event의 `Map.map` row는 숫자 배열이어야 하고, `Players[].SpawnPosition`이 있어야 합니다.
+5. 두 client가 `{"Type":"ready"}`를 보내면 `starting` countdown 후 `started`를 받아야 합니다.
+6. 한 client가 movement input을 보내면 두 연결이 같은 gameplay snapshot을 받아야 합니다.
+7. 공격이 target에 닿으면 두 연결에서 projectile `IsDestroyed: true`, target `HP` 감소가 보여야 합니다.
+8. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
+9. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
 
 자동 회귀는 `go test ./internal/rooms`가 담당합니다.
 

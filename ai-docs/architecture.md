@@ -18,6 +18,7 @@ internal/rooms
   in-memory room store
   REST debug lifecycle
   simple matchmaking connector
+  match ready/countdown state
   WebSocket connection adapter
   room-local 30Hz ticker
   TTL cleanup
@@ -105,7 +106,7 @@ REST debug API:
 - `POST /rooms/{roomID}/players`
 - `POST /rooms/{roomID}/start`
 
-Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
+Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
 
 `cmd/server`는 시작할 때 `internal/simulation/fixtures/default-map.json`을 로드해 `rooms.StoreConfig`로 주입합니다. fixture를 읽지 못하거나 shape 검증에 실패하면 `internal/simulation.StaticMapFixture()`를 사용합니다.
 
@@ -114,7 +115,9 @@ Simple matchmaking:
 - `POST /matchmaking/join`
 - waiting room을 찾거나 만듭니다.
 - player를 발급합니다.
-- 2명이 되면 바로 room을 start합니다.
+- 2명이 되면 room을 matched 상태로 잠그고 late join을 막습니다.
+- 두 WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
+- 두 client가 `Type: ready`를 보내면 5초 countdown 후 room을 start합니다.
 - response는 `room`, `player`, `webSocketPath`를 포함합니다.
 
 WebSocket:
@@ -122,7 +125,8 @@ WebSocket:
 - `WS /rooms/{roomID}/players/{playerID}`
 - 발급된 room/player만 연결할 수 있습니다.
 - waiting room은 input을 받을 수 있지만 snapshot을 보내지 않습니다.
-- started room은 30Hz로 snapshot을 broadcast합니다.
+- matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown`을 보냅니다.
+- started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
@@ -134,6 +138,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - started all-disconnected TTL: 5분
 - hard lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
+- matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
 
 ## 의도적으로 없는 것
 
@@ -145,4 +150,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - respawn, score, win/loss
 - bot replacement
 
-다음 architecture 확장은 `SL-58` match start state transition과 `SL-30` shared constants/config를 우선합니다.
+다음 architecture 확장은 `SL-30` shared constants/config를 우선합니다.

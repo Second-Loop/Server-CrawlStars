@@ -174,7 +174,7 @@
 
 ## ADR-0013: SL-49 Matchmaking은 단순 Room Join Connector로 제한
 
-상태: 승인됨
+상태: 승인됨, SL-58에서 start 조건 일부 대체됨
 
 맥락: SL-49는 Unity client가 수동 debug `/rooms` flow를 직접 호출하지 않고도 room/player 정보와 WebSocket path를 받을 수 있어야 합니다. 동시에 E2 범위는 production matchmaking queue, rating algorithm, auth, persistence, scheduler/runner framework를 포함하지 않습니다. 현재 simulation fixture의 `MaxPlayers`는 6이며 10명 확장은 후속 issue입니다.
 
@@ -186,6 +186,7 @@
 - Existing `/rooms` manual debug lifecycle과 WebSocket snapshot flow는 유지됩니다.
 - Active room cap, room TTL cleanup, fixture max player cap은 기존 in-memory store boundary를 따릅니다.
 - Production matching queue, persistence, auth, dashboard, scheduler/runner/orchestration은 여전히 제외됩니다.
+- SL-58 이후 matchmaking join은 2명째 참가 시 즉시 simulation을 start하지 않고 WebSocket ready/countdown 이후 start합니다.
 
 ## ADR-0014: E1 Projectile Movement는 Existing Projectile Tick으로 처리
 
@@ -214,3 +215,20 @@
 - 2명 player hit flow는 `internal/simulation` unit test로 deterministic하게 검증됩니다.
 - WebSocket snapshot은 `HP` field를 포함하므로 AsyncAPI와 사람이 읽는 API docs를 함께 갱신해야 합니다.
 - Respawn, score, win/loss, character-specific stats는 후속 issue에서 별도 acceptance criteria와 tests로 추가해야 합니다.
+
+## ADR-0016: SL-58 Match Start는 Ready Event와 Snapshot.status로 표현
+
+상태: 승인됨
+
+맥락: SL-58은 `/matchmaking/join` 이후 client asset load/render 준비를 기다린 뒤 countdown을 거쳐 simulation을 시작해야 합니다. REST `POST /matchmaking/join` response shape는 유지해야 하며, 새 REST polling이나 SSE를 추가하지 않는 것이 범위입니다. Client는 game scene render 전에 서버가 쓰는 map과 player별 spawn position을 알아야 하므로, pre-game render data와 gameplay snapshot을 구분해야 합니다.
+
+결정: Matchmaking에서 2명째 player가 들어오면 room을 matched 상태로 잠그고 late join 대상에서 제외하지만 REST `room.status`는 `waiting`으로 유지합니다. 두 matched player가 WebSocket에 연결하면 server는 `{"Type":"Ready","Map":...,"Players":[...]}` event를 양쪽 client에 broadcast합니다. `Map.map` row는 Base64 문자열이 아니라 JSON number array이고, `Players[].SpawnPosition`은 서버 spawn assignment 결과입니다. Client는 준비 완료 시 `{"Type":"ready"}`를 보내고, 모든 required client가 ready가 되면 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown`을 5부터 1까지 broadcast합니다. Countdown 이후 `Snapshot.status: "started"`를 보낸 뒤 room-local 30Hz simulation ticker를 시작합니다. Start 전 WebSocket close는 match cancel로 처리해 room과 남은 connection을 정리합니다.
+
+결과:
+
+- REST `/matchmaking/join` response shape와 `room.status` casing은 유지됩니다.
+- Ready event는 render data를 담당하고, Snapshot lifecycle field는 countdown 이후 `starting/started`를 담당합니다.
+- WebSocket lifecycle field는 lowercase `status/countdown`, gameplay field는 기존 client-compatible PascalCase `Tick/Players/Projectiles`를 유지합니다.
+- `internal/simulation`은 match lifecycle을 모르는 transport-independent gameplay core로 남습니다.
+- AsyncAPI는 Ready event, ready ACK, countdown, gameplay snapshot 예시를 OpenAPI 수준으로 자세히 기록해야 합니다.
+- Start 이후 disconnect policy, bot replacement, ping/pong timeout은 여전히 별도 issue 범위입니다.

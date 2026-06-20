@@ -236,6 +236,35 @@ func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.
 	}
 }
 
+func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T) {
+	handler := Handler(NewStore(5))
+
+	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
+	}
+
+	var joined struct {
+		Room struct {
+			Map struct {
+				Rows []json.RawMessage `json:"map"`
+			} `json:"map"`
+		} `json:"room"`
+	}
+	decodeResponse(t, rec, &joined)
+	if len(joined.Room.Map.Rows) == 0 {
+		t.Fatal("expected map rows in matchmaking response")
+	}
+
+	var firstRow []int
+	if err := json.Unmarshal(joined.Room.Map.Rows[0], &firstRow); err != nil {
+		t.Fatalf("expected raw map row to be a JSON number array, got %s: %v", joined.Room.Map.Rows[0], err)
+	}
+	if len(firstRow) == 0 || firstRow[0] != int(simulation.TileWall) {
+		t.Fatalf("expected first map tile to be wall value %d, got %+v", simulation.TileWall, firstRow)
+	}
+}
+
 func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	gameMap := customRoomMap()
 	store := newStore(5, newFakeClock(), gameMap)
@@ -254,8 +283,8 @@ func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	if second.Room.ID != joined.Room.ID {
 		t.Fatalf("expected second join to use configured waiting room %q, got %q", joined.Room.ID, second.Room.ID)
 	}
-	if second.Room.Status != RoomStatusStarted {
-		t.Fatalf("expected room to start at configured map capacity, got %q", second.Room.Status)
+	if second.Room.Status != RoomStatusWaiting {
+		t.Fatalf("expected matched room to wait for ready before start, got %q", second.Room.Status)
 	}
 
 	third := joinMatchmaking(t, handler)
@@ -292,7 +321,7 @@ func TestSimulationPlayersUseMapSpawnPointTiles(t *testing.T) {
 	assertPlayerSpawn(t, result, "player-2", gameMap.WorldPos(3, 2))
 }
 
-func TestHandlerMatchmakingSecondJoinUsesSameRoomAndStartsSimulation(t *testing.T) {
+func TestHandlerMatchmakingSecondJoinUsesSameRoomAndWaitsForReady(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	defer store.Close()
@@ -307,14 +336,14 @@ func TestHandlerMatchmakingSecondJoinUsesSameRoomAndStartsSimulation(t *testing.
 	if second.Player.ID == first.Player.ID {
 		t.Fatalf("expected distinct player IDs, got %q", second.Player.ID)
 	}
-	if second.Room.Status != RoomStatusStarted {
-		t.Fatalf("expected room to auto-start on second join, got %q", second.Room.Status)
+	if second.Room.Status != RoomStatusWaiting {
+		t.Fatalf("expected room to wait for ready before start, got %q", second.Room.Status)
 	}
 	if len(second.Room.Players) != 2 || second.Room.LatestSnapshot.PlayerCount != 2 {
-		t.Fatalf("expected two players in started room, got %+v", second.Room)
+		t.Fatalf("expected two players in matched room, got %+v", second.Room)
 	}
-	if fakeClock.RequestedDuration() != time.Second/time.Duration(simulation.TickRate) {
-		t.Fatalf("expected auto-start to create 30Hz ticker, got %s", fakeClock.RequestedDuration())
+	if fakeClock.RequestedDuration() != 0 {
+		t.Fatalf("expected matchmaking join not to create ticker before ready, got %s", fakeClock.RequestedDuration())
 	}
 }
 

@@ -19,12 +19,11 @@
 - projectile 생성, 이동, wall/boundary destroy
 - projectile hit, HP 감소, `IsDead` snapshot
 - 2-player WebSocket sync regression test
+- match Ready event/ready ACK/countdown/start state
+- start 전 WebSocket close cancel
 
 아직 안 되는 것:
 
-- match ready/loading/countdown state event
-- client ready ACK 후 simulation start
-- start 전 WebSocket close cancel/removal
 - start 후 disconnect 정책, ping/pong timeout, bot replacement
 - respawn, score, win/loss
 - production matchmaking queue, rating, auth, persistence
@@ -76,12 +75,12 @@ ai-docs                   사람이 읽는 운영/설계 문서
 2. 여유 있는 waiting room을 찾습니다.
 3. 없으면 새 waiting room을 만듭니다.
 4. player를 발급합니다.
-5. player 수가 2명이 되면 즉시 room을 start합니다.
+5. player 수가 2명이 되면 matchmaking room으로 잠그고 late join을 막습니다.
 6. `room`, `player`, `webSocketPath`를 반환합니다.
 
 Player ID는 `player-1`, `player-2`처럼 증가합니다. join index가 짝수면 red, 홀수면 blue이고, `slot`은 `playerIndex / 2`입니다.
 
-현재는 두 번째 player가 들어오면 바로 simulation이 시작됩니다. client loading/ready ACK를 기다리지 않습니다.
+두 번째 player가 들어와도 REST `room.status`는 `waiting`으로 남습니다. 두 player가 WebSocket에 연결하면 `Type: "Ready"` event로 map과 player별 spawn 위치를 받고, 양쪽 client가 `{"Type":"ready"}`를 보낸 뒤 5초 countdown이 끝나면 simulation이 시작됩니다.
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
@@ -95,7 +94,15 @@ Client는 다음 path에 연결합니다.
 WS /rooms/{roomID}/players/{playerID}
 ```
 
-서버는 upgrade 전에 room 존재 여부, player 소속 여부, 같은 player의 중복 연결 여부를 확인합니다. Waiting room도 연결과 input 수신은 허용하지만, started 전에는 gameplay snapshot을 보내지 않습니다.
+서버는 upgrade 전에 room 존재 여부, player 소속 여부, 같은 player의 중복 연결 여부를 확인합니다. Waiting room도 연결과 input 수신은 허용하지만, started 전 gameplay tick은 돌리지 않습니다.
+
+Matchmaking room WebSocket 상태:
+
+1. 두 matched player가 모두 연결되면 `{"Type":"Ready","Map":...,"Players":[...]}`를 받습니다.
+2. client는 이 map과 `Players[].SpawnPosition`으로 렌더 준비를 끝낸 뒤 `{"Type":"ready"}`를 보냅니다.
+3. 모두 ready가 되면 `Snapshot.status: "starting"`과 `Snapshot.countdown`이 5부터 1까지 broadcast됩니다.
+4. countdown 이후 `Snapshot.status: "started"`가 오고, 다음 tick부터 30Hz gameplay snapshot이 시작됩니다.
+5. start 전 WebSocket close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
 
 ### 4. Room start
 
@@ -158,7 +165,7 @@ Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
 
 Snapshot의 `PressedAttack`은 input echo/debug 성격이 강합니다. 제거하려면 WebSocket schema 변경이므로 별도 issue에서 다룹니다.
 
-Room REST response의 `map`은 서버 simulation이 쓰는 `MapData`입니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이고, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client/server shared constants artifact는 `SL-30`에서 다룹니다.
+Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이고, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client/server shared constants artifact는 `SL-30`에서 다룹니다.
 
 ### 8. Cleanup
 
@@ -169,7 +176,7 @@ Room store는 in-memory입니다.
 - hard room lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-현재 WebSocket close는 client connection과 pending input만 제거합니다. started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. start 전 waiting player 제거와 match cancel은 아직 없습니다.
+현재 WebSocket close는 client connection과 pending input을 제거합니다. started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
 
 ## Linear 흐름
 
@@ -193,7 +200,7 @@ Room store는 in-memory입니다.
 - `SL-12`: user matchmaking parent
   - `SL-49`: server simple matchmaking
   - `SL-50`: client matchmaking
-  - `SL-58`: server ready/loading/countdown/cancel
+- `SL-58`: server ready/loading/countdown/cancel
 - `SL-14`: client prototype logic server migration
   - server child issues `SL-53` to `SL-56`
   - `SL-57`: client logic split
@@ -203,19 +210,12 @@ Room store는 in-memory입니다.
 
 ## 다음 추천 작업
 
-1. `SL-58`: match start state transition
-   - `POST /matchmaking/join` response shape 유지
-   - WebSocket match state message 추가
-   - client ready/loading-complete input 추가
-   - 모두 ready면 countdown 후 simulation start
-   - start 전 WebSocket close는 cancel/removal 처리
-
-2. `SL-30`: shared constants/config v1
+1. `SL-30`: shared constants/config v1
    - tick rate, tile size, player/projectile defaults, max players, map fixture를 한 artifact로 정리
    - Go 상수와 artifact drift 검증
    - Unity가 읽을 field/unit 문서화
 
-3. `SL-14` closeout
+2. `SL-14` closeout
    - `SL-57` client PR 상태 확인
    - server/client acceptance criteria가 모두 닫히면 parent issue 정리
 
