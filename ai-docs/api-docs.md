@@ -41,11 +41,11 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-`POST /matchmaking/join`은 Unity client가 room/player/WebSocket path를 한 번에 받을 수 있게 하는 simple connector입니다. Production queue, rating, auth, persistence는 없습니다. 두 번째 player가 들어오면 room simulation이 바로 start됩니다.
+`POST /matchmaking/join`은 Unity client가 room/player/WebSocket path를 한 번에 받을 수 있게 하는 simple connector입니다. Production queue, rating, auth, persistence는 없습니다. 두 번째 player가 들어오면 room은 matched 상태로 잠기지만 REST response shape와 `room.status: waiting`은 유지합니다.
 
-`DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 debug API입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다.
+`DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 debug API입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array입니다.
 
-SL-12에서 논의된 match complete event, loading/ready ACK, 5초 countdown, start 전 cancel은 `SL-58` 범위입니다. 새 REST polling이나 SSE를 먼저 늘리기보다 기존 gameplay WebSocket 위에 match state message를 얹는 방향을 우선합니다.
+Match Ready event, ready ACK, 5초 countdown, start 전 cancel은 WebSocket 계약에서 다룹니다. 새 REST polling이나 SSE를 늘리지 않고 Ready event와 기존 gameplay WebSocket wrapper인 `Type: snapshot` 안의 `Snapshot.status`/`Snapshot.countdown`을 사용합니다.
 
 ## 현재 WebSocket surface
 
@@ -68,7 +68,59 @@ Server message wrapper:
 ```json
 {
   "Type": "snapshot",
-  "Snapshot": {}
+  "Snapshot": {
+    "status": "started",
+    "Tick": 1,
+    "Players": [],
+    "Projectiles": []
+  }
+}
+```
+
+Ready event:
+
+```json
+{
+  "Type": "Ready",
+  "Map": {
+    "width": 5,
+    "height": 5,
+    "index": 0,
+    "maxPlayers": 6,
+    "tileSize": 1.2,
+    "map": [[1, 1, 1, 1, 1]]
+  },
+  "Players": [
+    {
+      "Id": "player-1",
+      "Team": "red",
+      "Slot": 0,
+      "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    }
+  ]
+}
+```
+
+Match ready ACK:
+
+```json
+{
+  "Type": "ready"
+}
+```
+
+Countdown snapshot:
+
+```json
+{
+  "Type": "snapshot",
+  "Snapshot": {
+    "status": "starting",
+    "countdown": 5,
+    "Tick": 0,
+    "Players": null,
+    "Projectiles": null
+  }
 }
 ```
 

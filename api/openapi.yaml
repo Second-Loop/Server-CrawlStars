@@ -37,7 +37,8 @@ paths:
         여유 있는 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
-        같은 room에 두 번째 참가자가 들어오면 서버가 room을 즉시 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
+        같은 room에 두 번째 참가자가 들어와도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
+        두 client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 두 client가 `Type: ready` ACK를 보내면 5초 countdown 이후 room이 `started`로 바뀌고 30Hz snapshot broadcast를 시작합니다.
         1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
       responses:
@@ -238,14 +239,14 @@ components:
     Room:
       type: object
       required: [id, status, players, maxPlayers, map, latestSnapshot]
-      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용합니다. 기본 fixture 경로는 `internal/simulation/fixtures/default-map.json`입니다.
+      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용하며 row는 Base64 문자열이 아니라 JSON number array로 직렬화됩니다. 기본 fixture 경로는 `internal/simulation/fixtures/default-map.json`입니다.
       properties:
         id:
           type: string
           example: room-1
         status:
           type: string
-          description: waiting이면 snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다.
+          description: waiting이면 REST room lifecycle상 아직 gameplay snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다. Match render 준비는 WebSocket `Type: Ready`, countdown은 `Snapshot.status: starting`에서 봅니다.
           enum: [waiting, started]
         players:
           type: array
@@ -293,7 +294,7 @@ components:
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]
-      description: 서버 simulation이 사용하는 tile map입니다. 기본 fixture는 `internal/simulation/fixtures/default-map.json`에서 로드하고, 실패하면 5x5 static map으로 fallback합니다. tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
+      description: 서버 simulation이 사용하는 tile map입니다. 기본 fixture는 `internal/simulation/fixtures/default-map.json`에서 로드하고, 실패하면 5x5 static map으로 fallback합니다. tile 값은 0=ground, 1=wall, 2=spawnPoint이며 `map` row는 JSON number array입니다.
       properties:
         width:
           type: integer

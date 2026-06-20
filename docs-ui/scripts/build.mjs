@@ -60,7 +60,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E1/E2 개발용 WebSocket 계약입니다. started room에서 input과 snapshot 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Ready 이벤트, ready ACK, countdown, gameplay snapshot 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -69,24 +69,115 @@ function renderAsyncAPI(specText) {
           <div class="method">WS</div>
           <div>
             <h3>${escapeHTML(channelAddress)}</h3>
-            <p>REST에서 받은 room ID와 player ID로 연결합니다. waiting room에서는 input만 받고 snapshot은 보내지 않습니다.</p>
+            <p>REST에서 받은 room ID와 player ID로 연결합니다. Matchmaking room은 두 client가 모두 연결되면 <code>Type: Ready</code> 이벤트로 map과 spawn 정보를 보냅니다.</p>
           </div>
         </article>
+      </section>
+      <section class="panel">
+        <h2>상태 흐름</h2>
+        <div class="grid">
+          <article>
+            <h3>1. join</h3>
+            <p><code>POST /matchmaking/join</code> 응답의 <code>webSocketPath</code>로 연결합니다. REST <code>room.status</code>는 아직 <code>waiting</code>입니다.</p>
+          </article>
+          <article>
+            <h3>2. Ready</h3>
+            <p>두 player가 모두 WebSocket에 붙으면 <code>Type: Ready</code>와 함께 숫자 배열 map, player별 <code>SpawnPosition</code>을 받습니다.</p>
+          </article>
+          <article>
+            <h3>3. ready</h3>
+            <p>각 client는 준비가 끝나면 <code>{"Type":"ready"}</code>를 보냅니다.</p>
+          </article>
+          <article>
+            <h3>4. countdown</h3>
+            <p>모두 ready면 <code>Snapshot.status: starting</code>과 <code>Snapshot.countdown</code>을 받습니다.</p>
+          </article>
+          <article>
+            <h3>5. started</h3>
+            <p>countdown 후 <code>Snapshot.status: started</code>가 오고, 다음 tick부터 gameplay snapshot이 30Hz로 broadcast됩니다.</p>
+          </article>
+        </div>
       </section>
       <section class="panel">
         <h2>메시지</h2>
         <div class="grid">
           <article>
             <h3>Input</h3>
-            <p><code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다.</p>
+            <p><code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다. Gameplay input에는 <code>Type</code>을 넣지 않습니다.</p>
+          </article>
+          <article>
+            <h3>Ready Event</h3>
+            <p>Server가 <code>Type: Ready</code>, <code>Map</code>, <code>Players[].SpawnPosition</code>을 보냅니다.</p>
+          </article>
+          <article>
+            <h3>Ready ACK</h3>
+            <p>Client는 map load/render 준비가 끝나면 <code>Type: ready</code>를 보냅니다.</p>
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p>started room에서 <code>Type: snapshot</code>, <code>Players</code>, <code>Projectiles</code>를 받습니다.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다.</p>
           </article>
           <article>
             <h3>Error</h3>
             <p><code>Type: error</code>, <code>Error.code: invalid_input</code></p>
+          </article>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>예시</h2>
+        <div class="grid">
+          <article>
+            <h3>Ready Event</h3>
+            <pre><code>{
+  "Type": "Ready",
+  "Map": {
+    "width": 5,
+    "height": 5,
+    "index": 0,
+    "maxPlayers": 6,
+    "tileSize": 1.2,
+    "map": [[1, 1, 1, 1, 1]]
+  },
+  "Players": [
+    {
+      "Id": "player-1",
+      "Team": "red",
+      "Slot": 0,
+      "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    }
+  ]
+}</code></pre>
+          </article>
+          <article>
+            <h3>Ready ACK</h3>
+            <pre><code>{
+  "Type": "ready"
+}</code></pre>
+          </article>
+          <article>
+            <h3>Countdown</h3>
+            <pre><code>{
+  "Type": "snapshot",
+  "Snapshot": {
+    "status": "starting",
+    "countdown": 5,
+    "Tick": 0,
+    "Players": null,
+    "Projectiles": null
+  }
+}</code></pre>
+          </article>
+          <article>
+            <h3>Gameplay</h3>
+            <pre><code>{
+  "Type": "snapshot",
+  "Snapshot": {
+    "status": "started",
+    "Tick": 1,
+    "Players": [],
+    "Projectiles": null
+  }
+}</code></pre>
           </article>
         </div>
       </section>
@@ -153,6 +244,8 @@ function page({ title, eyebrow, description, rawPath, content }) {
       p { color: var(--muted); line-height: 1.6; margin: 0; }
       a { color: var(--accent); font-weight: 700; text-decoration-thickness: 1px; text-underline-offset: 3px; }
       code { background: var(--accent-bg); border: 1px solid #c6e6f0; border-radius: 4px; padding: 2px 6px; color: #17475a; }
+      pre { margin: 0; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #f8fbfd; padding: 12px; }
+      pre code { display: block; border: 0; background: transparent; padding: 0; white-space: pre; color: #263242; }
       .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
       .button { display: inline-flex; align-items: center; min-height: 38px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; background: white; }
       .panel { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 22px; margin-top: 16px; }

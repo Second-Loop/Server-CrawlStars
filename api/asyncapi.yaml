@@ -1,18 +1,28 @@
 asyncapi: 3.0.0
 info:
-  title: Server Crawl Stars E1 WebSocket API
-  version: 0.1.0
+  title: Server Crawl Stars WebSocket API
+  version: 0.2.0
   description: |
-    E1/E2 개발용 WebSocket 계약입니다. Client는 input을 보내고 server는 started room에서 snapshot을 broadcast합니다.
-    Room이 waiting 상태이면 input은 받을 수 있지만 gameplay snapshot은 오지 않습니다.
+    E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
+    Matchmaking room은 두 client가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player spawn을 전달합니다.
+    Client는 asset load/render 준비가 끝난 뒤 `Type: ready` ACK를 보내고, server는 countdown과 started gameplay snapshot을 broadcast합니다.
 x-stability: e1-debug
 servers:
   local:
     host: localhost:8080
     protocol: ws
+    description: 로컬 개발 서버입니다. 배포 환경에서는 현재 origin의 WebSocket scheme을 사용합니다.
 channels:
   roomPlayer:
     address: /rooms/{roomID}/players/{playerID}
+    title: Room player WebSocket
+    summary: 발급된 player 하나가 room에 연결하는 bidirectional channel
+    description: |
+      `roomID`와 `playerID`는 REST에서 먼저 발급받아야 합니다.
+      같은 room/player의 중복 연결은 upgrade 전에 거부됩니다.
+      Matchmaking room에서는 두 player가 모두 연결되면 `Type: Ready` 이벤트를 받고,
+      두 player가 ready ACK를 보낸 뒤 countdown과 started snapshot을 받습니다.
+      Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
     parameters:
       roomID:
         description: "`POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID입니다."
@@ -21,6 +31,10 @@ channels:
     messages:
       input:
         $ref: "#/components/messages/InputMessage"
+      readyEvent:
+        $ref: "#/components/messages/ReadyEventMessage"
+      readyAck:
+        $ref: "#/components/messages/ReadyAckMessage"
       snapshot:
         $ref: "#/components/messages/SnapshotMessage"
       error:
@@ -30,12 +44,32 @@ operations:
     action: send
     channel:
       $ref: "#/channels/roomPlayer"
+    title: Send gameplay input
+    summary: started room의 다음 tick에 적용할 player input을 보냅니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/input"
+  receiveReady:
+    action: receive
+    channel:
+      $ref: "#/channels/roomPlayer"
+    title: Receive Ready event
+    summary: 두 matched client가 모두 연결된 뒤 map과 player spawn 정보를 받습니다.
+    messages:
+      - $ref: "#/channels/roomPlayer/messages/readyEvent"
+  sendReadyAck:
+    action: send
+    channel:
+      $ref: "#/channels/roomPlayer"
+    title: Send ready ACK
+    summary: client asset load/render 준비가 끝났음을 서버에 알립니다.
+    messages:
+      - $ref: "#/channels/roomPlayer/messages/readyAck"
   receiveSnapshot:
     action: receive
     channel:
       $ref: "#/channels/roomPlayer"
+    title: Receive match status and gameplay snapshot
+    summary: match lifecycle과 gameplay state를 같은 snapshot wrapper로 받습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/snapshot"
       - $ref: "#/channels/roomPlayer/messages/error"
@@ -43,28 +77,147 @@ components:
   messages:
     InputMessage:
       name: InputMessage
+      title: Gameplay input
+      summary: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용됩니다.
       payload:
         $ref: "#/components/schemas/InputMessage"
+      examples:
+        - name: moveRight
+          payload:
+            MoveDir:
+              x: 1
+              y: 0
+            AttackDir:
+              x: 0
+              y: 0
+            PressedAttack: false
+        - name: attackDown
+          payload:
+            MoveDir:
+              x: 0
+              y: 0
+            AttackDir:
+              x: 0
+              y: -1
+            PressedAttack: true
+    ReadyEventMessage:
+      name: ReadyEventMessage
+      title: Ready event
+      summary: 서버가 client 렌더 준비에 필요한 map과 player spawn 정보를 전달합니다.
+      payload:
+        $ref: "#/components/schemas/ReadyEventMessage"
+      examples:
+        - name: readyEvent
+          payload:
+            Type: Ready
+            Map:
+              width: 5
+              height: 5
+              index: 0
+              maxPlayers: 6
+              tileSize: 1.2
+              map:
+                - [1, 1, 1, 1, 1]
+                - [1, 0, 0, 0, 1]
+                - [1, 0, 1, 0, 1]
+                - [1, 0, 0, 0, 1]
+                - [1, 1, 1, 1, 1]
+            Players:
+              - Id: player-1
+                Team: red
+                Slot: 0
+                SpawnPosition:
+                  x: -1.2
+                  y: 1.2
+              - Id: player-2
+                Team: blue
+                Slot: 0
+                SpawnPosition:
+                  x: 1.2
+                  y: -1.2
+    ReadyAckMessage:
+      name: ReadyAckMessage
+      title: Match ready ACK
+      summary: client 준비 완료를 서버에 알립니다.
+      payload:
+        $ref: "#/components/schemas/ReadyAckMessage"
+      examples:
+        - name: ready
+          payload:
+            Type: ready
     SnapshotMessage:
       name: SnapshotMessage
+      title: Snapshot
+      summary: match status와 gameplay snapshot을 전달합니다.
       payload:
         $ref: "#/components/schemas/SnapshotMessage"
+      examples:
+        - name: countdown
+          summary: 모든 client가 ready ACK를 보낸 뒤 countdown을 받습니다.
+          payload:
+            Type: snapshot
+            Snapshot:
+              status: starting
+              countdown: 5
+              Tick: 0
+              Players: null
+              Projectiles: null
+        - name: gameplay
+          summary: countdown 이후 30Hz로 broadcast되는 gameplay snapshot입니다.
+          payload:
+            Type: snapshot
+            Snapshot:
+              status: started
+              Tick: 1
+              Players:
+                - Id: player-1
+                  Team: red
+                  Slot: 0
+                  Pos:
+                    x: -1.2
+                    y: 1.2
+                  MoveDir:
+                    x: 0
+                    y: 0
+                  AttackDir:
+                    x: 0
+                    y: 0
+                  Speed: 2
+                  Radius: 0.5
+                  HP: 100
+                  PressedAttack: false
+                  IsDead: false
+              Projectiles: null
     ErrorMessage:
       name: ErrorMessage
+      title: Error
+      summary: invalid input은 connection을 끊지 않고 error message로 응답합니다.
       payload:
         $ref: "#/components/schemas/ErrorMessage"
+      examples:
+        - name: invalidInput
+          payload:
+            Type: error
+            Error:
+              code: invalid_input
+              message: invalid input
   schemas:
     Vector2:
       type: object
       required: [x, y]
+      description: Unity Vector2와 맞춘 lowercase coordinate입니다.
       properties:
         x:
           type: number
+          format: double
         y:
           type: number
+          format: double
     InputMessage:
       type: object
-      description: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용됩니다.
+      description: |
+        Gameplay input입니다. `Type` field를 넣지 않습니다.
+        Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 countdown 이후에 시작합니다.
       properties:
         MoveDir:
           $ref: "#/components/schemas/Vector2"
@@ -73,6 +226,28 @@ components:
         PressedAttack:
           type: boolean
           description: 이번 tick 공격 trigger입니다. 조준 유지용 AttackDir와 분리합니다.
+    ReadyEventMessage:
+      type: object
+      required: [Type, Map, Players]
+      description: 서버가 두 matched client 모두에게 보내는 렌더 준비 이벤트입니다. `Map.map`은 Base64 문자열이 아니라 JSON number array row로 직렬화됩니다.
+      properties:
+        Type:
+          type: string
+          const: Ready
+        Map:
+          $ref: "#/components/schemas/MapData"
+        Players:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReadyPlayer"
+    ReadyAckMessage:
+      type: object
+      required: [Type]
+      description: "`Type: Ready` 이벤트를 받은 client가 map load/render 준비 완료 후 보내는 ACK입니다."
+      properties:
+        Type:
+          type: string
+          const: ready
     SnapshotMessage:
       type: object
       required: [Type, Snapshot]
@@ -102,20 +277,83 @@ components:
           type: string
     Snapshot:
       type: object
-      required: [Tick, Players, Projectiles]
-      description: started room에서 30Hz로 broadcast되는 server-authoritative snapshot입니다.
+      required: [status, Tick, Players, Projectiles]
+      description: |
+        WebSocket server-authoritative snapshot입니다.
+        `status`는 lowercase match lifecycle field이고, gameplay data field는 Unity prototype과 맞춰 PascalCase를 유지합니다.
+        `starting`에서는 gameplay tick이 아직 돌지 않아 `Tick`은 0입니다.
       properties:
+        status:
+          $ref: "#/components/schemas/MatchStatus"
+        countdown:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: status가 `starting`일 때 남은 countdown 초입니다.
         Tick:
           type: integer
           minimum: 0
         Players:
-          type: array
-          items:
-            $ref: "#/components/schemas/PlayerData"
+          oneOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/PlayerData"
+            - type: "null"
+          description: started gameplay snapshot에서는 player state입니다. starting 상태 전이 snapshot에서는 null일 수 있습니다.
         Projectiles:
+          oneOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/ProjectileData"
+            - type: "null"
+          description: active/destroyed projectile state입니다. projectile이 없거나 starting 상태 전이 snapshot이면 null일 수 있습니다.
+    MatchStatus:
+      type: string
+      enum: [starting, started]
+      description: |
+        starting은 모든 client ready 이후 countdown 중인 상태입니다.
+        started는 countdown이 끝나고 gameplay snapshot stream이 시작된 상태입니다.
+    MapData:
+      type: object
+      required: [width, height, index, maxPlayers, tileSize, map]
+      description: 서버 simulation이 사용하는 tile map입니다. `map` row는 JSON number array로 직렬화되며 tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
+      properties:
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        index:
+          type: integer
+          minimum: 0
+        maxPlayers:
+          type: integer
+          minimum: 1
+        tileSize:
+          type: number
+          format: double
+        map:
           type: array
           items:
-            $ref: "#/components/schemas/ProjectileData"
+            type: array
+            items:
+              type: integer
+              enum: [0, 1, 2]
+    ReadyPlayer:
+      type: object
+      required: [Id, Team, Slot, SpawnPosition]
+      properties:
+        Id:
+          type: string
+        Team:
+          type: string
+          enum: [red, blue]
+        Slot:
+          type: integer
+          minimum: 0
+        SpawnPosition:
+          $ref: "#/components/schemas/Vector2"
     PlayerData:
       type: object
       required: [Id, Team, Slot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]
@@ -127,6 +365,7 @@ components:
           enum: [red, blue]
         Slot:
           type: integer
+          minimum: 0
         Pos:
           $ref: "#/components/schemas/Vector2"
         MoveDir:
@@ -135,10 +374,13 @@ components:
           $ref: "#/components/schemas/Vector2"
         Speed:
           type: number
+          format: double
         Radius:
           type: number
+          format: double
         HP:
           type: number
+          format: double
         PressedAttack:
           type: boolean
         IsDead:
@@ -157,10 +399,13 @@ components:
           $ref: "#/components/schemas/Vector2"
         Speed:
           type: number
+          format: double
         Damage:
           type: number
+          format: double
         Radius:
           type: number
+          format: double
         Type:
           type: string
         IsDestroyed:

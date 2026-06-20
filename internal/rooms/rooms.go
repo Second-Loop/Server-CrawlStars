@@ -19,13 +19,25 @@ const (
 	RoomStatusStarted RoomStatus = "started"
 )
 
+type MatchStatus string
+
+const (
+	MatchStatusMatched  MatchStatus = "matched"
+	MatchStatusLoading  MatchStatus = "loading"
+	MatchStatusStarting MatchStatus = "starting"
+	MatchStatusStarted  MatchStatus = "started"
+)
+
 const (
 	defaultWaitingRoomIdleTTL    = 10 * time.Minute
 	defaultDisconnectedRoomTTL   = 5 * time.Minute
 	defaultHardRoomLifetime      = time.Hour
 	defaultRoomWebSocketCloseMsg = "room expired"
 	defaultRoomDebugDeleteMsg    = "room deleted"
+	defaultMatchCancelMsg        = "match canceled"
 	webSocketWriteTimeout        = 10 * time.Millisecond
+	matchPlayerCount             = 2
+	matchCountdownSeconds        = 5
 )
 
 type Store struct {
@@ -44,18 +56,23 @@ type StoreConfig struct {
 }
 
 type room struct {
-	ID             string
-	Status         RoomStatus
-	Players        []playerResponse
-	state          *simulation.State
-	pendingInputs  map[string]simulation.InputCommand
-	clients        map[string]*websocket.Conn
-	latestSnapshot snapshotSummary
-	createdAt      time.Time
-	lastActivityAt time.Time
-	disconnectedAt time.Time
-	ticker         ticker
-	stop           chan struct{}
+	ID              string
+	Status          RoomStatus
+	Players         []playerResponse
+	matchStatus     MatchStatus
+	readyPlayers    map[string]bool
+	countdown       int
+	state           *simulation.State
+	pendingInputs   map[string]simulation.InputCommand
+	clients         map[string]*websocket.Conn
+	latestSnapshot  snapshotSummary
+	createdAt       time.Time
+	lastActivityAt  time.Time
+	disconnectedAt  time.Time
+	ticker          ticker
+	stop            chan struct{}
+	countdownTicker ticker
+	countdownStop   chan struct{}
 }
 
 type roomListResponse struct {
@@ -63,12 +80,21 @@ type roomListResponse struct {
 }
 
 type roomResponse struct {
-	ID             string             `json:"id"`
-	Status         RoomStatus         `json:"status"`
-	Players        []playerResponse   `json:"players"`
-	MaxPlayers     int                `json:"maxPlayers"`
-	Map            simulation.MapData `json:"map"`
-	LatestSnapshot snapshotSummary    `json:"latestSnapshot"`
+	ID             string           `json:"id"`
+	Status         RoomStatus       `json:"status"`
+	Players        []playerResponse `json:"players"`
+	MaxPlayers     int              `json:"maxPlayers"`
+	Map            mapResponse      `json:"map"`
+	LatestSnapshot snapshotSummary  `json:"latestSnapshot"`
+}
+
+type mapResponse struct {
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+	Index      int     `json:"index"`
+	MaxPlayers int     `json:"maxPlayers"`
+	TileSize   float64 `json:"tileSize"`
+	Map        [][]int `json:"map"`
 }
 
 type playerResponse struct {
@@ -414,8 +440,10 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 	}
 
 	player := s.addPlayerLocked(room)
-	if len(room.Players) == 2 {
-		s.startRoomLocked(room)
+	if len(room.Players) == matchPlayerCount {
+		room.matchStatus = MatchStatusMatched
+		room.readyPlayers = make(map[string]bool)
+		room.lastActivityAt = s.clock.Now()
 	}
 
 	roomResponse := room.toResponse(s.gameMap)
@@ -428,7 +456,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 
 func (s *Store) findWaitingRoomWithCapacity() *room {
 	for _, room := range s.rooms {
-		if room.Status == RoomStatusWaiting && len(room.Players) < s.gameMap.MaxPlayers {
+		if room.Status == RoomStatusWaiting && room.matchStatus == "" && len(room.Players) < s.gameMap.MaxPlayers && len(room.Players) < matchPlayerCount {
 			return room
 		}
 	}
@@ -483,7 +511,10 @@ func (s *Store) addPlayerLocked(room *room) playerResponse {
 
 func (s *Store) startRoomLocked(room *room) {
 	now := s.clock.Now()
+	s.stopMatchCountdownLocked(room)
 	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.countdown = 0
 	room.lastActivityAt = now
 	if len(room.clients) == 0 {
 		room.disconnectedAt = now
@@ -533,6 +564,32 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 			return
 		}
 
+		var envelope inputEnvelope
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			writeWebSocketJSON(conn, errorMessage{
+				Type: "error",
+				Error: apiError{
+					Code:    "invalid_input",
+					Message: "invalid input",
+				},
+			})
+			continue
+		}
+		if envelope.Type == "ready" {
+			s.markClientReady(roomID, playerID)
+			continue
+		}
+		if envelope.Type != "" {
+			writeWebSocketJSON(conn, errorMessage{
+				Type: "error",
+				Error: apiError{
+					Code:    "invalid_input",
+					Message: "invalid input",
+				},
+			})
+			continue
+		}
+
 		var input inputMessage
 		if err := json.Unmarshal(payload, &input); err != nil {
 			writeWebSocketJSON(conn, errorMessage{
@@ -571,30 +628,57 @@ func (s *Store) reserveClient(roomID string, playerID string) error {
 }
 
 func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Conn) {
+	var deliveries []webSocketDelivery
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	room, ok := s.rooms[roomID]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	room.clients[playerID] = conn
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
+	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached() {
+		room.matchStatus = MatchStatusLoading
+		deliveries = append(deliveries, room.readyEventDeliveries(s.gameMap)...)
+		if room.allMatchPlayersReady() {
+			s.startMatchCountdownLocked(room)
+			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
+		}
+	}
+	s.mu.Unlock()
+
+	writeWebSocketDeliveries(deliveries)
 }
 
 func (s *Store) releaseClient(roomID string, playerID string) {
+	var resources roomResources
+	shouldClose := false
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	room, ok := s.rooms[roomID]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
+	delete(room.readyPlayers, playerID)
+	if room.hasPreStartMatch() {
+		delete(s.rooms, roomID)
+		resources.add(room)
+		shouldClose = true
+	}
 	if room.Status == RoomStatusStarted && len(room.clients) == 0 {
 		room.disconnectedAt = s.clock.Now()
+	}
+	s.mu.Unlock()
+
+	if shouldClose {
+		resources.close(defaultMatchCancelMsg)
 	}
 }
 
@@ -615,6 +699,48 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
 	}
 }
 
+func (s *Store) markClientReady(roomID string, playerID string) {
+	var deliveries []webSocketDelivery
+
+	s.mu.Lock()
+	room, ok := s.rooms[roomID]
+	if !ok || !room.hasPlayer(playerID) || !room.hasPreStartMatch() {
+		s.mu.Unlock()
+		return
+	}
+	if room.readyPlayers == nil {
+		room.readyPlayers = make(map[string]bool)
+	}
+	room.readyPlayers[playerID] = true
+	room.lastActivityAt = s.clock.Now()
+	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady() {
+		s.startMatchCountdownLocked(room)
+		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
+	}
+	s.mu.Unlock()
+
+	writeWebSocketDeliveries(deliveries)
+}
+
+func (s *Store) startMatchCountdownLocked(room *room) {
+	room.matchStatus = MatchStatusStarting
+	room.countdown = matchCountdownSeconds
+	room.countdownTicker = s.clock.NewTicker(time.Second)
+	room.countdownStop = make(chan struct{})
+	go s.runMatchCountdown(room.ID, room.countdownTicker, room.countdownStop)
+}
+
+func (s *Store) stopMatchCountdownLocked(room *room) {
+	if room.countdownTicker != nil {
+		room.countdownTicker.Stop()
+		room.countdownTicker = nil
+	}
+	if room.countdownStop != nil {
+		close(room.countdownStop)
+		room.countdownStop = nil
+	}
+}
+
 func (s *Store) runRoom(roomID string, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
@@ -624,6 +750,47 @@ func (s *Store) runRoom(roomID string, ticker ticker, stop <-chan struct{}) {
 			return
 		}
 	}
+}
+
+func (s *Store) runMatchCountdown(roomID string, ticker ticker, stop <-chan struct{}) {
+	for {
+		select {
+		case <-ticker.C():
+			if s.tickMatchCountdown(roomID, ticker) {
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
+	var deliveries []webSocketDelivery
+
+	s.mu.Lock()
+	room, ok := s.rooms[roomID]
+	if !ok || room.matchStatus != MatchStatusStarting {
+		s.mu.Unlock()
+		return true
+	}
+	if room.countdown > 1 {
+		room.countdown--
+		room.lastActivityAt = s.clock.Now()
+		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
+		s.mu.Unlock()
+		writeWebSocketDeliveries(deliveries)
+		return false
+	}
+
+	room.countdown = 0
+	s.startRoomLocked(room)
+	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
+	s.mu.Unlock()
+
+	countdownTicker.Stop()
+	writeWebSocketDeliveries(deliveries)
+	return true
 }
 
 func (s *Store) tickRoom(roomID string) {
@@ -644,7 +811,7 @@ func (s *Store) tickRoom(roomID string) {
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	snapshot := room.state.Step(inputs)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
-	message := snapshotMessage{Type: "snapshot", Snapshot: snapshot}
+	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 
 	clients := make([]*websocket.Conn, 0, len(room.clients))
 	for _, conn := range room.clients {
@@ -683,6 +850,14 @@ type roomResources struct {
 }
 
 func (r *roomResources) add(room *room) {
+	if room.countdownTicker != nil {
+		r.tickers = append(r.tickers, room.countdownTicker)
+		room.countdownTicker = nil
+	}
+	if room.countdownStop != nil {
+		r.stops = append(r.stops, room.countdownStop)
+		room.countdownStop = nil
+	}
 	if room.ticker != nil {
 		r.tickers = append(r.tickers, room.ticker)
 		room.ticker = nil
@@ -711,6 +886,19 @@ func (r roomResources) close(reason string) {
 	}
 }
 
+type webSocketDelivery struct {
+	conn    *websocket.Conn
+	message any
+}
+
+func writeWebSocketDeliveries(deliveries []webSocketDelivery) {
+	for _, delivery := range deliveries {
+		if delivery.conn != nil {
+			writeWebSocketJSON(delivery.conn, delivery.message)
+		}
+	}
+}
+
 func writeWebSocketJSON(conn *websocket.Conn, message any) {
 	payload, err := json.Marshal(message)
 	if err != nil {
@@ -733,9 +921,35 @@ func (r *room) toResponse(gameMap simulation.MapData) roomResponse {
 		Status:         r.Status,
 		Players:        players,
 		MaxPlayers:     gameMap.MaxPlayers,
-		Map:            gameMap,
+		Map:            mapResponseFromSimulation(gameMap),
 		LatestSnapshot: latestSnapshot,
 	}
+}
+
+func mapResponseFromSimulation(gameMap simulation.MapData) mapResponse {
+	return mapResponse{
+		Width:      gameMap.Width,
+		Height:     gameMap.Height,
+		Index:      gameMap.Index,
+		MaxPlayers: gameMap.MaxPlayers,
+		TileSize:   gameMap.TileSize,
+		Map:        tileRowsResponse(gameMap.Map),
+	}
+}
+
+func tileRowsResponse(rows [][]simulation.TileType) [][]int {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	result := make([][]int, len(rows))
+	for y, row := range rows {
+		result[y] = make([]int, len(row))
+		for x, tile := range row {
+			result[y][x] = int(tile)
+		}
+	}
+	return result
 }
 
 func snapshotSummaryFromSnapshot(snapshot simulation.Snapshot) snapshotSummary {
@@ -775,15 +989,140 @@ func (r *room) isExpired(now time.Time) bool {
 	return false
 }
 
+func (r *room) hasPreStartMatch() bool {
+	return r.Status != RoomStatusStarted && r.matchStatus != ""
+}
+
+func (r *room) allMatchClientsAttached() bool {
+	if len(r.Players) < matchPlayerCount {
+		return false
+	}
+	for _, player := range r.Players {
+		conn, ok := r.clients[player.ID]
+		if !ok || conn == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *room) allMatchPlayersReady() bool {
+	if len(r.Players) < matchPlayerCount {
+		return false
+	}
+	for _, player := range r.Players {
+		if !r.readyPlayers[player.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *room) matchSnapshotDeliveries(status MatchStatus, countdown int) []webSocketDelivery {
+	message := r.matchSnapshotMessage(status, countdown)
+	deliveries := make([]webSocketDelivery, 0, len(r.clients))
+	for _, conn := range r.clients {
+		if conn != nil {
+			deliveries = append(deliveries, webSocketDelivery{
+				conn:    conn,
+				message: message,
+			})
+		}
+	}
+	return deliveries
+}
+
+func (r *room) matchSnapshotMessage(status MatchStatus, countdown int) roomSnapshotMessage {
+	return roomSnapshotMessage{
+		Type: "snapshot",
+		Snapshot: roomSnapshot{
+			Status:    status,
+			Countdown: countdown,
+			Tick:      0,
+		},
+	}
+}
+
+func (r *room) readyEventDeliveries(gameMap simulation.MapData) []webSocketDelivery {
+	message := readyEventMessage{
+		Type:    "Ready",
+		Map:     mapResponseFromSimulation(gameMap),
+		Players: readyEventPlayers(r.Players, gameMap),
+	}
+	deliveries := make([]webSocketDelivery, 0, len(r.clients))
+	for _, conn := range r.clients {
+		if conn != nil {
+			deliveries = append(deliveries, webSocketDelivery{
+				conn:    conn,
+				message: message,
+			})
+		}
+	}
+	return deliveries
+}
+
 type inputMessage struct {
 	MoveDir       simulation.Vector2 `json:"MoveDir"`
 	AttackDir     simulation.Vector2 `json:"AttackDir"`
 	PressedAttack bool               `json:"PressedAttack"`
 }
 
+type inputEnvelope struct {
+	Type string `json:"Type"`
+}
+
 type snapshotMessage struct {
 	Type     string              `json:"Type"`
 	Snapshot simulation.Snapshot `json:"Snapshot"`
+}
+
+type roomSnapshotMessage struct {
+	Type     string       `json:"Type"`
+	Snapshot roomSnapshot `json:"Snapshot"`
+}
+
+type roomSnapshot struct {
+	Status      MatchStatus                 `json:"status,omitempty"`
+	Countdown   int                         `json:"countdown,omitempty"`
+	Tick        simulation.Tick             `json:"Tick"`
+	Players     []simulation.PlayerData     `json:"Players"`
+	Projectiles []simulation.ProjectileData `json:"Projectiles"`
+}
+
+type readyEventMessage struct {
+	Type    string             `json:"Type"`
+	Map     mapResponse        `json:"Map"`
+	Players []readyEventPlayer `json:"Players"`
+}
+
+type readyEventPlayer struct {
+	ID            string             `json:"Id"`
+	Team          string             `json:"Team"`
+	Slot          int                `json:"Slot"`
+	SpawnPosition simulation.Vector2 `json:"SpawnPosition"`
+}
+
+func roomSnapshotFromSimulation(snapshot simulation.Snapshot, status MatchStatus) roomSnapshot {
+	return roomSnapshot{
+		Status:      status,
+		Tick:        snapshot.Tick,
+		Players:     snapshot.Players,
+		Projectiles: snapshot.Projectiles,
+	}
+}
+
+func readyEventPlayers(players []playerResponse, gameMap simulation.MapData) []readyEventPlayer {
+	spawnedPlayers := simulationPlayers(players, gameMap)
+	result := make([]readyEventPlayer, 0, len(spawnedPlayers))
+	for _, player := range spawnedPlayers {
+		result = append(result, readyEventPlayer{
+			ID:            string(player.ID),
+			Team:          string(player.Team),
+			Slot:          player.Slot,
+			SpawnPosition: player.Pos,
+		})
+	}
+	return result
 }
 
 type errorMessage struct {
