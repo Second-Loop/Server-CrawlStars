@@ -52,6 +52,16 @@ func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T
 	}
 }
 
+func TestWebSocketWriteTimeoutStaysWithinRealtimeBudget(t *testing.T) {
+	tickBudget := time.Second / time.Duration(simulation.TickRate)
+	if webSocketWriteTimeout > tickBudget {
+		t.Fatalf("expected websocket write timeout %s to stay within tick budget %s", webSocketWriteTimeout, tickBudget)
+	}
+	if webSocketWriteTimeout > 10*time.Millisecond {
+		t.Fatalf("expected websocket write timeout to stay in 10ms latency budget, got %s", webSocketWriteTimeout)
+	}
+}
+
 func TestWebSocketRejectsUnknownRoomOrPlayer(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	handler := Handler(store)

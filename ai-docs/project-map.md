@@ -128,8 +128,10 @@ Started room의 tick 흐름:
 2. pending input map을 비웁니다.
 3. `room.state.Step(inputs)`를 호출합니다.
 4. `{"Type":"snapshot","Snapshot":...}` 형태로 감쌉니다.
-5. 연결된 client 모두에게 같은 snapshot을 보냅니다.
+5. 연결된 client 모두에게 같은 snapshot을 보냅니다. 각 WebSocket write deadline은 10ms입니다.
 6. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
+
+Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 없는 legacy/static map에서만 5x5 fallback 좌표를 씁니다.
 
 `internal/simulation.State.Step` 순서:
 

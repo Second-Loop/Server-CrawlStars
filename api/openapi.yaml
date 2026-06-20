@@ -201,7 +201,7 @@ components:
       name: roomID
       in: path
       required: true
-      description: `POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID
+      description: "`POST /rooms` 또는 `POST /matchmaking/join`으로 받은 room ID"
       schema:
         type: string
         example: room-1
