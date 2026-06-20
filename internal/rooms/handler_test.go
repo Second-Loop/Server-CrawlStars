@@ -235,6 +235,49 @@ func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.
 	}
 }
 
+func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
+	gameMap := customRoomMap()
+	store := newStore(5, newFakeClock(), gameMap)
+	handler := Handler(store)
+	defer store.Close()
+
+	joined := joinMatchmaking(t, handler)
+	if joined.Room.Map.Width != gameMap.Width || joined.Room.Map.Height != gameMap.Height {
+		t.Fatalf("expected configured map size %dx%d, got %dx%d", gameMap.Width, gameMap.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	}
+	if joined.Room.MaxPlayers != gameMap.MaxPlayers {
+		t.Fatalf("expected configured max players %d, got %d", gameMap.MaxPlayers, joined.Room.MaxPlayers)
+	}
+
+	second := joinMatchmaking(t, handler)
+	if second.Room.ID != joined.Room.ID {
+		t.Fatalf("expected second join to use configured waiting room %q, got %q", joined.Room.ID, second.Room.ID)
+	}
+	if second.Room.Status != RoomStatusStarted {
+		t.Fatalf("expected room to start at configured map capacity, got %q", second.Room.Status)
+	}
+
+	third := joinMatchmaking(t, handler)
+	if third.Room.ID == joined.Room.ID {
+		t.Fatalf("expected third join to create a new room after configured max players, got %q", third.Room.ID)
+	}
+}
+
+func TestStoreConfigFallsBackToStaticMapWhenMapIsEmpty(t *testing.T) {
+	store := newStore(5, newFakeClock(), simulation.MapData{})
+	handler := Handler(store)
+	defer store.Close()
+
+	joined := joinMatchmaking(t, handler)
+	fixture := simulation.StaticMapFixture()
+	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
+		t.Fatalf("expected fallback map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	}
+	if joined.Room.MaxPlayers != fixture.MaxPlayers {
+		t.Fatalf("expected fallback max players %d, got %d", fixture.MaxPlayers, joined.Room.MaxPlayers)
+	}
+}
+
 func TestHandlerMatchmakingSecondJoinUsesSameRoomAndStartsSimulation(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -441,6 +484,23 @@ func joinMatchmaking(t *testing.T, handler http.Handler) matchmakingJoinResponse
 	var joined matchmakingJoinResponse
 	decodeResponse(t, rec, &joined)
 	return joined
+}
+
+func customRoomMap() simulation.MapData {
+	return simulation.MapData{
+		Width:      7,
+		Height:     5,
+		Index:      9,
+		MaxPlayers: 2,
+		TileSize:   simulation.TileSize,
+		Map: [][]simulation.TileType{
+			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileWall, simulation.TileGround, simulation.TileWall, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
+		},
+	}
 }
 
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {

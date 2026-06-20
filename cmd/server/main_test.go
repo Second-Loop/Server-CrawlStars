@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
 func TestNewMuxServesDocsRoutes(t *testing.T) {
@@ -55,5 +58,25 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"webSocketPath":"/rooms/room-1/players/player-1"`) {
 		t.Fatalf("expected matchmaking connection info, got %s", rec.Body.String())
+	}
+
+	var joined struct {
+		Room struct {
+			MaxPlayers int                `json:"maxPlayers"`
+			Map        simulation.MapData `json:"map"`
+		} `json:"room"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &joined); err != nil {
+		t.Fatalf("decode matchmaking response: %v", err)
+	}
+	fixture, err := simulation.LoadDefaultMapFixture()
+	if err != nil {
+		t.Fatalf("load default map fixture: %v", err)
+	}
+	if joined.Room.MaxPlayers != fixture.MaxPlayers {
+		t.Fatalf("expected default fixture max players %d, got %d", fixture.MaxPlayers, joined.Room.MaxPlayers)
+	}
+	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
+		t.Fatalf("expected default fixture map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
 	}
 }

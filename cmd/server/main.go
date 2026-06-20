@@ -8,6 +8,7 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/docs"
 	"github.com/Second-Loop/Server-CrawlStars/internal/health"
 	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
+	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
 const serviceName = "server-crawlstars"
@@ -34,9 +35,18 @@ func newMux() http.Handler {
 	mux.Handle("/asyncapi", docsHandler)
 	mux.Handle("/openapi.yaml", docsHandler)
 	mux.Handle("/asyncapi.yaml", docsHandler)
-	roomHandler := rooms.Handler(rooms.NewStore(5))
+	roomHandler := rooms.Handler(rooms.NewStoreWithConfig(5, rooms.StoreConfig{Map: loadGameMap()}))
 	mux.Handle("/matchmaking/join", roomHandler)
 	mux.Handle("/rooms", roomHandler)
 	mux.Handle("/rooms/", roomHandler)
 	return mux
+}
+
+func loadGameMap() simulation.MapData {
+	gameMap, err := simulation.LoadDefaultMapFixture()
+	if err != nil {
+		log.Printf("failed to load map fixture %s: %v; using static fallback", simulation.DefaultMapFixturePath, err)
+		return simulation.StaticMapFixture()
+	}
+	return gameMap
 }

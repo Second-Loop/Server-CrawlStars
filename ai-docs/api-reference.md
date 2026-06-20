@@ -107,7 +107,7 @@ Room response:
 
 `map`은 서버 simulation이 실제 collision에 쓰는 tile grid입니다. tile 값은 `0=ground`, `1=wall`, `2=spawnPoint`입니다.
 
-현재 서버 레포에는 별도 원본 맵 파일이 없고, `internal/simulation.StaticMapFixture()`가 이 5x5 fixture를 제공합니다. 실제 client map file과 공통 artifact로 맞추는 작업은 `SL-30` 범위입니다.
+기본 맵 파일은 `internal/simulation/fixtures/default-map.json`입니다. 서버는 시작할 때 이 JSON fixture를 로드해 room store에 주입하고, 파일 로드나 검증에 실패하면 `internal/simulation.StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file과 공통 artifact로 맞추는 작업은 `SL-30` 범위입니다.
 
 `latestSnapshot`은 마지막으로 생성된 snapshot의 요약입니다. 아직 room이 started 전이거나 첫 tick 전이면 `tick: 0`입니다.
 

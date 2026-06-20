@@ -238,7 +238,7 @@ components:
     Room:
       type: object
       required: [id, status, players, maxPlayers, map, latestSnapshot]
-      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용합니다.
+      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용합니다. 기본 fixture 경로는 `internal/simulation/fixtures/default-map.json`입니다.
       properties:
         id:
           type: string
@@ -254,7 +254,7 @@ components:
             $ref: "#/components/schemas/Player"
         maxPlayers:
           type: integer
-          description: 현재 map fixture가 허용하는 최대 player 수입니다.
+          description: 현재 room map fixture가 허용하는 최대 player 수입니다.
           minimum: 1
           example: 6
         map:
@@ -293,7 +293,7 @@ components:
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]
-      description: 서버 simulation이 사용하는 tile map입니다. tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
+      description: 서버 simulation이 사용하는 tile map입니다. 기본 fixture는 `internal/simulation/fixtures/default-map.json`에서 로드하고, 실패하면 5x5 static map으로 fallback합니다. tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
       properties:
         width:
           type: integer

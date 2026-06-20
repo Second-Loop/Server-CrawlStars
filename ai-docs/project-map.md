@@ -156,7 +156,7 @@ Started room의 tick 흐름:
 
 Snapshot의 `PressedAttack`은 input echo/debug 성격이 강합니다. 제거하려면 WebSocket schema 변경이므로 별도 issue에서 다룹니다.
 
-Room REST response의 `map`은 서버 simulation이 쓰는 `MapData`입니다. 현재는 `StaticMapFixture()`의 5x5 fixture이고, 실제 client/server shared constants artifact는 `SL-30`에서 다룹니다.
+Room REST response의 `map`은 서버 simulation이 쓰는 `MapData`입니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이고, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client/server shared constants artifact는 `SL-30`에서 다룹니다.
 
 ### 8. Cleanup
 

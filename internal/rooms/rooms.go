@@ -34,7 +34,12 @@ type Store struct {
 	nextPlayerSeq  int
 	rooms          map[string]*room
 	clock          clock
+	gameMap        simulation.MapData
 	closed         bool
+}
+
+type StoreConfig struct {
+	Map simulation.MapData
 }
 
 type room struct {
@@ -113,21 +118,34 @@ type realTicker struct {
 }
 
 func NewStore(maxActiveRooms int) *Store {
-	return NewStoreWithClock(maxActiveRooms, realClock{})
+	return newStore(maxActiveRooms, nil, simulation.MapData{})
 }
 
 func NewStoreWithClock(maxActiveRooms int, clock clock) *Store {
+	return newStore(maxActiveRooms, clock, simulation.MapData{})
+}
+
+func NewStoreWithConfig(maxActiveRooms int, config StoreConfig) *Store {
+	return newStore(maxActiveRooms, nil, config.Map)
+}
+
+func newStore(maxActiveRooms int, clock clock, configuredMap simulation.MapData) *Store {
 	if maxActiveRooms <= 0 {
 		maxActiveRooms = 5
 	}
 	if clock == nil {
 		clock = realClock{}
 	}
+	gameMap, err := simulation.ResolveMapData(configuredMap)
+	if err != nil {
+		gameMap = simulation.StaticMapFixture()
+	}
 
 	return &Store{
 		maxActiveRooms: maxActiveRooms,
 		rooms:          make(map[string]*room),
 		clock:          clock,
+		gameMap:        gameMap,
 	}
 }
 
@@ -280,7 +298,7 @@ func (s *Store) listRooms() roomListResponse {
 
 	rooms := make([]roomResponse, 0, len(s.rooms))
 	for _, room := range s.rooms {
-		rooms = append(rooms, room.toResponse())
+		rooms = append(rooms, room.toResponse(s.gameMap))
 	}
 	return roomListResponse{Rooms: rooms}
 }
@@ -313,7 +331,7 @@ func (s *Store) createRoom() (roomResponse, error) {
 	}
 
 	room := s.createRoomLocked()
-	return room.toResponse(), nil
+	return room.toResponse(s.gameMap), nil
 }
 
 func (s *Store) clearRooms() clearRoomsResponse {
@@ -360,7 +378,7 @@ func (s *Store) getRoom(roomID string) (roomResponse, bool) {
 	if !ok {
 		return roomResponse{}, false
 	}
-	return room.toResponse(), true
+	return room.toResponse(s.gameMap), true
 }
 
 func (s *Store) addPlayer(roomID string) (playerResponse, error) {
@@ -373,7 +391,7 @@ func (s *Store) addPlayer(roomID string) (playerResponse, error) {
 	if !ok {
 		return playerResponse{}, errString("room not found")
 	}
-	if len(room.Players) >= simulation.StaticMapFixture().MaxPlayers {
+	if len(room.Players) >= s.gameMap.MaxPlayers {
 		return playerResponse{}, errString("room full")
 	}
 
@@ -399,7 +417,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 		s.startRoomLocked(room)
 	}
 
-	roomResponse := room.toResponse()
+	roomResponse := room.toResponse(s.gameMap)
 	return matchmakingJoinResponse{
 		Room:          roomResponse,
 		Player:        player,
@@ -409,7 +427,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 
 func (s *Store) findWaitingRoomWithCapacity() *room {
 	for _, room := range s.rooms {
-		if room.Status == RoomStatusWaiting && len(room.Players) < simulation.StaticMapFixture().MaxPlayers {
+		if room.Status == RoomStatusWaiting && len(room.Players) < s.gameMap.MaxPlayers {
 			return room
 		}
 	}
@@ -431,7 +449,7 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 	}
 
 	s.startRoomLocked(room)
-	return room.toResponse(), nil
+	return room.toResponse(s.gameMap), nil
 }
 
 func (s *Store) createRoomLocked() *room {
@@ -472,7 +490,7 @@ func (s *Store) startRoomLocked(room *room) {
 		room.disconnectedAt = time.Time{}
 	}
 	if room.state == nil {
-		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players), simulation.Config{Map: simulation.StaticMapFixture()})
+		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameMap), simulation.Config{Map: s.gameMap})
 	}
 	if room.ticker == nil {
 		room.ticker = s.clock.NewTicker(time.Second / time.Duration(simulation.TickRate))
@@ -702,10 +720,9 @@ func writeWebSocketJSON(conn *websocket.Conn, message any) {
 	_ = conn.Write(ctx, websocket.MessageText, payload)
 }
 
-func (r *room) toResponse() roomResponse {
+func (r *room) toResponse(gameMap simulation.MapData) roomResponse {
 	players := make([]playerResponse, len(r.Players))
 	copy(players, r.Players)
-	gameMap := simulation.StaticMapFixture()
 	latestSnapshot := r.latestSnapshot
 	if latestSnapshot == (snapshotSummary{}) {
 		latestSnapshot.PlayerCount = len(players)
@@ -773,9 +790,8 @@ type errorMessage struct {
 	Error apiError `json:"Error"`
 }
 
-func simulationPlayers(players []playerResponse) []simulation.PlayerData {
+func simulationPlayers(players []playerResponse, gameMap simulation.MapData) []simulation.PlayerData {
 	result := make([]simulation.PlayerData, 0, len(players))
-	gameMap := simulation.StaticMapFixture()
 	for _, player := range players {
 		result = append(result, simulation.PlayerData{
 			ID:   simulation.PlayerID(player.ID),
