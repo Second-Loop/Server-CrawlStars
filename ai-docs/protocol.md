@@ -131,7 +131,7 @@ Ready ACK:
 }
 ```
 
-Countdown:
+Starting signal:
 
 ```json
 {
@@ -227,7 +227,7 @@ POST /matchmaking/join
 
 두 번째 player가 같은 waiting room에 들어와도 REST response shape는 유지되고 `room.status`는 `waiting`입니다. 해당 room은 matchmaking match로 잠겨 late join 대상에서 빠집니다.
 
-두 client가 WebSocket에 연결하면 `Type: "Ready"` event를 받습니다. Ready event에는 JSON number array 형태의 `Map.map`과 `Players[].SpawnPosition`이 들어갑니다. 두 client가 모두 `{"Type":"ready"}`를 보내면 `Snapshot.status: "starting"`과 5초 countdown을 broadcast하고, countdown 이후 `Snapshot.status: "started"`를 보낸 다음 simulation ticker를 시작합니다.
+두 client가 WebSocket에 연결하면 `Type: "Ready"` event를 받습니다. Ready event에는 JSON number array 형태의 `Map.map`과 `Players[].SpawnPosition`이 들어갑니다. 두 client가 모두 `{"Type":"ready"}`를 보내면 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 1번 broadcast합니다. Client는 이 신호를 기준으로 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 보낸 다음 simulation ticker를 시작합니다.
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
@@ -258,7 +258,7 @@ DELETE /rooms/{roomID}
 1. `POST /matchmaking/join`을 두 번 호출합니다.
 2. 두 `webSocketPath`로 연결합니다.
 3. 두 connection이 같은 `Type: "Ready"` event를 받고, 이 event의 `Map.map` row가 숫자 배열이어야 합니다.
-4. 두 client가 `{"Type":"ready"}`를 보내면 `starting` countdown 후 `started`를 받아야 합니다.
+4. 두 client가 `{"Type":"ready"}`를 보내면 `starting` 신호를 1번 받고, 중간 countdown broadcast 없이 5초 뒤 `started`를 받아야 합니다.
 5. 한 player가 movement input을 보내면 두 connection이 같은 `Snapshot.Tick`과 player `Pos`를 받아야 합니다.
 6. Red와 blue spawn은 Ready event의 `Players[].SpawnPosition`으로 확인합니다.
 7. Hit tick에서 projectile은 `IsDestroyed: true`, target은 HP 감소로 보여야 합니다.

@@ -18,7 +18,7 @@ internal/rooms
   in-memory room store
   REST debug lifecycle
   simple matchmaking connector
-  match ready/countdown state
+  match ready/starting state
   WebSocket connection adapter
   room-local 30Hz ticker
   TTL cleanup
@@ -117,7 +117,7 @@ Simple matchmaking:
 - player를 발급합니다.
 - 2명이 되면 room을 matched 상태로 잠그고 late join을 막습니다.
 - 두 WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
-- 두 client가 `Type: ready`를 보내면 5초 countdown 후 room을 start합니다.
+- 두 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
 - response는 `room`, `player`, `webSocketPath`를 포함합니다.
 
 WebSocket:
@@ -125,7 +125,7 @@ WebSocket:
 - `WS /rooms/{roomID}/players/{playerID}`
 - 발급된 room/player만 연결할 수 있습니다.
 - waiting room은 input을 받을 수 있지만 snapshot을 보내지 않습니다.
-- matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown`을 보냅니다.
+- matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown: 5`를 1번 보냅니다.
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.

@@ -207,14 +207,8 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 		t.Fatalf("expected starting countdown 5, got %+v", redStarting.Snapshot)
 	}
 
-	for want := 4; want >= 1; want-- {
+	for i := 0; i < 4; i++ {
 		fakeClock.Tick()
-		redCountdown := readUntilSnapshotStatus(t, redConn, "starting")
-		blueCountdown := readUntilSnapshotStatus(t, blueConn, "starting")
-		assertMatchingMatchSnapshots(t, redCountdown, blueCountdown)
-		if redCountdown.Snapshot.Countdown != want {
-			t.Fatalf("expected countdown %d, got %+v", want, redCountdown.Snapshot)
-		}
 	}
 
 	fakeClock.Tick()

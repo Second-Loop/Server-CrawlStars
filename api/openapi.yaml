@@ -38,7 +38,7 @@ paths:
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
         같은 room에 두 번째 참가자가 들어와도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
-        두 client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 두 client가 `Type: ready` ACK를 보내면 5초 countdown 이후 room이 `started`로 바뀌고 30Hz snapshot broadcast를 시작합니다.
+        두 client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 두 client가 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
         1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
       responses:
@@ -246,7 +246,7 @@ components:
           example: room-1
         status:
           type: string
-          description: waiting이면 REST room lifecycle상 아직 gameplay snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다. Match render 준비는 WebSocket `Type: Ready`, countdown은 `Snapshot.status: starting`에서 봅니다.
+          description: waiting이면 REST room lifecycle상 아직 gameplay snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다. Match render 준비는 WebSocket `Type: Ready`, countdown 시작은 1회성 `Snapshot.status: starting`에서 봅니다.
           enum: [waiting, started]
         players:
           type: array

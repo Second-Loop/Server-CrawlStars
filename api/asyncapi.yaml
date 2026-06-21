@@ -5,7 +5,7 @@ info:
   description: |
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     Matchmaking room은 두 client가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player spawn을 전달합니다.
-    Client는 asset load/render 준비가 끝난 뒤 `Type: ready` ACK를 보내고, server는 countdown과 started gameplay snapshot을 broadcast합니다.
+    Client는 asset load/render 준비가 끝난 뒤 `Type: ready` ACK를 보내고, server는 countdown 시작 신호를 1번 보낸 뒤 5초를 내부에서 센 다음 started gameplay snapshot을 broadcast합니다.
 x-stability: e1-debug
 servers:
   local:
@@ -21,7 +21,7 @@ channels:
       `roomID`와 `playerID`는 REST에서 먼저 발급받아야 합니다.
       같은 room/player의 중복 연결은 upgrade 전에 거부됩니다.
       Matchmaking room에서는 두 player가 모두 연결되면 `Type: Ready` 이벤트를 받고,
-      두 player가 ready ACK를 보낸 뒤 countdown과 started snapshot을 받습니다.
+      두 player가 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
     parameters:
       roomID:
@@ -152,8 +152,8 @@ components:
       payload:
         $ref: "#/components/schemas/SnapshotMessage"
       examples:
-        - name: countdown
-          summary: 모든 client가 ready ACK를 보낸 뒤 countdown을 받습니다.
+        - name: startingSignal
+          summary: 모든 client가 ready ACK를 보낸 뒤 countdown 시작 신호를 1번 받습니다.
           payload:
             Type: snapshot
             Snapshot:
@@ -163,7 +163,7 @@ components:
               Players: null
               Projectiles: null
         - name: gameplay
-          summary: countdown 이후 30Hz로 broadcast되는 gameplay snapshot입니다.
+          summary: server 내부 countdown 이후 30Hz로 broadcast되는 gameplay snapshot입니다.
           payload:
             Type: snapshot
             Snapshot:
@@ -217,7 +217,7 @@ components:
       type: object
       description: |
         Gameplay input입니다. `Type` field를 넣지 않습니다.
-        Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 countdown 이후에 시작합니다.
+        Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
       properties:
         MoveDir:
           $ref: "#/components/schemas/Vector2"
@@ -289,7 +289,7 @@ components:
           type: integer
           minimum: 1
           maximum: 5
-          description: status가 `starting`일 때 남은 countdown 초입니다.
+          description: status가 `starting`일 때 client fake timer 기준으로 사용할 countdown 초입니다. Server는 중간 countdown 값을 broadcast하지 않습니다.
         Tick:
           type: integer
           minimum: 0
@@ -311,7 +311,7 @@ components:
       type: string
       enum: [starting, started]
       description: |
-        starting은 모든 client ready 이후 countdown 중인 상태입니다.
+        starting은 모든 client ready 이후 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다.
         started는 countdown이 끝나고 gameplay snapshot stream이 시작된 상태입니다.
     MapData:
       type: object

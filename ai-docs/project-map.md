@@ -19,7 +19,7 @@
 - projectile 생성, 이동, wall/boundary destroy
 - projectile hit, HP 감소, `IsDead` snapshot
 - 2-player WebSocket sync regression test
-- match Ready event/ready ACK/countdown/start state
+- match Ready event/ready ACK/starting signal/start state
 - start 전 WebSocket close cancel
 
 아직 안 되는 것:
@@ -80,7 +80,7 @@ ai-docs                   사람이 읽는 운영/설계 문서
 
 Player ID는 `player-1`, `player-2`처럼 증가합니다. join index가 짝수면 red, 홀수면 blue이고, `slot`은 `playerIndex / 2`입니다.
 
-두 번째 player가 들어와도 REST `room.status`는 `waiting`으로 남습니다. 두 player가 WebSocket에 연결하면 `Type: "Ready"` event로 map과 player별 spawn 위치를 받고, 양쪽 client가 `{"Type":"ready"}`를 보낸 뒤 5초 countdown이 끝나면 simulation이 시작됩니다.
+두 번째 player가 들어와도 REST `room.status`는 `waiting`으로 남습니다. 두 player가 WebSocket에 연결하면 `Type: "Ready"` event로 map과 player별 spawn 위치를 받고, 양쪽 client가 `{"Type":"ready"}`를 보내면 server가 starting 신호를 1번 보냅니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 simulation을 시작합니다.
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
@@ -100,8 +100,8 @@ Matchmaking room WebSocket 상태:
 
 1. 두 matched player가 모두 연결되면 `{"Type":"Ready","Map":...,"Players":[...]}`를 받습니다.
 2. client는 이 map과 `Players[].SpawnPosition`으로 렌더 준비를 끝낸 뒤 `{"Type":"ready"}`를 보냅니다.
-3. 모두 ready가 되면 `Snapshot.status: "starting"`과 `Snapshot.countdown`이 5부터 1까지 broadcast됩니다.
-4. countdown 이후 `Snapshot.status: "started"`가 오고, 다음 tick부터 30Hz gameplay snapshot이 시작됩니다.
+3. 모두 ready가 되면 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`가 1번 broadcast됩니다.
+4. 중간 countdown broadcast 없이 5초 뒤 `Snapshot.status: "started"`가 오고, 다음 tick부터 30Hz gameplay snapshot이 시작됩니다.
 5. start 전 WebSocket close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
 
 ### 4. Room start
@@ -200,7 +200,7 @@ Room store는 in-memory입니다.
 - `SL-12`: user matchmaking parent
   - `SL-49`: server simple matchmaking
   - `SL-50`: client matchmaking
-- `SL-58`: server ready/loading/countdown/cancel
+- `SL-58`: server ready/loading/starting signal/cancel
 - `SL-14`: client prototype logic server migration
   - server child issues `SL-53` to `SL-56`
   - `SL-57`: client logic split
