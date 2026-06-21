@@ -246,7 +246,11 @@ components:
           example: room-1
         status:
           type: string
-          description: waiting이면 REST room lifecycle상 아직 gameplay snapshot broadcast 전, started이면 30Hz snapshot broadcast 중입니다. Match render 준비는 WebSocket `Type: Ready`, countdown 시작은 1회성 `Snapshot.status: starting`에서 봅니다.
+          description: >-
+            waiting이면 REST room lifecycle상 아직 gameplay snapshot broadcast 전,
+            started이면 30Hz snapshot broadcast 중입니다. Match render 준비는
+            WebSocket `Type: Ready`, countdown 시작은 1회성
+            `Snapshot.status: starting`에서 봅니다.
           enum: [waiting, started]
         players:
           type: array

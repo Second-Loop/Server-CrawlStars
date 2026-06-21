@@ -46,6 +46,7 @@ assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must d
 assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
 assertNoBacktickStartedPlainScalars(openAPIText, "api/openapi.yaml");
+assertNoColonSpacePlainScalars(openAPIText, "api/openapi.yaml");
 
 assert(hasLine(asyncAPIText, "asyncapi: 3.0.0"), "api/asyncapi.yaml must use AsyncAPI 3.0.0");
 assert(hasLine(asyncAPIText, "x-stability: e1-debug"), "api/asyncapi.yaml must mark x-stability: e1-debug");
@@ -55,6 +56,7 @@ for (const field of requiredWebSocketFields) {
 }
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
 assertNoBacktickStartedPlainScalars(asyncAPIText, "api/asyncapi.yaml");
+assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);
@@ -65,6 +67,23 @@ function assertNoBacktickStartedPlainScalars(text, name) {
 	for (const [index, line] of lines.entries()) {
 		if (/^\s+[A-Za-z0-9_-]+:\s+`/.test(line)) {
 			throw new Error(`${name}:${index + 1} must quote YAML values that start with a backtick`);
+		}
+	}
+}
+
+function assertNoColonSpacePlainScalars(text, name) {
+	const lines = text.split(/\r?\n/);
+	for (const [index, line] of lines.entries()) {
+		const match = /^\s+[A-Za-z0-9_-]+:\s+(.+)$/.exec(line);
+		if (!match) {
+			continue;
+		}
+		const value = match[1].trimStart();
+		if (/^["'|>\[{]/.test(value)) {
+			continue;
+		}
+		if (value.includes(": ")) {
+			throw new Error(`${name}:${index + 1} must quote or block YAML values that contain ": "`);
 		}
 	}
 }
