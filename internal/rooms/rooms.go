@@ -777,9 +777,7 @@ func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
 	if room.countdown > 1 {
 		room.countdown--
 		room.lastActivityAt = s.clock.Now()
-		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		s.mu.Unlock()
-		writeWebSocketDeliveries(deliveries)
 		return false
 	}
 

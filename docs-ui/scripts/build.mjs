@@ -60,7 +60,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Ready 이벤트, ready ACK, countdown, gameplay snapshot 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Ready 이벤트, ready ACK, starting signal, gameplay snapshot 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -89,12 +89,12 @@ function renderAsyncAPI(specText) {
             <p>각 client는 준비가 끝나면 <code>{"Type":"ready"}</code>를 보냅니다.</p>
           </article>
           <article>
-            <h3>4. countdown</h3>
-            <p>모두 ready면 <code>Snapshot.status: starting</code>과 <code>Snapshot.countdown</code>을 받습니다.</p>
+            <h3>4. starting</h3>
+            <p>모두 ready면 countdown 시작 신호로 <code>Snapshot.status: starting</code>과 <code>Snapshot.countdown: 5</code>를 1번 받습니다.</p>
           </article>
           <article>
             <h3>5. started</h3>
-            <p>countdown 후 <code>Snapshot.status: started</code>가 오고, 다음 tick부터 gameplay snapshot이 30Hz로 broadcast됩니다.</p>
+            <p>Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 <code>Snapshot.status: started</code>와 gameplay snapshot을 보냅니다.</p>
           </article>
         </div>
       </section>
@@ -155,7 +155,7 @@ function renderAsyncAPI(specText) {
 }</code></pre>
           </article>
           <article>
-            <h3>Countdown</h3>
+            <h3>Starting Signal</h3>
             <pre><code>{
   "Type": "snapshot",
   "Snapshot": {
