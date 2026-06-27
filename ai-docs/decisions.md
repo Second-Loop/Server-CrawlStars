@@ -247,3 +247,17 @@
 - Go 상수는 fallback과 drift test 기준으로 유지하되, 서버 런타임은 embedded game config를 우선합니다.
 - `docs-ui/scripts/validate.mjs`와 `internal/simulation` 테스트가 config 구조와 Go 상수 drift를 검증합니다.
 - Client가 서버 권위 movement/damage를 재계산한다는 뜻은 아니며, 최종 gameplay state는 계속 server snapshot을 기준으로 받습니다.
+
+## ADR-0018: SL-63 GameEnd는 Player별 Win/Lose Event로 처리
+
+상태: 승인됨
+
+맥락: SL-63은 HP가 0이 된 뒤 client가 scene 종료와 결과 UI를 처리할 수 있도록 WebSocket 결과 event가 필요합니다. Simulation core는 HP/IsDead snapshot까지만 담당하고, room lifecycle과 WebSocket 종료 처리는 `internal/rooms` boundary에 남겨야 합니다. 같은 tick에 양쪽 player가 동시에 사망하는 상황은 드물지만 v1 결과 계약은 명시해야 합니다.
+
+결정: started room에서 snapshot 이후 HP가 0인 player가 있으면 server는 같은 tick의 snapshot을 먼저 broadcast하고, 이어서 연결된 각 player에게 `{"Type":"GameEnd","PlayerId":...,"Result":"Win|Lose"}` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 v1에서는 양쪽 모두 `Lose`로 보냅니다. Server는 GameEnd event 전송 후 room-local ticker와 WebSocket connection을 정리하고 room store에서 해당 room을 제거합니다. `Draw`나 마지막 공격자 기준 타이브레이커는 후속 issue에서 별도 논의합니다.
+
+결과:
+
+- Client는 마지막 death snapshot으로 화면 state를 갱신한 뒤 GameEnd event로 결과 UI와 scene exit를 처리할 수 있습니다.
+- Simulation package는 transport-independent `Step(inputs) -> Snapshot` 계약을 유지합니다.
+- 동시 사망 v1 정책은 모두 `Lose`이며, `Draw` 추가는 breaking/contract change가 필요한 후속 작업입니다.

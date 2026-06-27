@@ -21,6 +21,7 @@ internal/rooms
   match ready/starting state
   WebSocket connection adapter
   room-local 30Hz ticker
+  GameEnd event와 종료 room 정리
   TTL cleanup
 
 internal/simulation
@@ -92,7 +93,7 @@ Hit/death:
 - hit projectile은 destroyed가 됩니다.
 - target HP는 projectile damage만큼 감소합니다.
 - HP가 0 이하가 되면 `HP = 0`, `IsDead = true`입니다.
-- respawn, score, win/loss는 아직 없습니다.
+- respawn, score는 아직 없습니다.
 
 ## Room과 WebSocket
 
@@ -127,6 +128,8 @@ WebSocket:
 - waiting room은 input을 받을 수 있지만 snapshot을 보내지 않습니다.
 - matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown: 5`를 1번 보냅니다.
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
+- HP가 0인 player가 생기면 같은 tick의 snapshot 뒤 player별 `Type: GameEnd` event를 보내고 room을 정리합니다.
+- 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 v1에서는 양쪽 모두 `Lose`입니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
@@ -139,6 +142,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - hard lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 - matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
+- GameEnd가 발생한 started room은 결과 event 전송 후 room-local ticker와 WebSocket connection을 정리합니다.
 
 ## 의도적으로 없는 것
 
@@ -147,7 +151,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - generic scheduler/runner/orchestration
 - dashboard
 - Kubernetes
-- respawn, score, win/loss
+- respawn, score
 - bot replacement
 
 공유 gameplay config는 `client-config/game-config.json`입니다. 서버 repo가 source of truth를 갖고, server binary는 이 JSON을 embed해서 room store와 simulation 기본값으로 사용합니다. Client CI는 `client-config`만 sparse checkout해 Unity runtime asset 경로로 복사할 수 있습니다. 이 config에는 tick rate, tile size, player/projectile type별 기본값, map이 들어갑니다.

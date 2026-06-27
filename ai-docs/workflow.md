@@ -24,15 +24,17 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - room WebSocket snapshot stream
 - room TTL cleanup
 - simple `/matchmaking/join`
+- matchmaking Ready event/ready ACK/countdown/start
+- start 전 match cancel
+- GameEnd Win/Lose event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
 
 아직 issue 없이 추가하지 않는 범위:
 
 - production matchmaking
-- ready/loading/countdown state transition
-- start 전 cancel과 ready timeout
+- ready timeout
 - start 후 disconnect, bot replacement, ping/pong timeout
-- respawn, score, win/loss
+- respawn, score
 - persistence, database, auth
 - Kubernetes, dashboard, scheduler, runner
 

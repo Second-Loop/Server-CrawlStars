@@ -16,7 +16,7 @@ Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버입
 - OpenAPI/AsyncAPI raw spec과 docs UI
 - GitHub Actions CI/CD와 Oracle VM pull deployment
 
-아직 production matchmaking, persistence, auth, respawn, score/win-loss, bot replacement는 없습니다.
+아직 production matchmaking, persistence, auth, respawn, score, bot replacement는 없습니다.
 
 ## 자주 쓰는 명령
 

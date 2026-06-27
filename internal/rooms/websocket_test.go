@@ -540,6 +540,81 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 	}
 }
 
+func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{Map: verticalDuelMap()})
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	red := createPlayer(t, handler, room.ID)
+	blue := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	defer redConn.Close(websocket.StatusNormalClosure, "")
+	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	defer blueConn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, red.ID)
+	waitForAttachedClient(t, store, room.ID, blue.ID)
+
+	for hitCount := 0; hitCount < 10; hitCount++ {
+		writeWSJSON(t, redConn, inputMessage{
+			AttackDir:     simulation.Vector2{X: 0, Y: -1},
+			PressedAttack: true,
+		})
+		waitForPendingInput(t, store, room.ID, red.ID)
+		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	}
+
+	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Win")
+	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
+	waitForRoomDeleted(t, store, room.ID)
+}
+
+func TestWebSocketSendsLoseToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{Map: verticalDuelMap()})
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	red := createPlayer(t, handler, room.ID)
+	blue := createPlayer(t, handler, room.ID)
+	startRoom(t, handler, room.ID)
+
+	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	defer redConn.Close(websocket.StatusNormalClosure, "")
+	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	defer blueConn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, red.ID)
+	waitForAttachedClient(t, store, room.ID, blue.ID)
+
+	for hitCount := 0; hitCount < 10; hitCount++ {
+		writeWSJSON(t, redConn, inputMessage{
+			AttackDir:     simulation.Vector2{X: 0, Y: -1},
+			PressedAttack: true,
+		})
+		writeWSJSON(t, blueConn, inputMessage{
+			AttackDir:     simulation.Vector2{X: 0, Y: 1},
+			PressedAttack: true,
+		})
+		waitForPendingInput(t, store, room.ID, red.ID)
+		waitForPendingInput(t, store, room.ID, blue.ID)
+		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	}
+
+	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Lose")
+	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
+	waitForRoomDeleted(t, store, room.ID)
+}
+
 type fakeClock struct {
 	ticks     chan time.Time
 	duration  time.Duration
@@ -832,6 +907,18 @@ func readReadyEventMessage(t *testing.T, conn *websocket.Conn) readyEventMessage
 	return message
 }
 
+func readGameEndMessage(t *testing.T, conn *websocket.Conn) gameEndMessage {
+	t.Helper()
+
+	payload := readWebSocketPayload(t, conn)
+
+	var message gameEndMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode game end message: %v", err)
+	}
+	return message
+}
+
 func readUntilSnapshotStatus(t *testing.T, conn *websocket.Conn, status string) matchSnapshotMessage {
 	t.Helper()
 
@@ -878,6 +965,37 @@ type matchSnapshotMessage struct {
 		Players     []simulation.PlayerData     `json:"Players"`
 		Projectiles []simulation.ProjectileData `json:"Projectiles"`
 	} `json:"Snapshot"`
+}
+
+func assertGameEnd(t *testing.T, message gameEndMessage, playerID string, result string) {
+	t.Helper()
+
+	if message.Type != "GameEnd" {
+		t.Fatalf("expected GameEnd message type, got %+v", message)
+	}
+	if message.PlayerID != playerID {
+		t.Fatalf("expected GameEnd player %s, got %+v", playerID, message)
+	}
+	if message.Result != result {
+		t.Fatalf("expected GameEnd result %s, got %+v", result, message)
+	}
+}
+
+func verticalDuelMap() simulation.MapData {
+	return simulation.MapData{
+		Width:      5,
+		Height:     5,
+		Index:      0,
+		MaxPlayers: 2,
+		TileSize:   simulation.TileSize,
+		Map: [][]simulation.TileType{
+			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileSpawnPoint, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileSpawnPoint, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileGround, simulation.TileGround, simulation.TileGround, simulation.TileWall},
+			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
+		},
+	}
 }
 
 func assertWebSocketErrorResponse(t *testing.T, resp *http.Response, status int, code string) {

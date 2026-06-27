@@ -21,12 +21,13 @@
 - 2-player WebSocket sync regression test
 - match Ready event/ready ACK/starting signal/start state
 - start 전 WebSocket close cancel
+- GameEnd Win/Lose event와 종료 room 정리
 - client build용 shared game config artifact
 
 아직 안 되는 것:
 
 - start 후 disconnect 정책, ping/pong timeout, bot replacement
-- respawn, score, win/loss
+- respawn, score
 - production matchmaking queue, rating, auth, persistence
 
 ## 레포 구조
@@ -136,7 +137,9 @@ Started room의 tick 흐름:
 3. `room.state.Step(inputs)`를 호출합니다.
 4. `{"Type":"snapshot","Snapshot":...}` 형태로 감쌉니다.
 5. 연결된 client 모두에게 같은 snapshot을 보냅니다. 각 WebSocket write deadline은 10ms입니다.
-6. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
+6. HP가 0이 된 player가 있으면 같은 tick의 snapshot 뒤에 player별 `GameEnd` event를 보냅니다.
+7. GameEnd 이후 room-local ticker와 WebSocket connection을 정리합니다.
+8. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
 
 Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 없는 legacy/static map에서만 5x5 fallback 좌표를 씁니다.
 
@@ -179,6 +182,8 @@ Room store는 in-memory입니다.
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
 현재 WebSocket close는 client connection과 pending input을 제거합니다. started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
+
+GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 모든 player가 사망하면 v1에서는 모두 `Lose`입니다. `Draw`나 타이브레이커는 후속 issue에서 다룹니다.
 
 ## Linear 흐름
 

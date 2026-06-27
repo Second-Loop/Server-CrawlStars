@@ -35,6 +35,7 @@ const (
 	defaultRoomWebSocketCloseMsg = "room expired"
 	defaultRoomDebugDeleteMsg    = "room deleted"
 	defaultMatchCancelMsg        = "match canceled"
+	defaultGameEndCloseMsg       = "game ended"
 	webSocketWriteTimeout        = 10 * time.Millisecond
 	matchPlayerCount             = 2
 	matchCountdownSeconds        = 5
@@ -804,6 +805,10 @@ func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
 func (s *Store) tickRoom(roomID string) {
 	s.cleanupExpired()
 
+	var resources roomResources
+	var deliveries []webSocketDelivery
+	gameEnded := false
+
 	s.mu.Lock()
 
 	room, ok := s.rooms[roomID]
@@ -821,16 +826,23 @@ func (s *Store) tickRoom(roomID string) {
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 
-	clients := make([]*websocket.Conn, 0, len(room.clients))
 	for _, conn := range room.clients {
 		if conn != nil {
-			clients = append(clients, conn)
+			deliveries = append(deliveries, webSocketDelivery{conn: conn, message: message})
 		}
+	}
+	results := gameEndResults(snapshot.Players)
+	if len(results) > 0 {
+		deliveries = append(deliveries, room.gameEndDeliveries(results)...)
+		delete(s.rooms, roomID)
+		resources.add(room)
+		gameEnded = true
 	}
 	s.mu.Unlock()
 
-	for _, conn := range clients {
-		writeWebSocketJSON(conn, message)
+	writeWebSocketDeliveries(deliveries)
+	if gameEnded {
+		resources.close(defaultGameEndCloseMsg)
 	}
 }
 
@@ -1110,6 +1122,12 @@ type readyEventPlayer struct {
 	SpawnPosition simulation.Vector2 `json:"SpawnPosition"`
 }
 
+type gameEndMessage struct {
+	Type     string `json:"Type"`
+	PlayerID string `json:"PlayerId"`
+	Result   string `json:"Result"`
+}
+
 func roomSnapshotFromSimulation(snapshot simulation.Snapshot, status MatchStatus) roomSnapshot {
 	return roomSnapshot{
 		Status:      status,
@@ -1131,6 +1149,66 @@ func readyEventPlayers(players []playerResponse, gameMap simulation.MapData) []r
 		})
 	}
 	return result
+}
+
+func (r *room) gameEndDeliveries(results map[string]string) []webSocketDelivery {
+	if len(results) == 0 {
+		return nil
+	}
+
+	deliveries := make([]webSocketDelivery, 0, len(results))
+	for _, player := range r.Players {
+		result, ok := results[player.ID]
+		if !ok {
+			continue
+		}
+		conn := r.clients[player.ID]
+		if conn == nil {
+			continue
+		}
+		deliveries = append(deliveries, webSocketDelivery{
+			conn: conn,
+			message: gameEndMessage{
+				Type:     "GameEnd",
+				PlayerID: player.ID,
+				Result:   result,
+			},
+		})
+	}
+	return deliveries
+}
+
+func gameEndResults(players []simulation.PlayerData) map[string]string {
+	if len(players) == 0 {
+		return nil
+	}
+
+	deadCount := 0
+	for _, player := range players {
+		if player.IsDead {
+			deadCount++
+		}
+	}
+	if deadCount == 0 {
+		return nil
+	}
+
+	results := make(map[string]string, len(players))
+	if deadCount == len(players) {
+		for _, player := range players {
+			results[string(player.ID)] = "Lose"
+		}
+		return results
+	}
+
+	for _, player := range players {
+		if player.IsDead {
+			results[string(player.ID)] = "Lose"
+		} else {
+			results[string(player.ID)] = "Win"
+		}
+	}
+	return results
 }
 
 type errorMessage struct {
