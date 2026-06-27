@@ -267,7 +267,7 @@ func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T)
 
 func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	gameMap := customRoomMap()
-	store := newStore(5, newFakeClock(), gameMap)
+	store := newStore(5, newFakeClock(), StoreConfig{Map: gameMap})
 	handler := Handler(store)
 	defer store.Close()
 
@@ -294,7 +294,7 @@ func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 }
 
 func TestStoreConfigFallsBackToStaticMapWhenMapIsEmpty(t *testing.T) {
-	store := newStore(5, newFakeClock(), simulation.MapData{})
+	store := newStore(5, newFakeClock(), StoreConfig{})
 	handler := Handler(store)
 	defer store.Close()
 

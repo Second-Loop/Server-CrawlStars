@@ -150,4 +150,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - respawn, score, win/loss
 - bot replacement
 
-다음 architecture 확장은 `SL-30` shared constants/config를 우선합니다.
+공유 gameplay config는 `client-config/game-config.json`입니다. 서버 repo가 source of truth를 갖고, server binary는 이 JSON을 embed해서 room store와 simulation 기본값으로 사용합니다. Client CI는 `client-config`만 sparse checkout해 Unity runtime asset 경로로 복사할 수 있습니다. 이 config에는 tick rate, tile size, player/projectile type별 기본값, map이 들어갑니다.
