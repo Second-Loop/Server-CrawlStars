@@ -94,7 +94,8 @@ type MapData struct {
 }
 
 type Config struct {
-	Map MapData
+	Map  MapData
+	Game GameConfig
 }
 
 type State struct {
@@ -103,6 +104,7 @@ type State struct {
 	projectiles       []ProjectileData
 	nextProjectileSeq uint64
 	gameMap           MapData
+	gameConfig        GameConfig
 }
 
 func NewState(players []PlayerData) *State {
@@ -110,9 +112,11 @@ func NewState(players []PlayerData) *State {
 }
 
 func NewStateWithConfig(players []PlayerData, config Config) *State {
+	gameConfig := resolveStateGameConfig(config)
 	return &State{
-		players: normalizePlayers(players),
-		gameMap: normalizeMap(config.Map),
+		players:    normalizePlayersWithConfig(players, gameConfig),
+		gameMap:    gameConfig.Map,
+		gameConfig: gameConfig,
 	}
 }
 
@@ -185,16 +189,21 @@ func cloneProjectiles(projectiles []ProjectileData) []ProjectileData {
 }
 
 func normalizePlayers(players []PlayerData) []PlayerData {
+	return normalizePlayersWithConfig(players, StaticGameConfig())
+}
+
+func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []PlayerData {
 	cloned := clonePlayers(players)
+	defaultPlayer := config.DefaultPlayerType()
 	for i := range cloned {
 		if cloned[i].Speed <= 0 {
-			cloned[i].Speed = DefaultPlayerSpeed
+			cloned[i].Speed = defaultPlayer.Speed
 		}
 		if cloned[i].Radius <= 0 {
-			cloned[i].Radius = DefaultPlayerRadius
+			cloned[i].Radius = defaultPlayer.Radius
 		}
 		if cloned[i].HP <= 0 {
-			cloned[i].HP = DefaultPlayerHP
+			cloned[i].HP = defaultPlayer.HP
 		}
 	}
 	return cloned
@@ -215,8 +224,8 @@ func (s *State) applyInput(input InputCommand) {
 		s.players[i].PressedAttack = input.PressedAttack
 
 		movement := Vector2{
-			X: s.players[i].Speed * TickDuration * input.MoveDir.X,
-			Y: s.players[i].Speed * TickDuration * input.MoveDir.Y,
+			X: s.players[i].Speed * s.tickDuration() * input.MoveDir.X,
+			Y: s.players[i].Speed * s.tickDuration() * input.MoveDir.Y,
 		}
 
 		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
@@ -242,8 +251,8 @@ func (s *State) moveProjectiles() {
 		}
 
 		next := Vector2{
-			X: s.projectiles[i].Pos.X + s.projectiles[i].Dir.X*s.projectiles[i].Speed*TickDuration,
-			Y: s.projectiles[i].Pos.Y + s.projectiles[i].Dir.Y*s.projectiles[i].Speed*TickDuration,
+			X: s.projectiles[i].Pos.X + s.projectiles[i].Dir.X*s.projectiles[i].Speed*s.tickDuration(),
+			Y: s.projectiles[i].Pos.Y + s.projectiles[i].Dir.Y*s.projectiles[i].Speed*s.tickDuration(),
 		}
 		s.projectiles[i].Pos = next
 		if s.collidesWithWall(next, s.projectiles[i].Radius) {
@@ -276,15 +285,23 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 
 func (s *State) newProjectile(owner PlayerData) ProjectileData {
 	s.nextProjectileSeq++
+	defaultProjectile := s.gameConfig.DefaultProjectileType()
 	return ProjectileData{
 		ID:      ProjectileID("projectile-" + strconv.FormatUint(uint64(s.tick+1), 10) + "-" + string(owner.ID) + "-" + strconv.FormatUint(s.nextProjectileSeq, 10)),
 		OwnerID: owner.ID,
 		Pos:     owner.Pos,
 		Dir:     owner.AttackDir,
-		Speed:   DefaultProjectileSpeed,
-		Damage:  DefaultProjectileDamage,
-		Radius:  DefaultProjectileRadius,
+		Speed:   defaultProjectile.Speed,
+		Damage:  defaultProjectile.Damage,
+		Radius:  defaultProjectile.Radius,
 	}
+}
+
+func (s *State) tickDuration() float64 {
+	if s.gameConfig.TickRate <= 0 {
+		return TickDuration
+	}
+	return 1.0 / float64(s.gameConfig.TickRate)
 }
 
 func (s *State) collidesWithWall(position Vector2, radius float64) bool {

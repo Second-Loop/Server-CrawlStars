@@ -21,13 +21,13 @@
 - 2-player WebSocket sync regression test
 - match Ready event/ready ACK/starting signal/start state
 - start 전 WebSocket close cancel
+- client build용 shared game config artifact
 
 아직 안 되는 것:
 
 - start 후 disconnect 정책, ping/pong timeout, bot replacement
 - respawn, score, win/loss
 - production matchmaking queue, rating, auth, persistence
-- client/server shared constants artifact
 
 ## 레포 구조
 
@@ -165,7 +165,9 @@ Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
 
 Snapshot의 `PressedAttack`은 input echo/debug 성격이 강합니다. 제거하려면 WebSocket schema 변경이므로 별도 issue에서 다룹니다.
 
-Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이고, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client/server shared constants artifact는 `SL-30`에서 다룹니다.
+Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이고, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다.
+
+공유 gameplay config는 `client-config/game-config.json`입니다. Server binary는 이 JSON을 embed해서 room store와 simulation 기본값으로 쓰고, Unity CI는 서버 repo의 `client-config`만 sparse checkout한 뒤 `Assets/StreamingAssets/GameConfig` 같은 client runtime 경로로 복사할 수 있습니다. 이 artifact는 `tickRate`, `tile.size`, player/projectile type별 기본값, map을 담습니다. Client는 최종 gameplay state를 여전히 서버 snapshot에서 받으며, 이 config는 상수 출처를 한 곳으로 모으기 위한 기준입니다.
 
 ### 8. Cleanup
 
@@ -210,10 +212,10 @@ Room store는 in-memory입니다.
 
 ## 다음 추천 작업
 
-1. `SL-30`: shared constants/config v1
-   - tick rate, tile size, player/projectile defaults, max players, map fixture를 한 artifact로 정리
-   - Go 상수와 artifact drift 검증
-   - Unity가 읽을 field/unit 문서화
+1. `SL-30`: shared constants/config v1 마무리
+   - `client-config/game-config.json`을 server/client 공통 gameplay config source로 사용
+   - Server embed, Go 상수, docs validation drift 검증 유지
+   - Unity 적용 후 필요한 field가 생기면 v2로 확장
 
 2. `SL-14` closeout
    - `SL-57` client PR 상태 확인

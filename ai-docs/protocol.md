@@ -12,6 +12,7 @@
 - projectile hit, HP, death snapshot
 - matchmaking Ready event/ready ACK/countdown/start
 - start 전 match cancel
+- client build용 shared game config artifact
 
 아직 구현하지 않은 것:
 
@@ -50,7 +51,15 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `StaticMapFixture().MaxPlayers = 6`
 - player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
 
-공통 constants artifact는 아직 없고 `SL-30` 범위입니다.
+`client-config/game-config.json`은 서버와 Unity client가 함께 쓰는 gameplay config source입니다. Server binary는 이 JSON을 embed해서 room store와 simulation 기본값으로 쓰고, Unity client는 build 때 server repo의 `client-config`를 sparse checkout해서 runtime asset 경로로 복사할 수 있습니다.
+
+- `tickRate`
+- `tile.size`
+- `player.types[].id/radius/hp/speed`
+- `projectile.types[].id/radius/damage/speed`
+- `map`
+
+Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. 이 config는 값의 출처를 한 곳으로 모으는 용도이며, client가 서버 권위 movement/damage를 재계산한다는 뜻은 아닙니다.
 
 ## WebSocket 계약
 
@@ -231,7 +240,7 @@ POST /matchmaking/join
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
-Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 fixture 파일은 `internal/simulation/fixtures/default-map.json`이며, 서버 시작 시 이 JSON을 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file 또는 shared constants artifact와 맞추는 작업은 `SL-30` 범위입니다.
+Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 `client-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`와 `StaticMapFixture()`의 fallback을 사용합니다.
 
 `SL-58`에서는 이 흐름을 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message로 추가합니다. REST polling이나 SSE를 먼저 늘리지 않습니다.
 

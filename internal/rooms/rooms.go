@@ -48,11 +48,13 @@ type Store struct {
 	rooms          map[string]*room
 	clock          clock
 	gameMap        simulation.MapData
+	gameConfig     simulation.GameConfig
 	closed         bool
 }
 
 type StoreConfig struct {
-	Map simulation.MapData
+	Map        simulation.MapData
+	GameConfig simulation.GameConfig
 }
 
 type room struct {
@@ -145,34 +147,42 @@ type realTicker struct {
 }
 
 func NewStore(maxActiveRooms int) *Store {
-	return newStore(maxActiveRooms, nil, simulation.MapData{})
+	return newStore(maxActiveRooms, nil, StoreConfig{})
 }
 
 func NewStoreWithClock(maxActiveRooms int, clock clock) *Store {
-	return newStore(maxActiveRooms, clock, simulation.MapData{})
+	return newStore(maxActiveRooms, clock, StoreConfig{})
 }
 
 func NewStoreWithConfig(maxActiveRooms int, config StoreConfig) *Store {
-	return newStore(maxActiveRooms, nil, config.Map)
+	return newStore(maxActiveRooms, nil, config)
 }
 
-func newStore(maxActiveRooms int, clock clock, configuredMap simulation.MapData) *Store {
+func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	if maxActiveRooms <= 0 {
 		maxActiveRooms = 5
 	}
 	if clock == nil {
 		clock = realClock{}
 	}
-	gameMap, err := simulation.ResolveMapData(configuredMap)
+	gameConfig := config.GameConfig
+	if gameConfig.Version <= 0 {
+		gameConfig = simulation.StaticGameConfig()
+	}
+	if config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0 {
+		gameConfig.Map = config.Map
+	}
+	resolvedConfig, err := simulation.ResolveGameConfig(gameConfig)
 	if err != nil {
-		gameMap = simulation.StaticMapFixture()
+		resolvedConfig = simulation.StaticGameConfig()
 	}
 
 	return &Store{
 		maxActiveRooms: maxActiveRooms,
 		rooms:          make(map[string]*room),
 		clock:          clock,
-		gameMap:        gameMap,
+		gameMap:        resolvedConfig.Map,
+		gameConfig:     resolvedConfig,
 	}
 }
 
@@ -522,10 +532,10 @@ func (s *Store) startRoomLocked(room *room) {
 		room.disconnectedAt = time.Time{}
 	}
 	if room.state == nil {
-		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameMap), simulation.Config{Map: s.gameMap})
+		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameMap), simulation.Config{Game: s.gameConfig})
 	}
 	if room.ticker == nil {
-		room.ticker = s.clock.NewTicker(time.Second / time.Duration(simulation.TickRate))
+		room.ticker = s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
 		room.stop = make(chan struct{})
 		go s.runRoom(room.ID, room.ticker, room.stop)
 	}

@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
+const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
+const clientGameConfig = JSON.parse(clientGameConfigText);
 
 const requiredRESTPaths = [
   "/health",
@@ -58,6 +60,19 @@ assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document 
 assertNoBacktickStartedPlainScalars(asyncAPIText, "api/asyncapi.yaml");
 assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
+assert(clientGameConfig.version === 1, "client-config/game-config.json must use version 1");
+assert(clientGameConfig.tickRate === 30, "client-config/game-config.json must expose tickRate 30");
+assert(clientGameConfig.tile?.size === 1.2, "client-config/game-config.json must expose tile.size 1.2");
+assert(hasTypeRadius(clientGameConfig.player?.types, "default", 0.5), "client-config/game-config.json must expose default player radius 0.5");
+assert(hasTypeValue(clientGameConfig.player?.types, "default", "hp", 100), "client-config/game-config.json must expose default player hp 100");
+assert(hasTypeValue(clientGameConfig.player?.types, "default", "speed", 2), "client-config/game-config.json must expose default player speed 2");
+assert(hasTypeRadius(clientGameConfig.projectile?.types, "default", 0.3), "client-config/game-config.json must expose default projectile radius 0.3");
+assert(hasTypeValue(clientGameConfig.projectile?.types, "default", "damage", 10), "client-config/game-config.json must expose default projectile damage 10");
+assert(hasTypeValue(clientGameConfig.projectile?.types, "default", "speed", 13), "client-config/game-config.json must expose default projectile speed 13");
+assert(clientGameConfig.map?.width === 20, "client-config/game-config.json must expose the runtime map width");
+assert(clientGameConfig.map?.height === 20, "client-config/game-config.json must expose the runtime map height");
+assert(clientGameConfig.map?.maxPlayers === 6, "client-config/game-config.json must expose map maxPlayers 6");
+
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);
 }
@@ -86,6 +101,14 @@ function assertNoColonSpacePlainScalars(text, name) {
 			throw new Error(`${name}:${index + 1} must quote or block YAML values that contain ": "`);
 		}
 	}
+}
+
+function hasTypeRadius(types, id, radius) {
+	return Array.isArray(types) && types.some((type) => type.id === id && type.radius === radius);
+}
+
+function hasTypeValue(types, id, key, value) {
+	return Array.isArray(types) && types.some((type) => type.id === id && type[key] === value);
 }
 
 function assert(condition, message) {

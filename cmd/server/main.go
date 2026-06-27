@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	clientconfig "github.com/Second-Loop/Server-CrawlStars/client-config"
 	"github.com/Second-Loop/Server-CrawlStars/internal/docs"
 	"github.com/Second-Loop/Server-CrawlStars/internal/health"
 	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
@@ -35,18 +36,18 @@ func newMux() http.Handler {
 	mux.Handle("/asyncapi", docsHandler)
 	mux.Handle("/openapi.yaml", docsHandler)
 	mux.Handle("/asyncapi.yaml", docsHandler)
-	roomHandler := rooms.Handler(rooms.NewStoreWithConfig(5, rooms.StoreConfig{Map: loadGameMap()}))
+	roomHandler := rooms.Handler(rooms.NewStoreWithConfig(5, rooms.StoreConfig{GameConfig: loadGameConfig()}))
 	mux.Handle("/matchmaking/join", roomHandler)
 	mux.Handle("/rooms", roomHandler)
 	mux.Handle("/rooms/", roomHandler)
 	return mux
 }
 
-func loadGameMap() simulation.MapData {
-	gameMap, err := simulation.LoadDefaultMapFixture()
+func loadGameConfig() simulation.GameConfig {
+	gameConfig, err := simulation.LoadGameConfig(clientconfig.Reader())
 	if err != nil {
-		log.Printf("failed to load map fixture %s: %v; using static fallback", simulation.DefaultMapFixturePath, err)
-		return simulation.StaticMapFixture()
+		log.Printf("failed to load client game config: %v; using static fallback", err)
+		return simulation.StaticGameConfig()
 	}
-	return gameMap
+	return gameConfig
 }

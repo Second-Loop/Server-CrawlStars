@@ -278,7 +278,13 @@ Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack
 - projectile radius: 0.3
 - fixture max players: 6
 
-공통 client/server constants artifact는 아직 없고 `SL-30`에서 다룹니다.
+공유 gameplay config artifact는 `client-config/game-config.json`입니다.
+
+- 포함: `tickRate`, `tile.size`, player type별 `radius/hp/speed`, projectile type별 `radius/damage/speed`, `map`
+- 서버: binary가 이 JSON을 embed해서 room store와 simulation 기본값으로 사용합니다.
+- 클라이언트: build 때 server repo의 `client-config`를 sparse checkout해 Unity runtime asset 경로로 복사할 수 있습니다.
+
+Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. 이 artifact는 상수 출처를 한 곳으로 모으기 위한 것이며, client가 서버 권위 movement/damage를 재계산한다는 뜻은 아닙니다.
 
 ## 수동 검증 시나리오
 

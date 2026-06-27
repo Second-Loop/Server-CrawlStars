@@ -232,3 +232,18 @@
 - `internal/simulation`은 match lifecycle을 모르는 transport-independent gameplay core로 남습니다.
 - AsyncAPI는 Ready event, ready ACK, starting signal, gameplay snapshot 예시를 OpenAPI 수준으로 자세히 기록해야 합니다.
 - Start 이후 disconnect policy, bot replacement, ping/pong timeout은 여전히 별도 issue 범위입니다.
+
+## ADR-0017: SL-30 Gameplay Config는 client-config JSON을 Source of Truth로 사용
+
+상태: 승인됨
+
+맥락: SL-30은 server와 Unity client가 공유해야 하는 gameplay 상수 위치를 정리해야 합니다. 기존에는 tile size, radius, HP, speed, damage, map이 Go 상수와 map fixture, 문서에 흩어져 있었습니다. Client CI는 server repo에서 필요한 config만 가져와 Unity build에 포함할 수 있어야 합니다.
+
+결정: `client-config/game-config.json`을 gameplay config source로 둡니다. 이 JSON은 `tickRate`, `tile.size`, player type별 `radius/hp/speed`, projectile type별 `radius/damage/speed`, `map`을 포함합니다. `client-config` 디렉터리는 Go package이기도 해서 server binary가 같은 JSON을 embed하고, `cmd/server`는 이를 로드해 room store와 simulation 기본값으로 사용합니다. Unity client는 build 때 server repo의 `client-config`만 sparse checkout해 runtime asset 경로로 복사할 수 있습니다.
+
+결과:
+
+- Gameplay 상수의 기준 파일은 `client-config/game-config.json`입니다.
+- Go 상수는 fallback과 drift test 기준으로 유지하되, 서버 런타임은 embedded game config를 우선합니다.
+- `docs-ui/scripts/validate.mjs`와 `internal/simulation` 테스트가 config 구조와 Go 상수 drift를 검증합니다.
+- Client가 서버 권위 movement/damage를 재계산한다는 뜻은 아니며, 최종 gameplay state는 계속 server snapshot을 기준으로 받습니다.
