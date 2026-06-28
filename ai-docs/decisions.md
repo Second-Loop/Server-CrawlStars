@@ -233,17 +233,32 @@
 - AsyncAPI는 Ready event, ready ACK, starting signal, gameplay snapshot 예시를 OpenAPI 수준으로 자세히 기록해야 합니다.
 - Start 이후 disconnect policy, bot replacement, ping/pong timeout은 여전히 별도 issue 범위입니다.
 
-## ADR-0017: SL-30 Gameplay Config는 client-config JSON을 Source of Truth로 사용
+## ADR-0017: SL-30 Gameplay Config는 client 공유용과 server runtime용을 분리
 
 상태: 승인됨
 
-맥락: SL-30은 server와 Unity client가 공유해야 하는 gameplay 상수 위치를 정리해야 합니다. 기존에는 tile size, radius, HP, speed, damage, map이 Go 상수와 map fixture, 문서에 흩어져 있었습니다. Client CI는 server repo에서 필요한 config만 가져와 Unity build에 포함할 수 있어야 합니다.
+맥락: SL-30은 server와 Unity client가 공유해야 하는 gameplay 상수 위치를 정리해야 합니다. 기존에는 tile size, radius, HP, speed, damage, map이 Go 상수와 map fixture, 문서에 흩어져 있었습니다. Client CI는 server repo에서 필요한 config만 가져와 Unity build에 포함할 수 있어야 하지만, client가 쓰지 않는 HP, speed, damage, tick rate, map까지 공유 artifact에 들어가면 책임 경계가 흐려집니다.
 
-결정: `client-config/game-config.json`을 gameplay config source로 둡니다. 이 JSON은 `tickRate`, `tile.size`, player type별 `radius/hp/speed`, projectile type별 `radius/damage/speed`, `map`을 포함합니다. `client-config` 디렉터리는 Go package이기도 해서 server binary가 같은 JSON을 embed하고, `cmd/server`는 이를 로드해 room store와 simulation 기본값으로 사용합니다. Unity client는 build 때 server repo의 `client-config`만 sparse checkout해 runtime asset 경로로 복사할 수 있습니다.
+결정: config artifact를 두 파일로 분리합니다. `client-config/game-config.json`은 Unity client가 build 때 sparse checkout해서 runtime asset 경로로 복사하는 공유 config입니다. 이 파일은 `tileSize`, `playerRadius`, `playerTypes`, `projectileRadius`, `projectileTypes`만 포함합니다. `server-config/game-config.json`은 server binary가 embed하고 `cmd/server`가 로드하는 server-only runtime config입니다. 이 파일은 `tickRate`, `tile.size`, player type별 `radius/hp/speed`, projectile type별 `radius/damage/speed`, `map`을 포함합니다.
 
 결과:
 
-- Gameplay 상수의 기준 파일은 `client-config/game-config.json`입니다.
-- Go 상수는 fallback과 drift test 기준으로 유지하되, 서버 런타임은 embedded game config를 우선합니다.
-- `docs-ui/scripts/validate.mjs`와 `internal/simulation` 테스트가 config 구조와 Go 상수 drift를 검증합니다.
+- Client build가 가져가는 공유 상수는 `client-config/game-config.json`입니다.
+- 서버 런타임 기본값은 `server-config/game-config.json`입니다.
+- Go 상수는 fallback과 drift test 기준으로 유지하되, 서버 런타임은 embedded server config를 우선합니다.
+- `docs-ui/scripts/validate.mjs`와 `internal/simulation` 테스트가 두 config 구조와 Go 상수 drift를 검증합니다.
 - Client가 서버 권위 movement/damage를 재계산한다는 뜻은 아니며, 최종 gameplay state는 계속 server snapshot을 기준으로 받습니다.
+
+## ADR-0018: SL-63 GameEnd는 Player별 Win/Lose/Draw Event로 처리
+
+상태: 승인됨
+
+맥락: SL-63은 HP가 0이 된 뒤 client가 scene 종료와 결과 UI를 처리할 수 있도록 WebSocket 결과 event가 필요합니다. Simulation core는 HP/IsDead snapshot까지만 담당하고, room lifecycle과 WebSocket 종료 처리는 `internal/rooms` boundary에 남겨야 합니다. 같은 tick에 양쪽 player가 동시에 사망하는 상황은 드물지만 v1 결과 계약은 명시해야 합니다.
+
+결정: started room에서 snapshot 이후 HP가 0인 player가 있으면 server는 같은 tick의 snapshot을 먼저 broadcast하고, 이어서 연결된 각 player에게 `{"Type":"GameEnd","PlayerId":...,"Result":"Win|Lose|Draw"}` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`로 보냅니다. Server는 GameEnd event 전송 후 room-local ticker와 WebSocket connection을 정리하고 room store에서 해당 room을 제거합니다. 마지막 공격자 기준 타이브레이커는 후속 issue에서 별도 논의합니다.
+
+결과:
+
+- Client는 마지막 death snapshot으로 화면 state를 갱신한 뒤 GameEnd event로 결과 UI와 scene exit를 처리할 수 있습니다.
+- Simulation package는 transport-independent `Step(inputs) -> Snapshot` 계약을 유지합니다.
+- 동시 사망 정책은 모두 `Draw`입니다.

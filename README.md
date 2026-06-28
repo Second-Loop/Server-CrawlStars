@@ -12,11 +12,12 @@ Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버입
 - `WS /rooms/{roomID}/players/{playerID}`
 - 30Hz room-local game loop
 - movement, wall collision, projectile movement, hit, HP/death snapshot
-- `client-config/game-config.json` 공유 config artifact
+- `client-config/game-config.json` client 공유 config artifact
+- `server-config/game-config.json` server runtime config artifact
 - OpenAPI/AsyncAPI raw spec과 docs UI
 - GitHub Actions CI/CD와 Oracle VM pull deployment
 
-아직 production matchmaking, persistence, auth, respawn, score/win-loss, bot replacement는 없습니다.
+아직 production matchmaking, persistence, auth, respawn, score, bot replacement는 없습니다.
 
 ## 자주 쓰는 명령
 

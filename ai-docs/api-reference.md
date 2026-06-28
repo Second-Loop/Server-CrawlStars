@@ -263,8 +263,19 @@ Invalid input:
 }
 ```
 
+GameEnd event:
+
+```json
+{
+  "Type": "GameEnd",
+  "PlayerId": "player-1",
+  "Result": "Win"
+}
+```
+
 Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
 단, match lifecycle field인 `Snapshot.status`와 `Snapshot.countdown`은 REST `room.status`와 맞춰 lowercase입니다. `starting`의 `countdown`은 client fake timer 기준값이며, server는 중간 countdown 값을 broadcast하지 않습니다.
+HP가 0인 player가 생기면 server는 같은 tick의 snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다.
 
 ## 현재 gameplay 값
 
@@ -278,13 +289,12 @@ Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack
 - projectile radius: 0.3
 - fixture max players: 6
 
-공유 gameplay config artifact는 `client-config/game-config.json`입니다.
+Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-- 포함: `tickRate`, `tile.size`, player type별 `radius/hp/speed`, projectile type별 `radius/damage/speed`, `map`
-- 서버: binary가 이 JSON을 embed해서 room store와 simulation 기본값으로 사용합니다.
-- 클라이언트: build 때 server repo의 `client-config`를 sparse checkout해 Unity runtime asset 경로로 복사할 수 있습니다.
+- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 공유 config입니다. `tileSize`, `playerRadius`, `playerTypes`, `projectileRadius`, `projectileTypes`만 포함합니다.
+- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다. `tickRate`, `tile.size`, player/projectile type별 runtime 값, `map`을 포함합니다.
 
-Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. 이 artifact는 상수 출처를 한 곳으로 모으기 위한 것이며, client가 서버 권위 movement/damage를 재계산한다는 뜻은 아닙니다.
+Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server-only config나 Ready/snapshot message의 책임입니다.
 
 ## 수동 검증 시나리오
 
@@ -296,10 +306,12 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. 이 ar
 6. 한 client가 movement input을 보내면 두 연결이 같은 gameplay snapshot을 받아야 합니다.
 7. 공격이 target에 닿으면 두 연결에서 projectile `IsDestroyed: true`, target `HP` 감소가 보여야 합니다.
 8. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
-9. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
+9. HP가 0이 된 tick의 snapshot 이후 player별 `GameEnd`를 받아야 합니다.
+10. `GameEnd` 이후 해당 room은 정리되어야 합니다.
+11. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
 
 자동 회귀는 `go test ./internal/rooms`가 담당합니다.
 
 ## 제약
 
-이 API는 development surface입니다. Auth, rate limit, production matchmaking, persistence, respawn, score, win/loss, dashboard, scheduler, Kubernetes는 없습니다.
+이 API는 development surface입니다. Auth, rate limit, production matchmaking, persistence, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.
