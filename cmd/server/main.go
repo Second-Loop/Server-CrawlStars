@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"os"
 
-	clientconfig "github.com/Second-Loop/Server-CrawlStars/client-config"
 	"github.com/Second-Loop/Server-CrawlStars/internal/docs"
 	"github.com/Second-Loop/Server-CrawlStars/internal/health"
 	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+	serverconfig "github.com/Second-Loop/Server-CrawlStars/server-config"
 )
 
 const serviceName = "server-crawlstars"
@@ -44,9 +44,9 @@ func newMux() http.Handler {
 }
 
 func loadGameConfig() simulation.GameConfig {
-	gameConfig, err := simulation.LoadGameConfig(clientconfig.Reader())
+	gameConfig, err := simulation.LoadGameConfig(serverconfig.Reader())
 	if err != nil {
-		log.Printf("failed to load client game config: %v; using static fallback", err)
+		log.Printf("failed to load server game config: %v; using static fallback", err)
 		return simulation.StaticGameConfig()
 	}
 	return gameConfig

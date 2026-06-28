@@ -575,7 +575,7 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 	waitForRoomDeleted(t, store, room.ID)
 }
 
-func TestWebSocketSendsLoseToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
+func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{Map: verticalDuelMap()})
 	handler := Handler(store)
@@ -610,8 +610,8 @@ func TestWebSocketSendsLoseToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
 	}
 
-	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Lose")
-	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
+	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Draw")
+	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Draw")
 	waitForRoomDeleted(t, store, room.ID)
 }
 

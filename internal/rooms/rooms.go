@@ -1196,7 +1196,7 @@ func gameEndResults(players []simulation.PlayerData) map[string]string {
 	results := make(map[string]string, len(players))
 	if deadCount == len(players) {
 		for _, player := range players {
-			results[string(player.ID)] = "Lose"
+			results[string(player.ID)] = "Draw"
 		}
 		return results
 	}

@@ -80,7 +80,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Receive game end result
-    summary: player별 Win/Lose 결과를 받고 scene 종료 처리를 시작합니다.
+    summary: player별 Win/Lose/Draw 결과를 받고 scene 종료 처리를 시작합니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/gameEnd"
 components:
@@ -201,7 +201,7 @@ components:
     GameEndMessage:
       name: GameEndMessage
       title: Game end
-      summary: 서버가 player별 Win/Lose 결과를 전달하고 room을 정리합니다.
+      summary: 서버가 player별 Win/Lose/Draw 결과를 전달하고 room을 정리합니다.
       payload:
         $ref: "#/components/schemas/GameEndMessage"
       examples:
@@ -215,6 +215,11 @@ components:
             Type: GameEnd
             PlayerId: player-2
             Result: Lose
+        - name: draw
+          payload:
+            Type: GameEnd
+            PlayerId: player-1
+            Result: Draw
     ErrorMessage:
       name: ErrorMessage
       title: Error
@@ -289,7 +294,7 @@ components:
       required: [Type, PlayerId, Result]
       description: |
         Game end result입니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다.
-        같은 tick에 양쪽 player가 동시에 사망하면 v1에서는 양쪽 모두 `Lose`입니다.
+        같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다.
         Server는 이 message를 보낸 뒤 room-local ticker와 WebSocket connection을 정리합니다.
       properties:
         Type:
@@ -299,7 +304,7 @@ components:
           type: string
         Result:
           type: string
-          enum: [Win, Lose]
+          enum: [Win, Lose, Draw]
     ErrorMessage:
       type: object
       required: [Type, Error]

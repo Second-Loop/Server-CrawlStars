@@ -129,7 +129,7 @@ WebSocket:
 - matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown: 5`를 1번 보냅니다.
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
 - HP가 0인 player가 생기면 같은 tick의 snapshot 뒤 player별 `Type: GameEnd` event를 보내고 room을 정리합니다.
-- 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 v1에서는 양쪽 모두 `Lose`입니다.
+- 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
@@ -154,4 +154,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - respawn, score
 - bot replacement
 
-공유 gameplay config는 `client-config/game-config.json`입니다. 서버 repo가 source of truth를 갖고, server binary는 이 JSON을 embed해서 room store와 simulation 기본값으로 사용합니다. Client CI는 `client-config`만 sparse checkout해 Unity runtime asset 경로로 복사할 수 있습니다. 이 config에는 tick rate, tile size, player/projectile type별 기본값, map이 들어갑니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, damage, map을 담습니다.

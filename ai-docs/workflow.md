@@ -26,7 +26,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - simple `/matchmaking/join`
 - matchmaking Ready event/ready ACK/countdown/start
 - start 전 match cancel
-- GameEnd Win/Lose event와 종료 room 정리
+- GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
 
 아직 issue 없이 추가하지 않는 범위:
