@@ -291,3 +291,19 @@ Spawn은 map의 `TileSpawnPoint(2)`를 tile scan/join 순서로 먼저 사용합
 - `map.maxPlayers = 6`은 map/debug room capacity로 남습니다.
 - 6-player solo, 3v3 team mode, client mode selection, production queue는 활성화하지 않습니다.
 - REST/WebSocket response schema는 바꾸지 않았으므로 OpenAPI/AsyncAPI contract 변경은 없습니다.
+
+## ADR-0021: SL-71 GameEnd 판정 계산과 WebSocket Delivery 분리
+
+상태: 승인됨
+
+맥락: SL-63에서 추가한 GameEnd 흐름은 `internal/rooms` 안에서 snapshot broadcast, Win/Lose/Draw 판정, player별 WebSocket event 생성, room cleanup이 한 흐름에 붙어 있었습니다. SL-71은 wire contract를 바꾸지 않고 판정 계산만 테스트 가능한 경계로 분리하는 리팩터입니다.
+
+결정: `internal/rooms`에 GameEnd result domain helper를 두고, `Store.tickRoom`은 기존 순서인 `Step` -> latest snapshot 저장 -> snapshot delivery -> GameEnd 판정 -> GameEnd delivery -> room 삭제/resource 수집 -> unlock -> write -> close를 유지합니다. `room.gameEndDeliveries`는 계산 결과를 `{"Type":"GameEnd","PlayerId":...,"Result":"Win|Lose|Draw"}`로 바꾸는 transport boundary만 맡습니다.
+
+현재 active mode는 `duel_1v1`입니다. N-player solo, 3v3 team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 활성화하지 않고 후속 issue에서 mode-specific GameEnd helper로 확장합니다.
+
+결과:
+
+- Simulation package는 계속 `Step(inputs) -> Snapshot`만 담당합니다.
+- WebSocket GameEnd schema와 AsyncAPI contract는 바뀌지 않습니다.
+- 동시 사망은 계속 양쪽 `Draw`입니다.
