@@ -24,6 +24,24 @@
       }
     ]
   },
+  "mode": {
+    "id": "duel_1v1",
+    "playersPerMatch": 2,
+    "teams": [
+      {
+        "name": "red",
+        "size": 1
+      },
+      {
+        "name": "blue",
+        "size": 1
+      }
+    ],
+    "rules": {
+      "teamBehavior": "two_teams",
+      "friendlyFire": false
+    }
+  },
   "map": {
     "width": 20,
     "height": 20,

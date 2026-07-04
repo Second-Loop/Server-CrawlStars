@@ -203,6 +203,25 @@ func TestTeamSlotsAreNotLimitedToOnePlayerPerTeam(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("red-2"), TeamRed, 1, Vector2{})
 }
 
+func TestStepKeepsTeamAndSlotWithoutApplyingMatchRules(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed, Slot: 0},
+		{ID: PlayerID("blue-1"), Team: TeamBlue, Slot: 0},
+		{ID: PlayerID("red-2"), Team: TeamRed, Slot: 1},
+		{ID: PlayerID("blue-2"), Team: TeamBlue, Slot: 1},
+	})
+
+	snapshot := state.Step(nil)
+
+	if len(snapshot.Players) != 4 {
+		t.Fatalf("expected 4 players in snapshot, got %d", len(snapshot.Players))
+	}
+	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, Vector2{})
+	assertPlayer(t, snapshot, PlayerID("blue-1"), TeamBlue, 0, Vector2{})
+	assertPlayer(t, snapshot, PlayerID("red-2"), TeamRed, 1, Vector2{})
+	assertPlayer(t, snapshot, PlayerID("blue-2"), TeamBlue, 1, Vector2{})
+}
+
 func TestSnapshotDoesNotExposeMutableState(t *testing.T) {
 	state := NewState([]PlayerData{
 		{ID: PlayerID("red-1"), Team: TeamRed, Slot: 0},

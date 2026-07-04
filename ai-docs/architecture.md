@@ -18,6 +18,7 @@ internal/rooms
   in-memory room store
   REST debug lifecycle
   simple matchmaking connector
+  active game mode와 team/slot rule 소비
   match ready/starting state
   WebSocket connection adapter
   room-local 30Hz ticker
@@ -27,6 +28,7 @@ internal/rooms
 internal/simulation
   transport-independent gameplay core
   State.Step(inputs) -> Snapshot
+  server runtime game config와 mode/team rule model
   map, movement, collision, projectile, hit, HP/death rule
   default map fixture loader
 ```
@@ -116,10 +118,19 @@ Simple matchmaking:
 - `POST /matchmaking/join`
 - waiting room을 찾거나 만듭니다.
 - player를 발급합니다.
-- 2명이 되면 room을 matched 상태로 잠그고 late join을 막습니다.
+- server runtime config의 active mode는 현재 `duel_1v1`입니다.
+- active mode의 `playersPerMatch = 2`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
 - 두 WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
 - 두 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
 - response는 `room`, `player`, `webSocketPath`를 포함합니다.
+
+`map.maxPlayers = 6`은 map/debug room capacity입니다. 현재 active matchmaking size는 mode config의 `playersPerMatch = 2`이고, 6인 solo나 3v3 team mode는 활성화하지 않습니다.
+
+Mode/team rule:
+
+- `internal/simulation.GameConfig.Mode`가 active mode id, match size, team 목록, friendly-fire/team behavior 같은 rule metadata를 가집니다.
+- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match size와 team/slot 발급 규칙은 resolved `GameConfig`에서 읽습니다.
+- `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
 
 WebSocket:
 
@@ -154,4 +165,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - respawn, score
 - bot replacement
 
-Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, damage, map을 담습니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, damage, active mode/team rules, map을 담습니다.

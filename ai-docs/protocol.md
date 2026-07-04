@@ -51,6 +51,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultProjectileRadius = 0.3`
 - `StaticMapFixture().MaxPlayers = 6`
 - player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
+- active server mode는 `duel_1v1`이고 `playersPerMatch = 2`입니다.
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.
 
@@ -68,9 +69,11 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 - `tile.size`
 - player type별 `id/radius/hp/speed`
 - projectile type별 `id/radius/damage/speed`
+- `mode.id`, `mode.playersPerMatch`, `mode.teams`, `mode.rules`
 - `map`
 
 Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server snapshot이나 Ready event로 받거나 서버만 판단하므로 client 공유 config에 넣지 않습니다.
+Mode/team rule도 server-only입니다. 현재는 `duel_1v1`만 active이며, `friendlyFire`와 `teamBehavior`는 solo/team mode 확장을 위한 metadata입니다. 이 값들은 REST/WebSocket response schema에 노출하지 않습니다.
 
 ## WebSocket 계약
 
@@ -264,6 +267,8 @@ POST /matchmaking/join
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
 Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 `server-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`와 `StaticMapFixture()`의 fallback을 사용합니다.
+
+`room.maxPlayers`와 `room.map.maxPlayers`는 현재 map/debug room capacity를 뜻합니다. 기본 fixture 값은 6으로 유지합니다. Matchmaking required players는 server runtime config의 active mode 값인 `mode.playersPerMatch = 2`입니다. 그래서 세 번째 matchmaking join은 같은 room에 late join하지 않고 새 waiting room으로 갑니다.
 
 `SL-58`에서는 이 흐름을 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message로 추가합니다. REST polling이나 SSE를 먼저 늘리지 않습니다.
 

@@ -370,17 +370,96 @@ func TestHandlerMatchmakingDoesNotLateJoinStartedRooms(t *testing.T) {
 	}
 }
 
-func TestHandlerMatchmakingKeepsFixtureMaxPlayersAtSix(t *testing.T) {
-	store := NewStore(5)
+func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
 	defer store.Close()
 	handler := Handler(store)
 
-	joined := joinMatchmaking(t, handler)
-	if capacity := joined.Room.MaxPlayers; capacity != simulation.StaticMapFixture().MaxPlayers {
-		t.Fatalf("expected fixture max players %d, got %d", simulation.StaticMapFixture().MaxPlayers, capacity)
+	first := joinMatchmaking(t, handler)
+	if first.Player.Team != "red" || first.Player.Slot != 0 {
+		t.Fatalf("expected first player to be red slot 0, got %+v", first.Player)
 	}
-	if joined.Room.MaxPlayers != 6 {
-		t.Fatalf("expected current matchmaking max players to remain 6, got %d", joined.Room.MaxPlayers)
+	if first.Room.MaxPlayers != 6 || first.Room.MaxPlayers != simulation.StaticMapFixture().MaxPlayers {
+		t.Fatalf("expected room maxPlayers to stay at map capacity 6, got %d", first.Room.MaxPlayers)
+	}
+	if first.Room.LatestSnapshot.PlayerCount != 1 {
+		t.Fatalf("expected first room snapshot player count 1, got %+v", first.Room.LatestSnapshot)
+	}
+
+	second := joinMatchmaking(t, handler)
+	if second.Room.ID != first.Room.ID {
+		t.Fatalf("expected second player to join room %q, got %q", first.Room.ID, second.Room.ID)
+	}
+	if second.Player.Team != "blue" || second.Player.Slot != 0 {
+		t.Fatalf("expected second player to be blue slot 0, got %+v", second.Player)
+	}
+	if second.Room.Status != RoomStatusWaiting {
+		t.Fatalf("expected matched REST room status to remain waiting, got %q", second.Room.Status)
+	}
+	if len(second.Room.Players) != 2 || second.Room.LatestSnapshot.PlayerCount != 2 {
+		t.Fatalf("expected matched room to contain two players, got %+v", second.Room)
+	}
+	if fakeClock.RequestedDuration() != 0 {
+		t.Fatalf("expected matchmaking join not to start ticker before ready, got %s", fakeClock.RequestedDuration())
+	}
+
+	third := joinMatchmaking(t, handler)
+	if third.Room.ID == first.Room.ID {
+		t.Fatalf("expected third matchmaking join to create a new room after 1v1 match lock, got %q", third.Room.ID)
+	}
+}
+
+func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
+	gameConfig := simulation.StaticGameConfig()
+	gameConfig.Mode = simulation.GameModeConfig{
+		ID:              "test_quartet",
+		PlayersPerMatch: 4,
+		Teams: []simulation.TeamConfig{
+			{Name: simulation.TeamRed, Size: 3},
+			{Name: simulation.TeamBlue, Size: 1},
+		},
+		Rules: simulation.GameModeRulesConfig{
+			TeamBehavior: simulation.TeamBehaviorTwoTeams,
+			FriendlyFire: false,
+		},
+	}
+
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{GameConfig: gameConfig})
+	defer store.Close()
+	handler := Handler(store)
+
+	first := joinMatchmaking(t, handler)
+	second := joinMatchmaking(t, handler)
+	third := joinMatchmaking(t, handler)
+	fourth := joinMatchmaking(t, handler)
+
+	if second.Room.ID != first.Room.ID || third.Room.ID != first.Room.ID || fourth.Room.ID != first.Room.ID {
+		t.Fatalf("expected first four players to join configured quartet room %q, got %q, %q, and %q", first.Room.ID, second.Room.ID, third.Room.ID, fourth.Room.ID)
+	}
+	if first.Player.Team != "red" || first.Player.Slot != 0 {
+		t.Fatalf("expected first player to be red slot 0, got %+v", first.Player)
+	}
+	if second.Player.Team != "blue" || second.Player.Slot != 0 {
+		t.Fatalf("expected second player to be blue slot 0, got %+v", second.Player)
+	}
+	if third.Player.Team != "red" || third.Player.Slot != 1 {
+		t.Fatalf("expected third player to be red slot 1, got %+v", third.Player)
+	}
+	if fourth.Player.Team != "red" || fourth.Player.Slot != 2 {
+		t.Fatalf("expected fourth player to be red slot 2, got %+v", fourth.Player)
+	}
+	if len(fourth.Room.Players) != 4 || fourth.Room.LatestSnapshot.PlayerCount != 4 {
+		t.Fatalf("expected configured quartet room to contain four players, got %+v", fourth.Room)
+	}
+	if fakeClock.RequestedDuration() != 0 {
+		t.Fatalf("expected configured matchmaking not to start ticker before ready, got %s", fakeClock.RequestedDuration())
+	}
+
+	fifth := joinMatchmaking(t, handler)
+	if fifth.Room.ID == first.Room.ID {
+		t.Fatalf("expected fifth matchmaking join to create a new room after configured quartet lock, got %q", fifth.Room.ID)
 	}
 }
 
@@ -388,21 +467,21 @@ func TestHandlerIssuesPlayersWithTeamAndSlot(t *testing.T) {
 	handler := Handler(NewStore(5))
 	room := createRoom(t, handler)
 
-	firstRec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
-	if firstRec.Code != http.StatusCreated {
-		t.Fatalf("expected first player status 201, got %d", firstRec.Code)
+	tests := []struct {
+		name string
+		team string
+		slot int
+	}{
+		{name: "first", team: "red", slot: 0},
+		{name: "second", team: "blue", slot: 0},
+		{name: "third", team: "red", slot: 1},
+		{name: "fourth", team: "blue", slot: 1},
 	}
-	var first playerResponse
-	decodeResponse(t, firstRec, &first)
-	if first.ID == "" || first.Team != "red" || first.Slot != 0 {
-		t.Fatalf("unexpected first player: %+v", first)
-	}
-
-	secondRec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
-	var second playerResponse
-	decodeResponse(t, secondRec, &second)
-	if second.ID == "" || second.Team != "blue" || second.Slot != 0 {
-		t.Fatalf("unexpected second player: %+v", second)
+	for _, tt := range tests {
+		player := createPlayer(t, handler, room.ID)
+		if player.ID == "" || player.Team != tt.team || player.Slot != tt.slot {
+			t.Fatalf("unexpected %s player: %+v", tt.name, player)
+		}
 	}
 }
 
