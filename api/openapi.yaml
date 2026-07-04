@@ -275,7 +275,7 @@ components:
           example: player-1
         team:
           type: string
-          description: 임시 team 배정입니다. index 짝수는 red, 홀수는 blue입니다.
+          description: 서버 assignment helper가 active mode/team rule 기준으로 발급한 team입니다. 현재 기본 mode에서는 red/blue 1명씩입니다.
           enum: [red, blue]
         slot:
           type: integer

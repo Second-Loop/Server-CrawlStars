@@ -19,6 +19,7 @@ internal/rooms
   REST debug lifecycle
   simple matchmaking connector
   active game mode와 team/slot rule 소비
+  room/debug capacity와 match capacity 분리
   match ready/starting state
   WebSocket connection adapter
   room-local 30Hz ticker
@@ -28,7 +29,7 @@ internal/rooms
 internal/simulation
   transport-independent gameplay core
   State.Step(inputs) -> Snapshot
-  server runtime game config와 mode/team rule model
+  server runtime game config와 mode/team/spawn assignment model
   map, movement, collision, projectile, hit, HP/death rule
   default map fixture loader
 ```
@@ -71,7 +72,7 @@ State.Step(inputs []InputCommand) Snapshot
 - projectile speed/damage/radius = `13`, `10`, `0.3`
 - default map fixture path = `internal/simulation/fixtures/default-map.json`
 - fixture load/validation failure fallback = 5x5 static map, max players `6`
-- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 없으면 legacy 5x5 좌표 fallback
+- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 부족하거나 없으면 map 크기에서 유도한 legacy-compatible fallback 좌표 사용
 
 Movement:
 
@@ -129,7 +130,8 @@ Simple matchmaking:
 Mode/team rule:
 
 - `internal/simulation.GameConfig.Mode`가 active mode id, match size, team 목록, friendly-fire/team behavior 같은 rule metadata를 가집니다.
-- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match size와 team/slot 발급 규칙은 resolved `GameConfig`에서 읽습니다.
+- `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다.
+- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 resolved `GameConfig`에서 읽습니다.
 - `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
 
 WebSocket:

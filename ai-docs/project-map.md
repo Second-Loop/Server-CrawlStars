@@ -44,6 +44,7 @@ internal/rooms
   REST room lifecycle
   simple matchmaking connector
   active game mode/team rule 소비
+  map/debug capacity와 match capacity 분리
   WebSocket connection 관리
   room-local 30Hz ticker
   pending input 수집과 snapshot broadcast
@@ -52,7 +53,7 @@ internal/rooms
 internal/simulation
   transport를 모르는 gameplay core
   State.Step(inputs) -> Snapshot
-  server runtime game config와 mode/team rule model
+  server runtime game config와 mode/team/spawn assignment model
   map, movement, projectile, hit, HP/death rule
 
 api
@@ -145,7 +146,7 @@ Started room의 tick 흐름:
 7. GameEnd 이후 room-local ticker와 WebSocket connection을 정리합니다.
 8. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
 
-Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 없는 legacy/static map에서만 5x5 fallback 좌표를 씁니다.
+Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 부족하거나 없는 map에서는 map 크기에서 유도한 fallback 좌표를 쓰며, 기본 5x5 map에서는 기존 red/blue fallback 좌표와 같은 위치가 됩니다.
 
 `internal/simulation.State.Step` 순서:
 

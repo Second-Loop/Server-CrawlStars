@@ -276,4 +276,18 @@
 - 기본 runtime behavior는 기존 1v1 matchmaking 그대로입니다.
 - `map.maxPlayers = 6`은 map/debug room capacity로 유지되고 active match size와 분리됩니다.
 - 6인 solo나 3v3 team mode는 config/model 확장 지점만 생겼고 활성화하지 않았습니다.
+
+## ADR-0020: SL-72 Capacity와 Player Assignment 경계 분리
+
+맥락: `map.maxPlayers`는 debug room capacity이고 `mode.playersPerMatch`는 active matchmaking size입니다. 두 값을 같은 숫자처럼 쓰면 기본 1v1 matchmaking이 6명 match로 확장되거나, 반대로 debug room이 2명으로 줄어드는 regression이 생길 수 있습니다. 또한 Ready event의 spawn 위치와 실제 simulation 초기 위치가 다른 helper를 타면 client render와 서버 판정이 갈라질 수 있습니다.
+
+결정: `internal/rooms`는 room/debug capacity와 match capacity를 별도 helper로 읽고, room lifecycle과 REST/WebSocket transport 책임을 유지합니다. Team/slot/spawn 계산은 `internal/simulation.PlayerAssignments`가 resolved server `GameConfig`와 player id join 순서를 받아 계산합니다. Ready event와 `simulation.NewStateWithConfig`에 전달하는 초기 player data는 같은 assignment 결과를 씁니다.
+
+Spawn은 map의 `TileSpawnPoint(2)`를 tile scan/join 순서로 먼저 사용합니다. Spawn point가 부족하거나 없으면 map 크기에서 유도한 fallback 좌표를 사용해 panic을 피하고, fallback 후보가 남아 있는 동안 이미 사용한 spawn point 좌표와 겹치지 않게 합니다. 기본 5x5 fallback 좌표는 기존 red/blue 위치와 호환됩니다.
+
+결과:
+
+- 기본 runtime behavior는 계속 `duel_1v1`, `playersPerMatch = 2`입니다.
+- `map.maxPlayers = 6`은 map/debug room capacity로 남습니다.
+- 6-player solo, 3v3 team mode, client mode selection, production queue는 활성화하지 않습니다.
 - REST/WebSocket response schema는 바꾸지 않았으므로 OpenAPI/AsyncAPI contract 변경은 없습니다.
