@@ -2,7 +2,6 @@ package rooms
 
 import (
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -308,19 +307,6 @@ func TestStoreConfigFallsBackToStaticMapWhenMapIsEmpty(t *testing.T) {
 	}
 }
 
-func TestSimulationPlayersUseMapSpawnPointTiles(t *testing.T) {
-	gameMap := spawnPointRoomMap()
-	players := []playerResponse{
-		{ID: "player-1", Team: "red", Slot: 0},
-		{ID: "player-2", Team: "blue", Slot: 0},
-	}
-
-	result := simulationPlayers(players, gameMap)
-
-	assertPlayerSpawn(t, result, "player-1", gameMap.WorldPos(2, 1))
-	assertPlayerSpawn(t, result, "player-2", gameMap.WorldPos(3, 2))
-}
-
 func TestHandlerMatchmakingSecondJoinUsesSameRoomAndWaitsForReady(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -623,37 +609,6 @@ func customRoomMap() simulation.MapData {
 			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
 		},
 	}
-}
-
-func spawnPointRoomMap() simulation.MapData {
-	return simulation.MapData{
-		Width:      5,
-		Height:     4,
-		Index:      1,
-		MaxPlayers: 2,
-		TileSize:   simulation.TileSize,
-		Map: [][]simulation.TileType{
-			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
-			{simulation.TileWall, simulation.TileWall, simulation.TileSpawnPoint, simulation.TileGround, simulation.TileWall},
-			{simulation.TileWall, simulation.TileGround, simulation.TileGround, simulation.TileSpawnPoint, simulation.TileWall},
-			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
-		},
-	}
-}
-
-func assertPlayerSpawn(t *testing.T, players []simulation.PlayerData, playerID string, want simulation.Vector2) {
-	t.Helper()
-
-	for _, player := range players {
-		if string(player.ID) != playerID {
-			continue
-		}
-		if math.Abs(player.Pos.X-want.X) > 0.000001 || math.Abs(player.Pos.Y-want.Y) > 0.000001 {
-			t.Fatalf("expected %s spawn %+v, got %+v", playerID, want, player.Pos)
-		}
-		return
-	}
-	t.Fatalf("expected player %s", playerID)
 }
 
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {

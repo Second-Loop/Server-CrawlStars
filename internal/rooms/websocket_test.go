@@ -166,9 +166,12 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	assertReadyPlayerTeamSlot(t, redReady.Players, red.Player.ID, "red", 0)
 	assertReadyPlayerTeamSlot(t, redReady.Players, blue.Player.ID, "blue", 0)
 
-	expectedPlayers := simulationPlayers([]playerResponse{red.Player, blue.Player}, store.gameMap)
-	assertReadyPlayerSpawn(t, redReady.Players, red.Player.ID, expectedPlayers[0].Pos)
-	assertReadyPlayerSpawn(t, redReady.Players, blue.Player.ID, expectedPlayers[1].Pos)
+	assignments := simulation.PlayerAssignments([]simulation.PlayerID{
+		simulation.PlayerID(red.Player.ID),
+		simulation.PlayerID(blue.Player.ID),
+	}, store.gameConfig)
+	assertReadyPlayerSpawn(t, redReady.Players, red.Player.ID, assignments[0].SpawnPosition)
+	assertReadyPlayerSpawn(t, redReady.Players, blue.Player.ID, assignments[1].SpawnPosition)
 }
 
 func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *testing.T) {

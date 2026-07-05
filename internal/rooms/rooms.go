@@ -428,7 +428,7 @@ func (s *Store) addPlayer(roomID string) (playerResponse, error) {
 	if !ok {
 		return playerResponse{}, errString("room not found")
 	}
-	if len(room.Players) >= s.gameMap.MaxPlayers {
+	if len(room.Players) >= s.debugRoomCapacity() {
 		return playerResponse{}, errString("room full")
 	}
 
@@ -450,7 +450,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 	}
 
 	player := s.addPlayerLocked(room)
-	if len(room.Players) == s.matchPlayerCount() {
+	if len(room.Players) == s.matchCapacity() {
 		room.matchStatus = MatchStatusMatched
 		room.readyPlayers = make(map[string]bool)
 		room.lastActivityAt = s.clock.Now()
@@ -465,16 +465,19 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 }
 
 func (s *Store) findWaitingRoomWithCapacity() *room {
-	matchPlayerCount := s.matchPlayerCount()
 	for _, room := range s.rooms {
-		if room.Status == RoomStatusWaiting && room.matchStatus == "" && len(room.Players) < s.gameMap.MaxPlayers && len(room.Players) < matchPlayerCount {
+		if room.Status == RoomStatusWaiting && room.matchStatus == "" && len(room.Players) < s.debugRoomCapacity() && len(room.Players) < s.matchCapacity() {
 			return room
 		}
 	}
 	return nil
 }
 
-func (s *Store) matchPlayerCount() int {
+func (s *Store) debugRoomCapacity() int {
+	return s.gameMap.MaxPlayers
+}
+
+func (s *Store) matchCapacity() int {
 	return s.gameConfig.MatchPlayerCount()
 }
 
@@ -514,11 +517,7 @@ func (s *Store) createRoomLocked() *room {
 func (s *Store) addPlayerLocked(room *room) playerResponse {
 	s.nextPlayerSeq++
 	playerIndex := len(room.Players)
-	team, slot, ok := s.gameConfig.TeamForPlayerIndex(playerIndex)
-	if !ok {
-		team = simulation.TeamRed
-		slot = playerIndex
-	}
+	team, slot := s.playerAssignmentForIndex(playerIndex)
 	player := playerResponse{
 		ID:   "player-" + itoa(s.nextPlayerSeq),
 		Team: string(team),
@@ -542,13 +541,21 @@ func (s *Store) startRoomLocked(room *room) {
 		room.disconnectedAt = time.Time{}
 	}
 	if room.state == nil {
-		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameMap), simulation.Config{Game: s.gameConfig})
+		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameConfig), simulation.Config{Game: s.gameConfig})
 	}
 	if room.ticker == nil {
 		room.ticker = s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
 		room.stop = make(chan struct{})
 		go s.runRoom(room.ID, room.ticker, room.stop)
 	}
+}
+
+func (s *Store) playerAssignmentForIndex(playerIndex int) (simulation.Team, int) {
+	team, slot, ok := s.gameConfig.TeamForPlayerIndex(playerIndex)
+	if !ok {
+		return simulation.TeamRed, playerIndex
+	}
+	return team, slot
 }
 
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
@@ -660,10 +667,10 @@ func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Con
 	room.clients[playerID] = conn
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
-	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchPlayerCount()) {
+	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
 		room.matchStatus = MatchStatusLoading
-		deliveries = append(deliveries, room.readyEventDeliveries(s.gameMap)...)
-		if room.allMatchPlayersReady(s.matchPlayerCount()) {
+		deliveries = append(deliveries, room.readyEventDeliveries(s.gameConfig)...)
+		if room.allMatchPlayersReady(s.matchCapacity()) {
 			s.startMatchCountdownLocked(room)
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
@@ -733,7 +740,7 @@ func (s *Store) markClientReady(roomID string, playerID string) {
 	}
 	room.readyPlayers[playerID] = true
 	room.lastActivityAt = s.clock.Now()
-	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(s.matchPlayerCount()) {
+	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(s.matchCapacity()) {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
@@ -1072,11 +1079,11 @@ func (r *room) matchSnapshotMessage(status MatchStatus, countdown int) roomSnaps
 	}
 }
 
-func (r *room) readyEventDeliveries(gameMap simulation.MapData) []webSocketDelivery {
+func (r *room) readyEventDeliveries(gameConfig simulation.GameConfig) []webSocketDelivery {
 	message := readyEventMessage{
 		Type:    "Ready",
-		Map:     mapResponseFromSimulation(gameMap),
-		Players: readyEventPlayers(r.Players, gameMap),
+		Map:     mapResponseFromSimulation(gameConfig.Map),
+		Players: readyEventPlayers(r.Players, gameConfig),
 	}
 	deliveries := make([]webSocketDelivery, 0, len(r.clients))
 	for _, conn := range r.clients {
@@ -1146,8 +1153,8 @@ func roomSnapshotFromSimulation(snapshot simulation.Snapshot, status MatchStatus
 	}
 }
 
-func readyEventPlayers(players []playerResponse, gameMap simulation.MapData) []readyEventPlayer {
-	spawnedPlayers := simulationPlayers(players, gameMap)
+func readyEventPlayers(players []playerResponse, gameConfig simulation.GameConfig) []readyEventPlayer {
+	spawnedPlayers := simulationPlayers(players, gameConfig)
 	result := make([]readyEventPlayer, 0, len(spawnedPlayers))
 	for _, player := range spawnedPlayers {
 		result = append(result, readyEventPlayer{
@@ -1225,40 +1232,23 @@ type errorMessage struct {
 	Error apiError `json:"Error"`
 }
 
-func simulationPlayers(players []playerResponse, gameMap simulation.MapData) []simulation.PlayerData {
+func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfig) []simulation.PlayerData {
+	playerIDs := make([]simulation.PlayerID, 0, len(players))
+	for _, player := range players {
+		playerIDs = append(playerIDs, simulation.PlayerID(player.ID))
+	}
+	assignments := simulation.PlayerAssignments(playerIDs, gameConfig)
 	result := make([]simulation.PlayerData, 0, len(players))
-	spawns := spawnPoints(gameMap)
 	for index, player := range players {
+		assignment := assignments[index]
 		result = append(result, simulation.PlayerData{
 			ID:   simulation.PlayerID(player.ID),
-			Team: simulation.Team(player.Team),
-			Slot: player.Slot,
-			Pos:  spawnPosition(gameMap, spawns, index, player),
+			Team: assignment.Team,
+			Slot: assignment.Slot,
+			Pos:  assignment.SpawnPosition,
 		})
 	}
 	return result
-}
-
-func spawnPoints(gameMap simulation.MapData) []simulation.Vector2 {
-	spawns := make([]simulation.Vector2, 0)
-	for y, row := range gameMap.Map {
-		for x, tile := range row {
-			if tile == simulation.TileSpawnPoint {
-				spawns = append(spawns, gameMap.WorldPos(x, y))
-			}
-		}
-	}
-	return spawns
-}
-
-func spawnPosition(gameMap simulation.MapData, spawns []simulation.Vector2, index int, player playerResponse) simulation.Vector2 {
-	if len(spawns) > 0 {
-		return spawns[index%len(spawns)]
-	}
-	if player.Team == "blue" {
-		return gameMap.WorldPos(3, 3)
-	}
-	return gameMap.WorldPos(1, 1)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

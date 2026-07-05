@@ -50,7 +50,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultProjectileDamage = 10`
 - `DefaultProjectileRadius = 0.3`
 - `StaticMapFixture().MaxPlayers = 6`
-- player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
+- player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용하고, spawn point가 부족하거나 없으면 map 크기에서 유도한 fallback 좌표를 씁니다.
 - active server mode는 `duel_1v1`이고 `playersPerMatch = 2`입니다.
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.
@@ -262,7 +262,7 @@ POST /matchmaking/join
 
 두 번째 player가 같은 waiting room에 들어와도 REST response shape는 유지되고 `room.status`는 `waiting`입니다. 해당 room은 matchmaking match로 잠겨 late join 대상에서 빠집니다.
 
-두 client가 WebSocket에 연결하면 `Type: "Ready"` event를 받습니다. Ready event에는 JSON number array 형태의 `Map.map`과 `Players[].SpawnPosition`이 들어갑니다. 두 client가 모두 `{"Type":"ready"}`를 보내면 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 1번 broadcast합니다. Client는 이 신호를 기준으로 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 보낸 다음 simulation ticker를 시작합니다.
+두 client가 WebSocket에 연결하면 `Type: "Ready"` event를 받습니다. Ready event에는 JSON number array 형태의 `Map.map`과 `Players[].SpawnPosition`이 들어갑니다. Ready event의 spawn과 실제 `simulation.State` 초기 위치는 같은 assignment helper 결과를 사용합니다. 두 client가 모두 `{"Type":"ready"}`를 보내면 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 1번 broadcast합니다. Client는 이 신호를 기준으로 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 보낸 다음 simulation ticker를 시작합니다.
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 

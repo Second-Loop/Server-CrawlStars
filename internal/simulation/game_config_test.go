@@ -190,6 +190,43 @@ func TestGameConfigAssignsDefaultOneVsOneMatchTeams(t *testing.T) {
 	}
 }
 
+func TestGameConfigAssignsConfiguredMatchTeams(t *testing.T) {
+	config := StaticGameConfig()
+	config.Mode = GameModeConfig{
+		ID:              "test_quartet",
+		PlayersPerMatch: 4,
+		Teams: []TeamConfig{
+			{Name: TeamRed, Size: 3},
+			{Name: TeamBlue, Size: 1},
+		},
+		Rules: GameModeRulesConfig{
+			TeamBehavior: TeamBehaviorTwoTeams,
+			FriendlyFire: false,
+		},
+	}
+
+	tests := []struct {
+		index int
+		team  Team
+		slot  int
+	}{
+		{index: 0, team: TeamRed, slot: 0},
+		{index: 1, team: TeamBlue, slot: 0},
+		{index: 2, team: TeamRed, slot: 1},
+		{index: 3, team: TeamRed, slot: 2},
+	}
+	for _, tt := range tests {
+		team, slot, ok := config.MatchTeamForPlayerIndex(tt.index)
+		if !ok || team != tt.team || slot != tt.slot {
+			t.Fatalf("expected player index %d to be %s slot %d, got team=%q slot=%d ok=%v", tt.index, tt.team, tt.slot, team, slot, ok)
+		}
+	}
+
+	if team, slot, ok := config.MatchTeamForPlayerIndex(4); ok {
+		t.Fatalf("expected player index 4 to be outside active match, got team=%q slot=%d", team, slot)
+	}
+}
+
 type clientSharedGameConfig struct {
 	Version            int      `json:"version"`
 	TileSize           float64  `json:"tileSize"`
