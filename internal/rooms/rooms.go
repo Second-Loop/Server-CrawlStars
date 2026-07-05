@@ -847,7 +847,7 @@ func (s *Store) tickRoom(roomID string) {
 			deliveries = append(deliveries, webSocketDelivery{conn: conn, message: message})
 		}
 	}
-	results := gameEndResults(snapshot.Players)
+	results := calculateGameEndResults(s.gameConfig, snapshot)
 	if len(results) > 0 {
 		deliveries = append(deliveries, room.gameEndDeliveries(results)...)
 		delete(s.rooms, roomID)
@@ -1167,7 +1167,7 @@ func readyEventPlayers(players []playerResponse, gameConfig simulation.GameConfi
 	return result
 }
 
-func (r *room) gameEndDeliveries(results map[string]string) []webSocketDelivery {
+func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDelivery {
 	if len(results) == 0 {
 		return nil
 	}
@@ -1187,44 +1187,11 @@ func (r *room) gameEndDeliveries(results map[string]string) []webSocketDelivery 
 			message: gameEndMessage{
 				Type:     "GameEnd",
 				PlayerID: player.ID,
-				Result:   result,
+				Result:   result.String(),
 			},
 		})
 	}
 	return deliveries
-}
-
-func gameEndResults(players []simulation.PlayerData) map[string]string {
-	if len(players) == 0 {
-		return nil
-	}
-
-	deadCount := 0
-	for _, player := range players {
-		if player.IsDead {
-			deadCount++
-		}
-	}
-	if deadCount == 0 {
-		return nil
-	}
-
-	results := make(map[string]string, len(players))
-	if deadCount == len(players) {
-		for _, player := range players {
-			results[string(player.ID)] = "Draw"
-		}
-		return results
-	}
-
-	for _, player := range players {
-		if player.IsDead {
-			results[string(player.ID)] = "Lose"
-		} else {
-			results[string(player.ID)] = "Win"
-		}
-	}
-	return results
 }
 
 type errorMessage struct {

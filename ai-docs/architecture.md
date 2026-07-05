@@ -143,6 +143,8 @@ WebSocket:
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
 - HP가 0인 player가 생기면 같은 tick의 snapshot 뒤 player별 `Type: GameEnd` event를 보내고 room을 정리합니다.
 - 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다.
+- GameEnd 판정 계산은 `internal/rooms`의 순수 helper가 맡고, WebSocket delivery는 player별 `GameEnd` message 변환만 맡습니다.
+- 현재 active GameEnd mode는 `duel_1v1`입니다. N-player solo, team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 아직 활성 규칙이 아니며 후속 issue에서 mode별 helper로 확장합니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
