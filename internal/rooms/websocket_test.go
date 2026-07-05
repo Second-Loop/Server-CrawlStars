@@ -163,6 +163,8 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	if len(redReady.Players) != 2 {
 		t.Fatalf("expected two ready players, got %+v", redReady.Players)
 	}
+	assertReadyPlayerTeamSlot(t, redReady.Players, red.Player.ID, "red", 0)
+	assertReadyPlayerTeamSlot(t, redReady.Players, blue.Player.ID, "blue", 0)
 
 	expectedPlayers := simulationPlayers([]playerResponse{red.Player, blue.Player}, store.gameMap)
 	assertReadyPlayerSpawn(t, redReady.Players, red.Player.ID, expectedPlayers[0].Pos)
@@ -797,6 +799,22 @@ func assertReadyPlayerSpawn(t *testing.T, players []readyEventPlayer, playerID s
 		}
 		if player.SpawnPosition != position {
 			t.Fatalf("expected player %s spawn %+v, got %+v", playerID, position, player.SpawnPosition)
+		}
+		return
+	}
+
+	t.Fatalf("expected ready event to include player %s in %+v", playerID, players)
+}
+
+func assertReadyPlayerTeamSlot(t *testing.T, players []readyEventPlayer, playerID string, team string, slot int) {
+	t.Helper()
+
+	for _, player := range players {
+		if player.ID != playerID {
+			continue
+		}
+		if player.Team != team || player.Slot != slot {
+			t.Fatalf("expected player %s to be %s slot %d, got %+v", playerID, team, slot, player)
 		}
 		return
 	}

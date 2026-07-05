@@ -37,7 +37,6 @@ const (
 	defaultMatchCancelMsg        = "match canceled"
 	defaultGameEndCloseMsg       = "game ended"
 	webSocketWriteTimeout        = 10 * time.Millisecond
-	matchPlayerCount             = 2
 	matchCountdownSeconds        = 5
 )
 
@@ -451,7 +450,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 	}
 
 	player := s.addPlayerLocked(room)
-	if len(room.Players) == matchPlayerCount {
+	if len(room.Players) == s.matchPlayerCount() {
 		room.matchStatus = MatchStatusMatched
 		room.readyPlayers = make(map[string]bool)
 		room.lastActivityAt = s.clock.Now()
@@ -466,12 +465,17 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 }
 
 func (s *Store) findWaitingRoomWithCapacity() *room {
+	matchPlayerCount := s.matchPlayerCount()
 	for _, room := range s.rooms {
 		if room.Status == RoomStatusWaiting && room.matchStatus == "" && len(room.Players) < s.gameMap.MaxPlayers && len(room.Players) < matchPlayerCount {
 			return room
 		}
 	}
 	return nil
+}
+
+func (s *Store) matchPlayerCount() int {
+	return s.gameConfig.MatchPlayerCount()
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
@@ -510,10 +514,15 @@ func (s *Store) createRoomLocked() *room {
 func (s *Store) addPlayerLocked(room *room) playerResponse {
 	s.nextPlayerSeq++
 	playerIndex := len(room.Players)
+	team, slot, ok := s.gameConfig.TeamForPlayerIndex(playerIndex)
+	if !ok {
+		team = simulation.TeamRed
+		slot = playerIndex
+	}
 	player := playerResponse{
 		ID:   "player-" + itoa(s.nextPlayerSeq),
-		Team: teamForIndex(playerIndex),
-		Slot: playerIndex / 2,
+		Team: string(team),
+		Slot: slot,
 	}
 	room.Players = append(room.Players, player)
 	room.lastActivityAt = s.clock.Now()
@@ -651,10 +660,10 @@ func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Con
 	room.clients[playerID] = conn
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
-	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached() {
+	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchPlayerCount()) {
 		room.matchStatus = MatchStatusLoading
 		deliveries = append(deliveries, room.readyEventDeliveries(s.gameMap)...)
-		if room.allMatchPlayersReady() {
+		if room.allMatchPlayersReady(s.matchPlayerCount()) {
 			s.startMatchCountdownLocked(room)
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
@@ -724,7 +733,7 @@ func (s *Store) markClientReady(roomID string, playerID string) {
 	}
 	room.readyPlayers[playerID] = true
 	room.lastActivityAt = s.clock.Now()
-	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady() {
+	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(s.matchPlayerCount()) {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
@@ -1013,7 +1022,7 @@ func (r *room) hasPreStartMatch() bool {
 	return r.Status != RoomStatusStarted && r.matchStatus != ""
 }
 
-func (r *room) allMatchClientsAttached() bool {
+func (r *room) allMatchClientsAttached(matchPlayerCount int) bool {
 	if len(r.Players) < matchPlayerCount {
 		return false
 	}
@@ -1026,7 +1035,7 @@ func (r *room) allMatchClientsAttached() bool {
 	return true
 }
 
-func (r *room) allMatchPlayersReady() bool {
+func (r *room) allMatchPlayersReady(matchPlayerCount int) bool {
 	if len(r.Players) < matchPlayerCount {
 		return false
 	}
@@ -1250,13 +1259,6 @@ func spawnPosition(gameMap simulation.MapData, spawns []simulation.Vector2, inde
 		return gameMap.WorldPos(3, 3)
 	}
 	return gameMap.WorldPos(1, 1)
-}
-
-func teamForIndex(index int) string {
-	if index%2 == 0 {
-		return "red"
-	}
-	return "blue"
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

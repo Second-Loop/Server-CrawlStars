@@ -262,3 +262,18 @@
 - Client는 마지막 death snapshot으로 화면 state를 갱신한 뒤 GameEnd event로 결과 UI와 scene exit를 처리할 수 있습니다.
 - Simulation package는 transport-independent `Step(inputs) -> Snapshot` 계약을 유지합니다.
 - 동시 사망 정책은 모두 `Draw`입니다.
+
+## ADR-0019: SL-70 기본 Match Mode는 Server Runtime Config의 1v1로 고정
+
+상태: 승인됨
+
+맥락: `internal/rooms`가 matchmaking required player 수 `2`와 red/blue team assignment를 직접 하드코딩하고 있었습니다. 동시에 map fixture의 `maxPlayers = 6`은 map/debug room capacity인데, 이를 active matchmaking size로 해석하면 6인 solo나 3v3 team mode가 의도치 않게 켜질 수 있습니다. SL-70은 mode/team rule boundary를 만들되 실제 6인 mode를 구현하지 않는 범위입니다.
+
+결정: `server-config/game-config.json`과 `internal/simulation.GameConfig`에 server-only `mode`를 둡니다. 현재 active mode는 `duel_1v1`, `playersPerMatch = 2`, red/blue team 각각 size 1입니다. `mode.rules`에는 `teamBehavior`와 `friendlyFire`를 두어 free-for-all/team behavior와 friendly fire 정책을 나중에 확장할 수 있게 합니다. `internal/rooms`는 resolved `GameConfig`에서 match size와 team/slot 발급 규칙을 읽고, room lifecycle과 REST/WebSocket transport adapter 역할에 집중합니다. `internal/simulation.State.Step`은 player의 `Team`과 `Slot`을 state data로 보존하지만 matchmaking size, room 구성, 6인 mode 활성화는 적용하지 않습니다.
+
+결과:
+
+- 기본 runtime behavior는 기존 1v1 matchmaking 그대로입니다.
+- `map.maxPlayers = 6`은 map/debug room capacity로 유지되고 active match size와 분리됩니다.
+- 6인 solo나 3v3 team mode는 config/model 확장 지점만 생겼고 활성화하지 않았습니다.
+- REST/WebSocket response schema는 바꾸지 않았으므로 OpenAPI/AsyncAPI contract 변경은 없습니다.
