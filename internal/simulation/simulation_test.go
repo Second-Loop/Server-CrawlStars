@@ -597,6 +597,116 @@ func TestStepDoesNotCreateProjectileWhenAttackIsNotPressed(t *testing.T) {
 	}
 }
 
+func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	for attack := 0; attack < 4; attack++ {
+		snapshot := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+		if !snapshot.Players[0].PressedAttack {
+			t.Fatalf("expected attack %d to be accepted", attack+1)
+		}
+	}
+	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+
+	if got := len(exhausted.Projectiles); got != 4 {
+		t.Fatalf("expected exhausted fifth attack to be ignored, got %d projectiles", got)
+	}
+	if exhausted.Players[0].PressedAttack {
+		t.Fatal("expected exhausted fifth attack to leave PressedAttack false")
+	}
+}
+
+func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
+	gameConfig := StaticGameConfig()
+	gameConfig.Player.Types[0].MaxAttackCharges = 1
+	gameConfig.Map = MapData{}
+	state := NewStateWithConfig([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}}, Config{Game: gameConfig})
+
+	state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	for tick := 0; tick < 28; tick++ {
+		state.Step(nil)
+	}
+	notYetRecharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(notYetRecharged.Projectiles); got != 1 {
+		t.Fatalf("expected no recharge before 30 ticks, got %d projectiles", got)
+	}
+	if notYetRecharged.Players[0].PressedAttack {
+		t.Fatal("expected attack before recharge completion to be ignored")
+	}
+
+	recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(recharged.Projectiles); got != 2 {
+		t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
+	}
+	if !recharged.Players[0].PressedAttack {
+		t.Fatal("expected attack after recharge completion to be accepted")
+	}
+}
+
+func TestStepAttackChargeDoesNotAccumulateAboveMaximum(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	for tick := 0; tick < 120; tick++ {
+		state.Step(nil)
+	}
+
+	for attack := 0; attack < 5; attack++ {
+		state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	}
+	snapshot := state.Step(nil)
+
+	if got := len(snapshot.Projectiles); got != 4 {
+		t.Fatalf("expected charge capacity to remain capped at 4, got %d projectiles", got)
+	}
+}
+
+func TestStepZeroDirectionDoesNotConsumeAttackCharge(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	zeroDirection := state.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		PressedAttack: true,
+	}})
+	if zeroDirection.Players[0].PressedAttack {
+		t.Fatal("expected zero attack direction to leave PressedAttack false")
+	}
+	if got := len(zeroDirection.Projectiles); got != 0 {
+		t.Fatalf("expected zero attack direction to create no projectile, got %d", got)
+	}
+
+	for attack := 0; attack < 4; attack++ {
+		state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	}
+	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(exhausted.Projectiles); got != 4 {
+		t.Fatalf("expected zero direction to consume no charge, got %d projectiles", got)
+	}
+}
+
+func TestStepKeepsAttackChargesSeparatePerPlayer(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed},
+		{ID: PlayerID("blue-1"), Team: TeamBlue},
+	})
+
+	for attack := 0; attack < 4; attack++ {
+		state.Step([]InputCommand{
+			attackInput(PlayerID("red-1")),
+			attackInput(PlayerID("blue-1")),
+		})
+	}
+	exhausted := state.Step([]InputCommand{
+		attackInput(PlayerID("red-1")),
+		attackInput(PlayerID("blue-1")),
+	})
+
+	if got := len(exhausted.Projectiles); got != 8 {
+		t.Fatalf("expected two independent four-charge budgets, got %d projectiles", got)
+	}
+	if exhausted.Players[0].PressedAttack || exhausted.Players[1].PressedAttack {
+		t.Fatal("expected both exhausted attacks to leave PressedAttack false")
+	}
+}
+
 func TestStepProcessesMovementAndAttackInSameTick(t *testing.T) {
 	start := StaticMapFixture().WorldPos(1, 1)
 	state := NewStateWithConfig([]PlayerData{
@@ -928,5 +1038,13 @@ func assertVector(t *testing.T, label string, got Vector2, want Vector2) {
 
 	if math.Abs(got.X-want.X) > positionEpsilon || math.Abs(got.Y-want.Y) > positionEpsilon {
 		t.Fatalf("expected %s %+v, got %+v", label, want, got)
+	}
+}
+
+func attackInput(playerID PlayerID) InputCommand {
+	return InputCommand{
+		PlayerID:      playerID,
+		AttackDir:     Vector2{X: 1},
+		PressedAttack: true,
 	}
 }

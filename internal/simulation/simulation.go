@@ -98,6 +98,11 @@ type Config struct {
 	Game GameConfig
 }
 
+type attackState struct {
+	charges       int
+	rechargeTicks int
+}
+
 type State struct {
 	tick              Tick
 	players           []PlayerData
@@ -105,6 +110,7 @@ type State struct {
 	nextProjectileSeq uint64
 	gameMap           MapData
 	gameConfig        GameConfig
+	attackStates      map[PlayerID]attackState
 }
 
 func NewState(players []PlayerData) *State {
@@ -113,10 +119,17 @@ func NewState(players []PlayerData) *State {
 
 func NewStateWithConfig(players []PlayerData, config Config) *State {
 	gameConfig := resolveStateGameConfig(config)
+	normalizedPlayers := normalizePlayersWithConfig(players, gameConfig)
+	attackStates := make(map[PlayerID]attackState, len(normalizedPlayers))
+	maxAttackCharges := gameConfig.DefaultPlayerType().MaxAttackCharges
+	for _, player := range normalizedPlayers {
+		attackStates[player.ID] = attackState{charges: maxAttackCharges}
+	}
 	return &State{
-		players:    normalizePlayersWithConfig(players, gameConfig),
-		gameMap:    gameConfig.Map,
-		gameConfig: gameConfig,
+		players:      normalizedPlayers,
+		gameMap:      gameConfig.Map,
+		gameConfig:   gameConfig,
+		attackStates: attackStates,
 	}
 }
 
@@ -124,6 +137,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	for i := range s.players {
 		s.players[i].PressedAttack = false
 	}
+	s.rechargeAttackCharges()
 	s.moveProjectiles()
 
 	for _, input := range inputs {
@@ -229,7 +243,6 @@ func (s *State) applyInput(input InputCommand) {
 		attackDir := normalizeDirection(input.AttackDir)
 		s.players[i].MoveDir = moveDir
 		s.players[i].AttackDir = attackDir
-		s.players[i].PressedAttack = input.PressedAttack
 
 		movement := Vector2{
 			X: s.players[i].Speed * s.tickDuration() * moveDir.X,
@@ -245,11 +258,46 @@ func (s *State) applyInput(input InputCommand) {
 		if !s.collidesWithWall(nextY, s.players[i].Radius) {
 			s.players[i].Pos = nextY
 		}
-		if input.PressedAttack && attackDir != (Vector2{}) {
+		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
+			s.players[i].PressedAttack = true
 			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
 		}
 		return
 	}
+}
+
+func (s *State) rechargeAttackCharges() {
+	playerConfig := s.gameConfig.DefaultPlayerType()
+	for playerID, state := range s.attackStates {
+		if state.charges >= playerConfig.MaxAttackCharges {
+			state.charges = playerConfig.MaxAttackCharges
+			state.rechargeTicks = 0
+			s.attackStates[playerID] = state
+			continue
+		}
+
+		state.rechargeTicks++
+		restored := state.rechargeTicks / playerConfig.AttackRechargeTicks
+		if restored > 0 {
+			state.charges += restored
+			state.rechargeTicks %= playerConfig.AttackRechargeTicks
+		}
+		if state.charges >= playerConfig.MaxAttackCharges {
+			state.charges = playerConfig.MaxAttackCharges
+			state.rechargeTicks = 0
+		}
+		s.attackStates[playerID] = state
+	}
+}
+
+func (s *State) consumeAttackCharge(playerID PlayerID) bool {
+	state, ok := s.attackStates[playerID]
+	if !ok || state.charges <= 0 {
+		return false
+	}
+	state.charges--
+	s.attackStates[playerID] = state
+	return true
 }
 
 func (s *State) moveProjectiles() {
