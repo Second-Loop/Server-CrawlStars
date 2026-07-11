@@ -239,7 +239,7 @@ components:
     Room:
       type: object
       required: [id, status, players, maxPlayers, map, latestSnapshot]
-      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용하며 row는 Base64 문자열이 아니라 JSON number array로 직렬화됩니다. 기본 fixture 경로는 `internal/simulation/fixtures/default-map.json`입니다.
+      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용하며 row는 Base64 문자열이 아니라 JSON number array로 직렬화됩니다. 기본 source는 server binary가 embed한 `server-config/game-config.json`의 map이고, config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다.
       properties:
         id:
           type: string
@@ -298,7 +298,7 @@ components:
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]
-      description: 서버 simulation이 사용하는 tile map입니다. 기본 fixture는 `internal/simulation/fixtures/default-map.json`에서 로드하고, 실패하면 5x5 static map으로 fallback합니다. tile 값은 0=ground, 1=wall, 2=spawnPoint이며 `map` row는 JSON number array입니다.
+      description: 서버 simulation이 사용하는 tile map입니다. 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`에서 로드하고, 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 테스트와 legacy 호환 확인용 fixture입니다. tile 값은 0=ground, 1=wall, 2=spawnPoint이며 `map` row는 JSON number array입니다.
       properties:
         width:
           type: integer

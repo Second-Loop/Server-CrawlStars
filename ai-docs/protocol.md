@@ -151,6 +151,8 @@ Ready event:
 }
 ```
 
+예시의 map/spawn 값은 간결함을 위해 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이고, spawn은 `TileSpawnPoint(2)` tile에서 발급되므로 실제 값은 예시와 다릅니다.
+
 Ready ACK:
 
 ```json
@@ -274,9 +276,9 @@ POST /matchmaking/join
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
-Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 `server-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`와 `StaticMapFixture()`의 fallback을 사용합니다.
+Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 runtime source가 아니라 테스트와 legacy 호환 확인용 fixture입니다.
 
-`room.maxPlayers`와 `room.map.maxPlayers`는 현재 map/debug room capacity를 뜻합니다. 기본 fixture 값은 6으로 유지합니다. Matchmaking required players는 server runtime config의 active mode 값인 `mode.playersPerMatch = 2`입니다. 그래서 세 번째 matchmaking join은 같은 room에 late join하지 않고 새 waiting room으로 갑니다.
+`room.maxPlayers`와 `room.map.maxPlayers`는 현재 map/debug room capacity를 뜻합니다. Runtime map과 5x5 fallback map 모두 이 값은 6입니다. Matchmaking required players는 server runtime config의 active mode 값인 `mode.playersPerMatch = 2`입니다. 그래서 세 번째 matchmaking join은 같은 room에 late join하지 않고 새 waiting room으로 갑니다.
 
 `SL-58`에서는 이 흐름을 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message로 추가합니다. REST polling이나 SSE를 먼저 늘리지 않습니다.
 

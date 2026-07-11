@@ -88,7 +88,7 @@ components:
     InputMessage:
       name: InputMessage
       title: Gameplay input
-      summary: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용됩니다.
+      summary: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용하고, 서버가 방향과 공격 budget을 검증합니다.
       payload:
         $ref: "#/components/schemas/InputMessage"
       examples:
@@ -118,6 +118,7 @@ components:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
         - name: readyEvent
+          summary: 예시는 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server-config/game-config.json의 20x20 map이며 spawn point tile(2)에서 spawn을 발급합니다.
           payload:
             Type: Ready
             Map:
@@ -250,6 +251,8 @@ components:
       description: |
         Gameplay input입니다. `Type` field를 넣지 않습니다.
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
+        유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
+        Player는 server-only 4 attack charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
       properties:
         MoveDir:
           $ref: "#/components/schemas/Vector2"
@@ -257,7 +260,7 @@ components:
           $ref: "#/components/schemas/Vector2"
         PressedAttack:
           type: boolean
-          description: 이번 tick 공격 trigger입니다. 조준 유지용 AttackDir와 분리합니다.
+          description: 이번 tick의 공격 요청입니다. 조준 유지용 AttackDir와 분리하며, 실제 승인 결과는 snapshot PlayerData.PressedAttack에서 확인합니다.
     ReadyEventMessage:
       type: object
       required: [Type, Map, Players]
@@ -431,6 +434,7 @@ components:
           format: double
         PressedAttack:
           type: boolean
+          description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 해당 tick 공격을 승인했을 때만 true인 transient 결과입니다.
         IsDead:
           type: boolean
     ProjectileData:

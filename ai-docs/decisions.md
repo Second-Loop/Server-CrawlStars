@@ -279,6 +279,8 @@
 
 ## ADR-0020: SL-72 Capacity와 Player Assignment 경계 분리
 
+상태: 승인됨
+
 맥락: `map.maxPlayers`는 debug room capacity이고 `mode.playersPerMatch`는 active matchmaking size입니다. 두 값을 같은 숫자처럼 쓰면 기본 1v1 matchmaking이 6명 match로 확장되거나, 반대로 debug room이 2명으로 줄어드는 regression이 생길 수 있습니다. 또한 Ready event의 spawn 위치와 실제 simulation 초기 위치가 다른 helper를 타면 client render와 서버 판정이 갈라질 수 있습니다.
 
 결정: `internal/rooms`는 room/debug capacity와 match capacity를 별도 helper로 읽고, room lifecycle과 REST/WebSocket transport 책임을 유지합니다. Team/slot/spawn 계산은 `internal/simulation.PlayerAssignments`가 resolved server `GameConfig`와 player id join 순서를 받아 계산합니다. Ready event와 `simulation.NewStateWithConfig`에 전달하는 초기 player data는 같은 assignment 결과를 씁니다.
