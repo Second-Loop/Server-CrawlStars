@@ -121,6 +121,9 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 }
 
 func (s *State) Step(inputs []InputCommand) Snapshot {
+	for i := range s.players {
+		s.players[i].PressedAttack = false
+	}
 	s.moveProjectiles()
 
 	for _, input := range inputs {
@@ -218,14 +221,19 @@ func (s *State) applyInput(input InputCommand) {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
+		if s.players[i].IsDead {
+			return
+		}
 
-		s.players[i].MoveDir = input.MoveDir
-		s.players[i].AttackDir = input.AttackDir
+		moveDir := clampDirection(input.MoveDir)
+		attackDir := normalizeDirection(input.AttackDir)
+		s.players[i].MoveDir = moveDir
+		s.players[i].AttackDir = attackDir
 		s.players[i].PressedAttack = input.PressedAttack
 
 		movement := Vector2{
-			X: s.players[i].Speed * s.tickDuration() * input.MoveDir.X,
-			Y: s.players[i].Speed * s.tickDuration() * input.MoveDir.Y,
+			X: s.players[i].Speed * s.tickDuration() * moveDir.X,
+			Y: s.players[i].Speed * s.tickDuration() * moveDir.Y,
 		}
 
 		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
@@ -237,7 +245,7 @@ func (s *State) applyInput(input InputCommand) {
 		if !s.collidesWithWall(nextY, s.players[i].Radius) {
 			s.players[i].Pos = nextY
 		}
-		if input.PressedAttack && input.AttackDir != (Vector2{}) {
+		if input.PressedAttack && attackDir != (Vector2{}) {
 			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
 		}
 		return
@@ -387,6 +395,22 @@ func cloneTiles(tiles [][]TileType) [][]TileType {
 
 func isFinite(vector Vector2) bool {
 	return !math.IsNaN(vector.X) && !math.IsNaN(vector.Y) && !math.IsInf(vector.X, 0) && !math.IsInf(vector.Y, 0)
+}
+
+func clampDirection(direction Vector2) Vector2 {
+	magnitude := math.Hypot(direction.X, direction.Y)
+	if magnitude == 0 || magnitude <= 1 {
+		return direction
+	}
+	return Vector2{X: direction.X / magnitude, Y: direction.Y / magnitude}
+}
+
+func normalizeDirection(direction Vector2) Vector2 {
+	magnitude := math.Hypot(direction.X, direction.Y)
+	if magnitude == 0 {
+		return direction
+	}
+	return Vector2{X: direction.X / magnitude, Y: direction.Y / magnitude}
 }
 
 func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool {
