@@ -20,7 +20,9 @@
 
 ---
 
-## P0-1. input 검증: MoveDir/AttackDir 정규화 + attack cooldown
+## P0-1. input 검증: MoveDir/AttackDir 정규화 + attack budget
+
+- 상태: SL-81 Stack 1에서 구현됨
 
 - 문제:
   - `internal/simulation/simulation.go`의 `applyInput`은 NaN/Inf만 거르고 벡터 크기를 검증하지 않는다.
@@ -30,12 +32,16 @@
   - `IsDead` player의 input을 무시하지 않는다. 지금은 사망 즉시 GameEnd라 실해가 없지만 respawn 도입 시 버그가 된다.
 - 권장:
   - 서버에서 `MoveDir`/`AttackDir` 크기를 1로 clamp/정규화한다.
-  - server game config에 attack cooldown tick을 추가하고 `Step`에서 강제한다.
+  - server game config에 player별 최대 attack charge와 recharge tick을 추가하고 `Step`에서 강제한다.
   - `IsDead` player의 input을 무시한다.
 - 수용 기준:
   - 크기 > 1 벡터 input이 정규화된 값과 같은 이동/발사 결과를 내는 회귀 테스트.
-  - cooldown 내 연속 발사가 무시되는 테스트.
+  - 기본 4 charge 소진, 30 tick 회복, player별 독립 budget 회귀 테스트.
   - dead player input 무시 테스트.
+- 반영 결과:
+  - `MoveDir`은 크기 `1` 이하를 보존하고 큰 값만 clamp하며, non-zero `AttackDir`은 unit vector로 정규화한다.
+  - attack charge는 `simulation.State` 내부에만 두고 기본 4 charge, 30 tick recharge를 적용한다.
+  - public snapshot schema와 `client-config/game-config.json`은 변경하지 않았다.
 
 ## P0-2. player 세션 토큰 도입 (WebSocket 인증)
 
