@@ -1,4 +1,5 @@
 .cache/
+.worktrees/
 .playwright-cli/
 docs-ui/node_modules/
 internal/docs/api/
