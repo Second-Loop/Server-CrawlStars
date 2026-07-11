@@ -78,6 +78,77 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 	}
 }
 
+func TestLoadServerGameConfigIncludesAttackBudget(t *testing.T) {
+	config := loadServerGameConfig(t)
+	player := config.DefaultPlayerType()
+
+	if got := player.MaxAttackCharges; got != 4 {
+		t.Fatalf("expected 4 max attack charges, got %d", got)
+	}
+	if got := player.AttackRechargeTicks; got != 30 {
+		t.Fatalf("expected 30 attack recharge ticks, got %d", got)
+	}
+}
+
+func TestStaticGameConfigIncludesAttackBudget(t *testing.T) {
+	player := StaticGameConfig().DefaultPlayerType()
+
+	if got := player.MaxAttackCharges; got != 4 {
+		t.Fatalf("expected 4 max attack charges, got %d", got)
+	}
+	if got := player.AttackRechargeTicks; got != 30 {
+		t.Fatalf("expected 30 attack recharge ticks, got %d", got)
+	}
+}
+
+func TestResolveGameConfigRejectsInvalidAttackBudget(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*PlayerTypeConfig)
+	}{
+		{
+			name: "zero max attack charges",
+			mutate: func(player *PlayerTypeConfig) {
+				player.MaxAttackCharges = 0
+			},
+		},
+		{
+			name: "negative max attack charges",
+			mutate: func(player *PlayerTypeConfig) {
+				player.MaxAttackCharges = -1
+			},
+		},
+		{
+			name: "zero attack recharge ticks",
+			mutate: func(player *PlayerTypeConfig) {
+				player.AttackRechargeTicks = 0
+			},
+		},
+		{
+			name: "negative attack recharge ticks",
+			mutate: func(player *PlayerTypeConfig) {
+				player.AttackRechargeTicks = -1
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := StaticGameConfig()
+			config.Player.Types[0].ID = "configured-player"
+			tt.mutate(&config.Player.Types[0])
+
+			_, err := ResolveGameConfig(config)
+			if err == nil {
+				t.Fatal("expected attack budget to be rejected")
+			}
+			if !strings.Contains(err.Error(), "configured-player") {
+				t.Fatalf("expected error to include player type ID, got %v", err)
+			}
+		})
+	}
+}
+
 func TestServerGameConfigArtifactIncludesDefaultOneVsOneMode(t *testing.T) {
 	config := loadServerGameConfig(t)
 

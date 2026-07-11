@@ -25,10 +25,12 @@ type PlayerTypeSetConfig struct {
 }
 
 type PlayerTypeConfig struct {
-	ID     string  `json:"id"`
-	Radius float64 `json:"radius"`
-	HP     float64 `json:"hp"`
-	Speed  float64 `json:"speed"`
+	ID                  string  `json:"id"`
+	Radius              float64 `json:"radius"`
+	HP                  float64 `json:"hp"`
+	Speed               float64 `json:"speed"`
+	MaxAttackCharges    int     `json:"maxAttackCharges"`
+	AttackRechargeTicks int     `json:"attackRechargeTicks"`
 }
 
 type ProjectileTypeSetConfig struct {
@@ -91,6 +93,12 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 		}
 		if player.Radius <= 0 || player.HP <= 0 || player.Speed <= 0 {
 			return GameConfig{}, fmt.Errorf("game config player type %q values must be positive", player.ID)
+		}
+		if player.MaxAttackCharges <= 0 {
+			return GameConfig{}, fmt.Errorf("game config player type %q maxAttackCharges must be positive", player.ID)
+		}
+		if player.AttackRechargeTicks <= 0 {
+			return GameConfig{}, fmt.Errorf("game config player type %q attackRechargeTicks must be positive", player.ID)
 		}
 	}
 	if len(config.Projectile.Types) == 0 {
@@ -167,10 +175,12 @@ func StaticGameConfig() GameConfig {
 		Player: PlayerTypeSetConfig{
 			Types: []PlayerTypeConfig{
 				{
-					ID:     "default",
-					Radius: DefaultPlayerRadius,
-					HP:     DefaultPlayerHP,
-					Speed:  DefaultPlayerSpeed,
+					ID:                  "default",
+					Radius:              DefaultPlayerRadius,
+					HP:                  DefaultPlayerHP,
+					Speed:               DefaultPlayerSpeed,
+					MaxAttackCharges:    4,
+					AttackRechargeTicks: 30,
 				},
 			},
 		},

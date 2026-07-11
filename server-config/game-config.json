@@ -10,7 +10,9 @@
         "id": "default",
         "radius": 0.5,
         "hp": 100,
-        "speed": 2
+        "speed": 2,
+        "maxAttackCharges": 4,
+        "attackRechargeTicks": 30
       }
     ]
   },
