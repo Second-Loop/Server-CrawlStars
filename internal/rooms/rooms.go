@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -296,7 +297,7 @@ func Handler(store *Store) http.Handler {
 			if err != nil {
 				status := http.StatusNotFound
 				code := "room_not_found"
-				if err.Error() == "room full" {
+				if errors.Is(err, ErrRoomFull) {
 					status = http.StatusConflict
 					code = "room_full"
 				}
@@ -313,7 +314,7 @@ func Handler(store *Store) http.Handler {
 			if err != nil {
 				status := http.StatusConflict
 				code := "room_has_no_players"
-				if err.Error() == "room not found" {
+				if errors.Is(err, ErrRoomNotFound) {
 					status = http.StatusNotFound
 					code = "room_not_found"
 				}
@@ -364,7 +365,7 @@ func (s *Store) createRoom() (roomResponse, error) {
 	defer s.mu.Unlock()
 
 	if len(s.rooms) >= s.maxActiveRooms {
-		return roomResponse{}, errString("active room cap reached")
+		return roomResponse{}, ErrActiveRoomCapReached
 	}
 
 	room := s.createRoomLocked()
@@ -426,10 +427,10 @@ func (s *Store) addPlayer(roomID string) (playerResponse, error) {
 
 	room, ok := s.rooms[roomID]
 	if !ok {
-		return playerResponse{}, errString("room not found")
+		return playerResponse{}, ErrRoomNotFound
 	}
 	if len(room.Players) >= s.debugRoomCapacity() {
-		return playerResponse{}, errString("room full")
+		return playerResponse{}, ErrRoomFull
 	}
 
 	return s.addPlayerLocked(room), nil
@@ -444,7 +445,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 	room := s.findWaitingRoomWithCapacity()
 	if room == nil {
 		if len(s.rooms) >= s.maxActiveRooms {
-			return matchmakingJoinResponse{}, errString("active room cap reached")
+			return matchmakingJoinResponse{}, ErrActiveRoomCapReached
 		}
 		room = s.createRoomLocked()
 	}
@@ -489,10 +490,10 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 
 	room, ok := s.rooms[roomID]
 	if !ok {
-		return roomResponse{}, errString("room not found")
+		return roomResponse{}, ErrRoomNotFound
 	}
 	if len(room.Players) == 0 {
-		return roomResponse{}, errString("room has no players")
+		return roomResponse{}, ErrRoomHasNoPlayers
 	}
 
 	s.startRoomLocked(room)
@@ -562,11 +563,11 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 	if err := s.reserveClient(roomID, playerID); err != nil {
 		status := http.StatusConflict
 		code := "player_already_connected"
-		if err.Error() == "room not found" {
+		if errors.Is(err, ErrRoomNotFound) {
 			status = http.StatusNotFound
 			code = "room_not_found"
 		}
-		if err.Error() == "player not found" {
+		if errors.Is(err, ErrPlayerNotFound) {
 			status = http.StatusNotFound
 			code = "player_not_found"
 		}
@@ -640,13 +641,13 @@ func (s *Store) reserveClient(roomID string, playerID string) error {
 
 	room, ok := s.rooms[roomID]
 	if !ok {
-		return errString("room not found")
+		return ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
-		return errString("player not found")
+		return ErrPlayerNotFound
 	}
 	if _, ok := room.clients[playerID]; ok {
-		return errString("player already connected")
+		return ErrPlayerAlreadyConnected
 	}
 	room.clients[playerID] = nil
 	room.lastActivityAt = s.clock.Now()
@@ -1226,12 +1227,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {
 	writeJSON(w, status, errorResponse{Error: apiError{Code: code, Message: message}})
-}
-
-type errString string
-
-func (e errString) Error() string {
-	return string(e)
 }
 
 func itoa(value int) string {

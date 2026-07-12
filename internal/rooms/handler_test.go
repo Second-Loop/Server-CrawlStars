@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,119 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
+
+func TestStoreReturnsTypedErrors(t *testing.T) {
+	t.Run("active room cap from create", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+
+		if _, err := store.createRoom(); err != nil {
+			t.Fatalf("create first room: %v", err)
+		}
+		_, err := store.createRoom()
+		if !errors.Is(err, ErrActiveRoomCapReached) {
+			t.Fatalf("expected ErrActiveRoomCapReached, got %v", err)
+		}
+	})
+
+	t.Run("active room cap from matchmaking", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		for range store.matchCapacity() {
+			if _, err := store.addPlayer(room.ID); err != nil {
+				t.Fatalf("fill matchmaking room: %v", err)
+			}
+		}
+		_, err = store.joinMatchmaking()
+		if !errors.Is(err, ErrActiveRoomCapReached) {
+			t.Fatalf("expected ErrActiveRoomCapReached, got %v", err)
+		}
+	})
+
+	t.Run("missing room", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		if _, err := store.addPlayer("missing"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("add player: expected ErrRoomNotFound, got %v", err)
+		}
+		if _, err := store.startRoom("missing"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("start room: expected ErrRoomNotFound, got %v", err)
+		}
+		if err := store.reserveClient("missing", "player-1"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("reserve client: expected ErrRoomNotFound, got %v", err)
+		}
+	})
+
+	t.Run("room full", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		for range store.debugRoomCapacity() {
+			if _, err := store.addPlayer(room.ID); err != nil {
+				t.Fatalf("fill room: %v", err)
+			}
+		}
+		if _, err := store.addPlayer(room.ID); !errors.Is(err, ErrRoomFull) {
+			t.Fatalf("expected ErrRoomFull, got %v", err)
+		}
+	})
+
+	t.Run("room has no players", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if _, err := store.startRoom(room.ID); !errors.Is(err, ErrRoomHasNoPlayers) {
+			t.Fatalf("expected ErrRoomHasNoPlayers, got %v", err)
+		}
+	})
+
+	t.Run("missing player", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if err := store.reserveClient(room.ID, "missing"); !errors.Is(err, ErrPlayerNotFound) {
+			t.Fatalf("expected ErrPlayerNotFound, got %v", err)
+		}
+	})
+
+	t.Run("player already connected", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		player, err := store.addPlayer(room.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if err := store.reserveClient(room.ID, player.ID); err != nil {
+			t.Fatalf("reserve first client: %v", err)
+		}
+		if err := store.reserveClient(room.ID, player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
+			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
+		}
+	})
+}
 
 func TestHandlerRouteContract(t *testing.T) {
 	tests := []struct {
