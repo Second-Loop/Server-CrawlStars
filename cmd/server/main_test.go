@@ -77,7 +77,7 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	assertRandomValue(t, joined.SessionToken, "", 32)
 	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
 	if joined.WebSocketPath != wantWebSocketPath {
-		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
+		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 	fixture, err := simulation.LoadDefaultMapFixture()
 	if err != nil {

@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"io"
 )
@@ -17,6 +18,15 @@ const (
 
 type playerSession struct {
 	digest [sha256.Size]byte
+}
+
+func (r *room) authenticatePlayer(playerID string, rawToken string) bool {
+	session, ok := r.sessions[playerID]
+	if !ok {
+		return false
+	}
+	digest := sha256.Sum256([]byte(rawToken))
+	return subtle.ConstantTimeCompare(session.digest[:], digest[:]) == 1
 }
 
 func randomValue(reader io.Reader, prefix string, size int) (string, error) {

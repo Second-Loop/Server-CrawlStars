@@ -93,7 +93,7 @@ func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
 	assertOpaqueID(t, issued.SessionToken, "", 32)
 	wantPath := "/rooms/" + room.ID + "/players/" + issued.Player.ID + "?token=" + issued.SessionToken
 	if issued.WebSocketPath != wantPath {
-		t.Fatalf("expected websocket path %q, got %q", wantPath, issued.WebSocketPath)
+		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 
 	store.mu.Lock()
@@ -258,7 +258,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if _, err := store.startRoom("missing"); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("start room: expected ErrRoomNotFound, got %v", err)
 		}
-		if err := store.reserveClient("missing", "player-1"); !errors.Is(err, ErrRoomNotFound) {
+		if err := store.reserveClient("missing", "player-1", nil); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("reserve client: expected ErrRoomNotFound, got %v", err)
 		}
 	})
@@ -302,7 +302,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create room: %v", err)
 		}
-		if err := store.reserveClient(room.ID, "missing"); !errors.Is(err, ErrPlayerNotFound) {
+		if err := store.reserveClient(room.ID, "missing", nil); !errors.Is(err, ErrPlayerNotFound) {
 			t.Fatalf("expected ErrPlayerNotFound, got %v", err)
 		}
 	})
@@ -319,10 +319,10 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("add player: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.Player.ID); err != nil {
+		if err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); err != nil {
 			t.Fatalf("reserve first client: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.Player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
+		if err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); !errors.Is(err, ErrPlayerAlreadyConnected) {
 			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
 		}
 	})
@@ -1025,7 +1025,7 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 	assertOpaqueID(t, joined.SessionToken, "", 32)
 	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
 	if joined.WebSocketPath != wantWebSocketPath {
-		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
+		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 	if len(joined.Room.Players) != 1 || joined.Room.Players[0].ID != joined.Player.ID {
 		t.Fatalf("expected response room to contain joined player, got %+v", joined.Room.Players)
@@ -1380,10 +1380,10 @@ func TestStoreCleansUpHardLifetimeExpiredRoom(t *testing.T) {
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 

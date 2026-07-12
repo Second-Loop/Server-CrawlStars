@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
-	if err := s.reserveClient(roomID, playerID); err != nil {
+	if err := s.reserveClient(roomID, playerID, r.URL.Query()["token"]); err != nil {
 		status := http.StatusConflict
 		code := "player_already_connected"
 		if errors.Is(err, ErrRoomNotFound) {
@@ -22,6 +22,10 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		if errors.Is(err, ErrPlayerNotFound) {
 			status = http.StatusNotFound
 			code = "player_not_found"
+		}
+		if errors.Is(err, ErrUnauthorized) {
+			status = http.StatusUnauthorized
+			code = "unauthorized"
 		}
 		writeError(w, status, code, err.Error())
 		return
@@ -85,7 +89,7 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 	}
 }
 
-func (s *Store) reserveClient(roomID string, playerID string) error {
+func (s *Store) reserveClient(roomID string, playerID string, tokens []string) error {
 	s.cleanupExpired()
 
 	s.mu.Lock()
@@ -97,6 +101,9 @@ func (s *Store) reserveClient(roomID string, playerID string) error {
 	}
 	if !room.hasPlayer(playerID) {
 		return ErrPlayerNotFound
+	}
+	if len(tokens) != 1 || tokens[0] == "" || !room.authenticatePlayer(playerID, tokens[0]) {
+		return ErrUnauthorized
 	}
 	if _, ok := room.clients[playerID]; ok {
 		return ErrPlayerAlreadyConnected
