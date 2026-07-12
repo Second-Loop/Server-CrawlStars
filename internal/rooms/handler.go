@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -22,7 +23,7 @@ func Handler(store *Store) http.Handler {
 			writeRouteNotFound(w)
 			return
 		}
-		router.ServeHTTP(w, requestWithEscapedDotSegments(r))
+		router.ServeHTTP(w, requestWithDecodedPathSegments(r))
 	})
 }
 
@@ -153,16 +154,9 @@ func newRouter(store *Store) *http.ServeMux {
 	return mux
 }
 
-func requestWithEscapedDotSegments(r *http.Request) *http.Request {
-	escapedPath := r.URL.EscapedPath()
-	rawPath := strings.ReplaceAll(escapedPath, "/../", "/%2e%2e/")
-	rawPath = strings.ReplaceAll(rawPath, "/./", "/%2e/")
-	if strings.HasSuffix(rawPath, "/..") {
-		rawPath = strings.TrimSuffix(rawPath, "/..") + "/%2e%2e"
-	} else if strings.HasSuffix(rawPath, "/.") {
-		rawPath = strings.TrimSuffix(rawPath, "/.") + "/%2e"
-	}
-	if rawPath == escapedPath {
+func requestWithDecodedPathSegments(r *http.Request) *http.Request {
+	rawPath := rawPathFromDecodedPath(r.URL.Path)
+	if rawPath == r.URL.EscapedPath() {
 		return r
 	}
 
@@ -171,6 +165,33 @@ func requestWithEscapedDotSegments(r *http.Request) *http.Request {
 	clonedURL.RawPath = rawPath
 	clonedRequest.URL = &clonedURL
 	return clonedRequest
+}
+
+func rawPathFromDecodedPath(decodedPath string) string {
+	var rawPath strings.Builder
+	rawPath.Grow(len(decodedPath))
+
+	segmentStart := 0
+	for index := 0; index <= len(decodedPath); index++ {
+		if index < len(decodedPath) && decodedPath[index] != '/' {
+			continue
+		}
+
+		segment := decodedPath[segmentStart:index]
+		switch segment {
+		case ".":
+			rawPath.WriteString("%2e")
+		case "..":
+			rawPath.WriteString("%2e%2e")
+		default:
+			rawPath.WriteString(url.PathEscape(segment))
+		}
+		if index < len(decodedPath) {
+			rawPath.WriteByte('/')
+		}
+		segmentStart = index + 1
+	}
+	return rawPath.String()
 }
 
 func pathMethodNotAllowed(pathValueNames ...string) http.HandlerFunc {
