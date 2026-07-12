@@ -39,6 +39,7 @@ type room struct {
 	state           *simulation.State
 	pendingInputs   map[string]simulation.InputCommand
 	clients         map[string]*websocket.Conn
+	reservations    map[string]*clientReservation
 	latestSnapshot  snapshotSummary
 	createdAt       time.Time
 	lastActivityAt  time.Time
@@ -281,6 +282,7 @@ func (s *Store) newRoomLocked(roomID string) *room {
 		sessions:       make(map[string]playerSession),
 		pendingInputs:  make(map[string]simulation.InputCommand),
 		clients:        make(map[string]*websocket.Conn),
+		reservations:   make(map[string]*clientReservation),
 		createdAt:      now,
 		lastActivityAt: now,
 	}

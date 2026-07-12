@@ -52,7 +52,7 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d with body %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected status 201, got %d", rec.Code)
 	}
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Fatalf("expected json content type, got %q", got)
@@ -95,7 +95,7 @@ func assertRandomValue(t *testing.T, value string, prefix string, wantBytes int)
 	t.Helper()
 
 	if !strings.HasPrefix(value, prefix) {
-		t.Fatalf("expected %q prefix, got %q", prefix, value)
+		t.Fatalf("expected random value to use the %q prefix", prefix)
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
 	if err != nil {

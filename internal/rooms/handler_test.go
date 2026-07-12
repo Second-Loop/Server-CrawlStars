@@ -68,7 +68,7 @@ func TestStoreCreatesOpaqueIDsAndSessionSecrets(t *testing.T) {
 	storedSession := storedRoom.sessions[firstPlayer.Player.ID]
 	store.mu.Unlock()
 	if storedSession.digest != wantDigest {
-		t.Fatalf("expected only SHA-256 session digest in room state, got %x", storedSession.digest)
+		t.Fatal("expected only the issued session digest in room state")
 	}
 }
 
@@ -85,7 +85,7 @@ func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
 	room := createRoom(t, handler)
 	rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected create player status 201, got %d with body %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected create player status 201, got %d", rec.Code)
 	}
 	var issued playerSessionResponse
 	decodeResponse(t, rec, &issued)
@@ -114,10 +114,10 @@ func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
 	}
 	for name, payload := range responses {
 		if bytes.Contains(payload, []byte(issued.SessionToken)) {
-			t.Fatalf("expected %s to omit raw session token, got %s", name, payload)
+			t.Fatalf("expected %s to omit the raw session token", name)
 		}
 		if bytes.Contains(payload, []byte("sessionToken")) || bytes.Contains(payload, []byte("digest")) {
-			t.Fatalf("expected %s to omit session fields, got %s", name, payload)
+			t.Fatalf("expected %s to omit session fields", name)
 		}
 	}
 }
@@ -258,7 +258,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if _, err := store.startRoom("missing"); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("start room: expected ErrRoomNotFound, got %v", err)
 		}
-		if err := store.reserveClient("missing", "player-1", nil); !errors.Is(err, ErrRoomNotFound) {
+		if _, err := store.reserveClient("missing", "player-1", nil); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("reserve client: expected ErrRoomNotFound, got %v", err)
 		}
 	})
@@ -302,7 +302,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create room: %v", err)
 		}
-		if err := store.reserveClient(room.ID, "missing", nil); !errors.Is(err, ErrPlayerNotFound) {
+		if _, err := store.reserveClient(room.ID, "missing", nil); !errors.Is(err, ErrPlayerNotFound) {
 			t.Fatalf("expected ErrPlayerNotFound, got %v", err)
 		}
 	})
@@ -319,10 +319,10 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("add player: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); err != nil {
+		if _, err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); err != nil {
 			t.Fatalf("reserve first client: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); !errors.Is(err, ErrPlayerAlreadyConnected) {
+		if _, err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); !errors.Is(err, ErrPlayerAlreadyConnected) {
 			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
 		}
 	})
@@ -1470,11 +1470,11 @@ func assertOpaqueID(t *testing.T, value string, prefix string, wantBytes int) {
 	t.Helper()
 
 	if !strings.HasPrefix(value, prefix) {
-		t.Fatalf("expected %q prefix, got %q", prefix, value)
+		t.Fatalf("expected opaque value to use the %q prefix", prefix)
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
 	if err != nil {
-		t.Fatalf("decode %q: %v", value, err)
+		t.Fatalf("decode opaque value: %v", err)
 	}
 	if len(decoded) != wantBytes {
 		t.Fatalf("expected %d decoded bytes, got %d", wantBytes, len(decoded))

@@ -60,6 +60,12 @@ func TestWebSocketTokenRejectsInvalidCredentials(t *testing.T) {
 				return first.WebSocketPath + "&token=extra"
 			},
 		},
+		{
+			name: "malformed query pair",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return first.WebSocketPath + "&bad=one;two"
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -128,6 +134,122 @@ func TestWebSocketTokenAuthenticationPrecedesDuplicateCheck(t *testing.T) {
 
 	assertWebSocketDialError(t, server.URL, pathWithoutToken+"?token=wrong", http.StatusUnauthorized, "unauthorized")
 	assertWebSocketDialError(t, server.URL, issued.WebSocketPath, http.StatusConflict, "player_already_connected")
+}
+
+func TestWebSocketFailedUpgradeRollsBackReservationWithoutCancelingMatch(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := Handler(store)
+	defer store.Close()
+
+	first := joinMatchmaking(t, handler)
+	_ = joinMatchmaking(t, handler)
+
+	rec := request(handler, http.MethodGet, first.WebSocketPath)
+	if rec.Code == http.StatusSwitchingProtocols {
+		t.Fatal("expected a non-WebSocket request to fail the upgrade")
+	}
+
+	store.mu.Lock()
+	matched := store.rooms[first.Room.ID]
+	roomExists := matched != nil
+	clientCount := 0
+	reservationCount := 0
+	matchStatus := MatchStatus("")
+	if matched != nil {
+		clientCount = len(matched.clients)
+		reservationCount = len(matched.reservations)
+		matchStatus = matched.matchStatus
+	}
+	store.mu.Unlock()
+
+	if !roomExists || matchStatus != MatchStatusMatched {
+		t.Fatal("expected failed upgrade to preserve the matched room")
+	}
+	if clientCount != 0 || reservationCount != 0 {
+		t.Fatal("expected failed upgrade to leave no client or reservation")
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn := dialIssuedPlayer(t, server.URL, first.WebSocketPath)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, first.Room.ID, first.Player.ID)
+}
+
+func TestClientReservationCannotAttachAfterRoomRemoval(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	defer store.Close()
+	handler := Handler(store)
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+
+	reservation, err := store.reserveClient(room.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	if _, ok := store.deleteRoom(room.ID); !ok {
+		t.Fatal("expected room deletion to succeed")
+	}
+	if store.attachClient(reservation, nil) {
+		t.Fatal("expected attachment to fail after room deletion")
+	}
+	store.rollbackClientReservation(reservation)
+}
+
+func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := Handler(store)
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+
+	reservation, err := store.reserveClient(room.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	store.Close()
+	if store.attachClient(reservation, nil) {
+		t.Fatal("expected attachment to fail after store close")
+	}
+	store.rollbackClientReservation(reservation)
+}
+
+func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	defer store.Close()
+	handler := Handler(store)
+	roomResponse := createRoom(t, handler)
+	issued := issuePlayer(t, handler, roomResponse.ID)
+	previousDisconnectedAt := fakeClock.Now().Add(-time.Minute)
+
+	store.mu.Lock()
+	room := store.rooms[roomResponse.ID]
+	room.Status = RoomStatusStarted
+	room.disconnectedAt = previousDisconnectedAt
+	store.mu.Unlock()
+
+	reservation, err := store.reserveClient(roomResponse.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	store.mu.Lock()
+	reservedDisconnectedAt := room.disconnectedAt
+	store.mu.Unlock()
+	if !reservedDisconnectedAt.Equal(previousDisconnectedAt) {
+		t.Fatal("expected reservation to preserve the disconnected timestamp")
+	}
+	store.rollbackClientReservation(reservation)
+
+	store.mu.Lock()
+	gotDisconnectedAt := room.disconnectedAt
+	reservationCount := len(room.reservations)
+	store.mu.Unlock()
+	if !gotDisconnectedAt.Equal(previousDisconnectedAt) {
+		t.Fatal("expected rollback to restore the disconnected timestamp")
+	}
+	if reservationCount != 0 {
+		t.Fatal("expected rollback to remove the reservation")
+	}
 }
 
 func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
