@@ -282,6 +282,56 @@ func TestHandlerRouteEncodedWildcardContract(t *testing.T) {
 	}
 }
 
+func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	room, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	player, err := store.addPlayer(room.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	router := newRouter(store)
+
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		wantStatus   int
+		wantPattern  string
+		wantRoomID   string
+		wantPlayerID string
+	}{
+		{name: "room collection", method: http.MethodGet, path: "/rooms", wantStatus: http.StatusOK, wantPattern: "GET /rooms"},
+		{name: "room detail", method: http.MethodGet, path: "/rooms/" + room.ID, wantStatus: http.StatusOK, wantPattern: "GET /rooms/{roomID}", wantRoomID: room.ID},
+		{name: "player collection", method: http.MethodPost, path: "/rooms/" + room.ID + "/players", wantStatus: http.StatusCreated, wantPattern: "POST /rooms/{roomID}/players", wantRoomID: room.ID},
+		{name: "start", method: http.MethodPost, path: "/rooms/" + room.ID + "/start", wantStatus: http.StatusOK, wantPattern: "POST /rooms/{roomID}/start", wantRoomID: room.ID},
+		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.ID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d with body %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+			if req.Pattern != tt.wantPattern {
+				t.Fatalf("expected pattern %q, got %q", tt.wantPattern, req.Pattern)
+			}
+			if got := req.PathValue("roomID"); got != tt.wantRoomID {
+				t.Fatalf("expected room path value %q, got %q", tt.wantRoomID, got)
+			}
+			if got := req.PathValue("playerID"); got != tt.wantPlayerID {
+				t.Fatalf("expected player path value %q, got %q", tt.wantPlayerID, got)
+			}
+		})
+	}
+}
+
 func TestHandlerMethodContract(t *testing.T) {
 	tests := []struct {
 		name       string
