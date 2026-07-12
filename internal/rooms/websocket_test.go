@@ -71,7 +71,7 @@ func TestWebSocketTokenRejectsInvalidCredentials(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStoreWithClock(5, newFakeClock())
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			server := httptest.NewServer(handler)
 			defer server.Close()
 			defer store.Close()
@@ -87,7 +87,7 @@ func TestWebSocketTokenRejectsInvalidCredentials(t *testing.T) {
 
 func TestWebSocketTokenPreservesUnknownIdentityErrors(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -99,7 +99,7 @@ func TestWebSocketTokenPreservesUnknownIdentityErrors(t *testing.T) {
 
 func TestWebSocketTokenAllowsCorrectConnectionAndReconnect(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -119,7 +119,7 @@ func TestWebSocketTokenAllowsCorrectConnectionAndReconnect(t *testing.T) {
 
 func TestWebSocketTokenAuthenticationPrecedesDuplicateCheck(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -138,7 +138,7 @@ func TestWebSocketTokenAuthenticationPrecedesDuplicateCheck(t *testing.T) {
 
 func TestWebSocketFailedUpgradeRollsBackReservationWithoutCancelingMatch(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	defer store.Close()
 
 	first := joinMatchmaking(t, handler)
@@ -179,7 +179,7 @@ func TestWebSocketFailedUpgradeRollsBackReservationWithoutCancelingMatch(t *test
 func TestClientReservationCannotAttachAfterRoomRemoval(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	room := createRoom(t, handler)
 	issued := issuePlayer(t, handler, room.ID)
 
@@ -198,7 +198,7 @@ func TestClientReservationCannotAttachAfterRoomRemoval(t *testing.T) {
 
 func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	room := createRoom(t, handler)
 	issued := issuePlayer(t, handler, room.ID)
 
@@ -217,7 +217,7 @@ func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	roomResponse := createRoom(t, handler)
 	issued := issuePlayer(t, handler, roomResponse.ID)
 	previousDisconnectedAt := fakeClock.Now().Add(-time.Minute)
@@ -266,7 +266,7 @@ func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
 			fakeClock := newFakeClock()
 			store := NewStoreWithClock(5, fakeClock)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			roomResponse := createRoom(t, handler)
 			first := issuePlayer(t, handler, roomResponse.ID)
 			second := issuePlayer(t, handler, roomResponse.ID)
@@ -329,7 +329,7 @@ func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testin
 			fakeClock := newFakeClock()
 			store := NewStoreWithClock(5, fakeClock)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			roomResponse := createRoom(t, handler)
 			players := []issuedPlayer{
 				issuePlayer(t, handler, roomResponse.ID),
@@ -371,7 +371,7 @@ func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testin
 func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -418,7 +418,7 @@ func TestWebSocketWriteTimeoutStaysWithinRealtimeBudget(t *testing.T) {
 
 func TestWebSocketRejectsUnknownRoomOrPlayer(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -431,7 +431,7 @@ func TestWebSocketRejectsUnknownRoomOrPlayer(t *testing.T) {
 
 func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -447,7 +447,7 @@ func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
 
 func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -465,7 +465,7 @@ func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
 func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -488,7 +488,7 @@ func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 
 func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -536,7 +536,7 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -589,7 +589,7 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 
 func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -618,7 +618,7 @@ func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -647,7 +647,7 @@ func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -679,7 +679,7 @@ func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *te
 func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -709,7 +709,7 @@ func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
 func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -732,7 +732,7 @@ func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
 func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -759,7 +759,7 @@ func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
 func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -784,7 +784,7 @@ func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -837,7 +837,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{GameConfig: fastRechargeGameConfig()})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -910,7 +910,7 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 		Map:        verticalDuelMap(),
 		GameConfig: fastRechargeGameConfig(),
 	})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -948,7 +948,7 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 		Map:        verticalDuelMap(),
 		GameConfig: fastRechargeGameConfig(),
 	})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()

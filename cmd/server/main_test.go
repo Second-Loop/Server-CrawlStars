@@ -8,11 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
 func TestNewMuxServesDocsRoutes(t *testing.T) {
-	handler := newMux()
+	handler := mustNewMux(t, rooms.HandlerConfig{})
 
 	for _, tc := range []struct {
 		path        string
@@ -44,7 +45,7 @@ func TestNewMuxServesDocsRoutes(t *testing.T) {
 }
 
 func TestNewMuxServesMatchmakingJoin(t *testing.T) {
-	handler := newMux()
+	handler := mustNewMux(t, rooms.HandlerConfig{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
@@ -89,6 +90,97 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
 		t.Fatalf("expected default fixture map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
 	}
+}
+
+func TestNewMuxUsesSecureDebugAPIDefault(t *testing.T) {
+	handler := mustNewMux(t, rooms.HandlerConfig{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/rooms", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestNewMuxWiresEnabledDebugAPI(t *testing.T) {
+	handler := mustNewMux(t, rooms.HandlerConfig{
+		EnableDebugAPI: true,
+		DebugAPIToken:  "server-debug-test-token",
+	})
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/rooms", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", unauthorized.Code)
+	}
+
+	authorizedRequest := httptest.NewRequest(http.MethodGet, "/rooms", nil)
+	authorizedRequest.Header.Set("Authorization", "Bearer server-debug-test-token")
+	authorized := httptest.NewRecorder()
+	handler.ServeHTTP(authorized, authorizedRequest)
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", authorized.Code)
+	}
+}
+
+func TestNewMuxRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
+	handler, err := newMux(rooms.HandlerConfig{EnableDebugAPI: true})
+	if err == nil {
+		t.Fatal("expected debug API configuration error")
+	}
+	if handler != nil {
+		t.Fatal("expected no handler for invalid debug API configuration")
+	}
+}
+
+func TestLoadRoomHandlerConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment map[string]string
+		wantEnabled bool
+		wantToken   string
+		wantError   bool
+	}{
+		{name: "default", environment: map[string]string{}},
+		{name: "explicit false", environment: map[string]string{"ENABLE_DEBUG_API": "false", "DEBUG_API_TOKEN": "unused"}, wantToken: "unused"},
+		{name: "enabled", environment: map[string]string{"ENABLE_DEBUG_API": "true", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
+		{name: "enabled numeric", environment: map[string]string{"ENABLE_DEBUG_API": "1", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
+		{name: "invalid flag", environment: map[string]string{"ENABLE_DEBUG_API": "sometimes"}, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := loadRoomHandlerConfig(func(name string) string {
+				return tt.environment[name]
+			})
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected configuration error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load room handler config: %v", err)
+			}
+			if config.EnableDebugAPI != tt.wantEnabled {
+				t.Fatalf("expected debug enabled %t, got %t", tt.wantEnabled, config.EnableDebugAPI)
+			}
+			if config.DebugAPIToken != tt.wantToken {
+				t.Fatal("expected debug token to match environment")
+			}
+		})
+	}
+}
+
+func mustNewMux(t *testing.T, config rooms.HandlerConfig) http.Handler {
+	t.Helper()
+
+	handler, err := newMux(config)
+	if err != nil {
+		t.Fatalf("create server mux: %v", err)
+	}
+	return handler
 }
 
 func assertRandomValue(t *testing.T, value string, prefix string, wantBytes int) {
