@@ -310,6 +310,48 @@ func TestHandlerRouteDotSegmentDetailContract(t *testing.T) {
 	}
 }
 
+func TestHandlerRouteNestedDotSegmentContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "raw dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/./players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/../players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/%2e/players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/%2e%2e/players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/./players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/../players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/%2e/players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/%2e%2e/players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "raw dot dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/.." }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "encoded dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "encoded dot dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e%2e" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "raw dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "raw dot dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/.." }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e%2e" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+
+			rec := request(handler, tt.method, tt.path(room))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+			if location := rec.Header().Get("Location"); location != "" {
+				t.Fatalf("expected no redirect Location, got %q", location)
+			}
+		})
+	}
+}
+
 func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 	store := NewStore(5)
 	defer store.Close()

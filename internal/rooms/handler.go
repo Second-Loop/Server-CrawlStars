@@ -14,16 +14,7 @@ func Handler(store *Store) http.Handler {
 
 	router := newRouter(store)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/rooms/." || r.URL.Path == "/rooms/.." {
-			switch r.Method {
-			case http.MethodGet, http.MethodDelete:
-				writeRoomNotFound(w)
-			default:
-				writeMethodNotAllowed(w, r)
-			}
-			return
-		}
-		if muxWouldCanonicalRedirect(r.URL.Path) {
+		if strings.Contains(r.URL.Path, "//") {
 			if strings.HasPrefix(r.URL.Path, "/rooms//") {
 				writeRoomNotFound(w)
 				return
@@ -31,7 +22,7 @@ func Handler(store *Store) http.Handler {
 			writeRouteNotFound(w)
 			return
 		}
-		router.ServeHTTP(w, r)
+		router.ServeHTTP(w, requestWithEscapedDotSegments(r))
 	})
 }
 
@@ -162,12 +153,24 @@ func newRouter(store *Store) *http.ServeMux {
 	return mux
 }
 
-func muxWouldCanonicalRedirect(requestPath string) bool {
-	return strings.Contains(requestPath, "//") ||
-		strings.Contains(requestPath, "/./") ||
-		strings.HasSuffix(requestPath, "/.") ||
-		strings.Contains(requestPath, "/../") ||
-		strings.HasSuffix(requestPath, "/..")
+func requestWithEscapedDotSegments(r *http.Request) *http.Request {
+	escapedPath := r.URL.EscapedPath()
+	rawPath := strings.ReplaceAll(escapedPath, "/../", "/%2e%2e/")
+	rawPath = strings.ReplaceAll(rawPath, "/./", "/%2e/")
+	if strings.HasSuffix(rawPath, "/..") {
+		rawPath = strings.TrimSuffix(rawPath, "/..") + "/%2e%2e"
+	} else if strings.HasSuffix(rawPath, "/.") {
+		rawPath = strings.TrimSuffix(rawPath, "/.") + "/%2e"
+	}
+	if rawPath == escapedPath {
+		return r
+	}
+
+	clonedRequest := r.Clone(r.Context())
+	clonedURL := *r.URL
+	clonedURL.RawPath = rawPath
+	clonedRequest.URL = &clonedURL
+	return clonedRequest
 }
 
 func pathMethodNotAllowed(pathValueNames ...string) http.HandlerFunc {
