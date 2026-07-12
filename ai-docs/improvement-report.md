@@ -114,7 +114,9 @@
 
 ## P2-3. rooms.go 코드 정리
 
-- 문제:
+- 상태: SL-81 Stack 2에서 구현됨
+
+- 분석 당시 문제:
   - `internal/rooms/rooms.go` 1,250줄에 HTTP 라우팅, matchmaking, WebSocket, room lifecycle, 직렬화가 모두 들어있다.
   - 에러 분기가 문자열 비교(`err.Error() == "room full"`)로 되어 있다.
   - 라우팅이 `strings.Split` 수동 파싱이다(Go 1.22+ `ServeMux` 패턴 사용 가능, go.mod는 1.25).
@@ -124,6 +126,11 @@
   - sentinel error + `errors.Is`, `ServeMux` 패턴 라우팅 전환.
 - 수용 기준:
   - 기존 테스트 전부 통과, API 응답 변경 없음.
+- 반영 결과:
+  - `rooms.go` 책임을 `handler.go`, `store.go`, `websocket.go`, `messages.go`, `cleanup.go`로 나누고 production 파일을 500줄 이하로 정리했다.
+  - room lifecycle 오류를 sentinel error와 `errors.Is`로 전환하고 custom `itoa`와 production test decoder를 제거했다.
+  - Go `ServeMux` method pattern과 `PathValue`를 사용하며, explicit JSON HEAD/405/404 fallback과 canonical path preflight로 기존 wire response를 유지한다.
+  - REST/WebSocket schema와 성공·오류 응답 계약은 변경하지 않았다.
 
 ## P3-1. 배포/기타 하드닝 묶음
 

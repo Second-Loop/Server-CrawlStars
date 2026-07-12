@@ -15,16 +15,14 @@ internal/docs
   OpenAPI/AsyncAPI raw spec과 docs UI embed
 
 internal/rooms
-  in-memory room store
-  REST debug lifecycle
-  simple matchmaking connector
-  active game mode와 team/slot rule 소비
-  room/debug capacity와 match capacity 분리
-  match ready/starting state
-  WebSocket connection adapter
-  room-local 30Hz ticker
-  GameEnd event와 종료 room 정리
-  TTL cleanup
+  handler.go       ServeMux pattern과 JSON fallback
+  store.go         in-memory room/player/match lifecycle
+  websocket.go     connection, input, 30Hz tick/delivery
+  messages.go      REST/WebSocket DTO와 변환
+  cleanup.go       TTL과 room resource 종료
+  rooms.go         status, timeout, clock/ticker adapter
+  errors.go        lifecycle sentinel error
+  game_end.go      GameEnd 결과 계산
 
 internal/simulation
   transport-independent gameplay core
@@ -106,6 +104,8 @@ Hit/death:
 - respawn, score는 아직 없습니다.
 
 ## Room과 WebSocket
+
+`rooms.Handler`는 Go `ServeMux`의 method pattern과 `PathValue`로 REST/WebSocket 경로를 연결합니다. 알려진 path의 HEAD와 지원하지 않는 method는 explicit JSON fallback이 처리해 기존 404/405 body를 유지합니다. `ServeMux`가 dot segment나 중복 slash를 301로 정규화하기 전에는 얇은 preflight가 기존 JSON 오류 계약으로 돌려보냅니다.
 
 REST debug API:
 
