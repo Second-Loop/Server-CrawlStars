@@ -52,10 +52,18 @@ func newMux(roomHandlerConfig rooms.HandlerConfig) (http.Handler, error) {
 		store.Close()
 		return nil, fmt.Errorf("configure rooms handler: %w", err)
 	}
-	mux.Handle("/matchmaking/join", roomHandler)
-	mux.Handle("/rooms", roomHandler)
-	mux.Handle("/rooms/", roomHandler)
-	return mux, nil
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isRoomHandlerPath(r.URL.Path) {
+			roomHandler.ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}), nil
+}
+
+func isRoomHandlerPath(path string) bool {
+	return path == "/rooms" || strings.HasPrefix(path, "/rooms/") ||
+		path == "/matchmaking/join" || strings.HasPrefix(path, "/matchmaking/")
 }
 
 func loadRoomHandlerConfig(getenv func(string) string) (rooms.HandlerConfig, error) {

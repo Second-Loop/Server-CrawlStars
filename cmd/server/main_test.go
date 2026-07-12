@@ -124,6 +124,57 @@ func TestNewMuxWiresEnabledDebugAPI(t *testing.T) {
 	}
 }
 
+func TestNewMuxRoutesRoomSecurityBeforeOuterServeMux(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        rooms.HandlerConfig
+		path          string
+		authorization string
+		wantStatus    int
+		wantCode      string
+	}{
+		{name: "default duplicate slash", path: "/rooms//", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "enabled duplicate slash without auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms//", wantStatus: http.StatusUnauthorized, wantCode: "unauthorized"},
+		{name: "enabled duplicate slash with auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms//", authorization: "Bearer server-debug-test-token", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "default encoded slash", path: "/rooms%2Fmissing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "enabled encoded slash without auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms%2Fmissing", wantStatus: http.StatusUnauthorized, wantCode: "unauthorized"},
+		{name: "enabled encoded slash with auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms%2Fmissing", authorization: "Bearer server-debug-test-token", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := mustNewMux(t, tt.config)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("expected application/json content type, got %q", got)
+			}
+			if location := rec.Header().Get("Location"); location != "" {
+				t.Fatalf("expected no redirect Location, got %q", location)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Error.Code != tt.wantCode {
+				t.Fatalf("expected error code %q, got %q", tt.wantCode, body.Error.Code)
+			}
+		})
+	}
+}
+
 func TestNewMuxRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
 	handler, err := newMux(rooms.HandlerConfig{EnableDebugAPI: true})
 	if err == nil {
