@@ -13,10 +13,8 @@ import (
 )
 
 type clientReservation struct {
-	room                   *room
-	playerID               string
-	reservedAt             time.Time
-	previousLastActivityAt time.Time
+	room     *room
+	playerID string
 }
 
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
@@ -132,15 +130,11 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	if _, ok := room.reservations[playerID]; ok {
 		return nil, ErrPlayerAlreadyConnected
 	}
-	reservedAt := s.clock.Now()
 	reservation := &clientReservation{
-		room:                   room,
-		playerID:               playerID,
-		reservedAt:             reservedAt,
-		previousLastActivityAt: room.lastActivityAt,
+		room:     room,
+		playerID: playerID,
 	}
 	room.reservations[playerID] = reservation
-	room.lastActivityAt = reservedAt
 	return reservation, nil
 }
 
@@ -157,9 +151,6 @@ func (s *Store) rollbackClientReservation(reservation *clientReservation) {
 		return
 	}
 	delete(room.reservations, reservation.playerID)
-	if len(room.reservations) == 0 && room.lastActivityAt.Equal(reservation.reservedAt) {
-		room.lastActivityAt = reservation.previousLastActivityAt
-	}
 }
 
 func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Conn) bool {

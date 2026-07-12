@@ -627,7 +627,7 @@ func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
-				t.Fatalf("expected status %d, got %d with body %s", tt.wantStatus, rec.Code, rec.Body.String())
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
 			}
 			if req.Pattern != tt.wantPattern {
 				t.Fatalf("expected pattern %q, got %q", tt.wantPattern, req.Pattern)
@@ -1485,7 +1485,7 @@ func assertInternalError(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status 500, got %d with body %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected status 500, got %d", rec.Code)
 	}
 	var body errorResponse
 	decodeResponse(t, rec, &body)
@@ -1522,7 +1522,7 @@ func assertJSONRouteResponse(t *testing.T, rec *httptest.ResponseRecorder, statu
 	t.Helper()
 
 	if rec.Code != status {
-		t.Fatalf("expected status %d, got %d with body %s", status, rec.Code, rec.Body.String())
+		t.Fatalf("expected status %d, got %d", status, rec.Code)
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected application/json content type, got %q", got)

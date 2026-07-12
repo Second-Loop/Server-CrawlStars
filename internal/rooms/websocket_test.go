@@ -252,6 +252,107 @@ func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
 	}
 }
 
+func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []int
+	}{
+		{name: "first then second", order: []int{0, 1}},
+		{name: "second then first", order: []int{1, 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			defer store.Close()
+			handler := Handler(store)
+			roomResponse := createRoom(t, handler)
+			first := issuePlayer(t, handler, roomResponse.ID)
+			second := issuePlayer(t, handler, roomResponse.ID)
+
+			store.mu.Lock()
+			room := store.rooms[roomResponse.ID]
+			originalLastActivityAt := fakeClock.Now()
+			room.lastActivityAt = originalLastActivityAt
+			store.mu.Unlock()
+
+			fakeClock.Advance(time.Minute)
+			firstReservation, err := store.reserveClient(roomResponse.ID, first.ID, []string{first.SessionToken})
+			if err != nil {
+				t.Fatalf("reserve first client: %v", err)
+			}
+			fakeClock.Advance(time.Minute)
+			secondReservation, err := store.reserveClient(roomResponse.ID, second.ID, []string{second.SessionToken})
+			if err != nil {
+				t.Fatalf("reserve second client: %v", err)
+			}
+
+			store.mu.Lock()
+			gotAfterReservations := room.lastActivityAt
+			store.mu.Unlock()
+			if !gotAfterReservations.Equal(originalLastActivityAt) {
+				t.Fatal("expected reservations not to count as room activity")
+			}
+
+			reservations := []*clientReservation{firstReservation, secondReservation}
+			for _, index := range tt.order {
+				store.rollbackClientReservation(reservations[index])
+			}
+
+			store.mu.Lock()
+			gotLastActivityAt := room.lastActivityAt
+			reservationCount := len(room.reservations)
+			store.mu.Unlock()
+			if !gotLastActivityAt.Equal(originalLastActivityAt) {
+				t.Fatal("expected rollback order not to change room activity")
+			}
+			if reservationCount != 0 {
+				t.Fatalf("expected no reservations, got %d", reservationCount)
+			}
+		})
+	}
+}
+
+func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	defer store.Close()
+	handler := Handler(store)
+	roomResponse := createRoom(t, handler)
+	first := issuePlayer(t, handler, roomResponse.ID)
+	second := issuePlayer(t, handler, roomResponse.ID)
+
+	store.mu.Lock()
+	room := store.rooms[roomResponse.ID]
+	room.lastActivityAt = fakeClock.Now().Add(-time.Minute)
+	store.mu.Unlock()
+
+	firstReservation, err := store.reserveClient(roomResponse.ID, first.ID, []string{first.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve first client: %v", err)
+	}
+	secondReservation, err := store.reserveClient(roomResponse.ID, second.ID, []string{second.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve second client: %v", err)
+	}
+	if !store.attachClient(firstReservation, nil) {
+		t.Fatal("expected first reservation to attach")
+	}
+	store.rollbackClientReservation(secondReservation)
+
+	store.mu.Lock()
+	gotLastActivityAt := room.lastActivityAt
+	reservationCount := len(room.reservations)
+	store.mu.Unlock()
+	if !gotLastActivityAt.Equal(fakeClock.Now()) {
+		t.Fatal("expected successful attachment to remain the latest room activity")
+	}
+	if reservationCount != 0 {
+		t.Fatalf("expected no reservations, got %d", reservationCount)
+	}
+}
+
 func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
