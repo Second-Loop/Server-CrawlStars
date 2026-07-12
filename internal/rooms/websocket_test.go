@@ -14,6 +14,11 @@ import (
 	"nhooyr.io/websocket"
 )
 
+type snapshotMessage struct {
+	Type     string              `json:"Type"`
+	Snapshot simulation.Snapshot `json:"Snapshot"`
+}
+
 func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
