@@ -103,6 +103,23 @@ func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
 	}
 }
 
+func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	roomID := strings.ReplaceAll(room.ID, "-", "%2D")
+	playerID := strings.ReplaceAll(player.ID, "-", "%2D")
+
+	conn := dialRoomPlayer(t, server.URL, roomID, playerID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
+}
+
 func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
