@@ -879,9 +879,9 @@ func createPlayer(t *testing.T, handler http.Handler, roomID string) playerRespo
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected create player status 201, got %d", rec.Code)
 	}
-	var player playerResponse
-	decodeResponse(t, rec, &player)
-	return player
+	var issued playerSessionResponse
+	decodeResponse(t, rec, &issued)
+	return issued.Player
 }
 
 func startRoom(t *testing.T, handler http.Handler, roomID string) {

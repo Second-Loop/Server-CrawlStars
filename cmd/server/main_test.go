@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,18 +57,27 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Fatalf("expected json content type, got %q", got)
 	}
-	if !strings.Contains(rec.Body.String(), `"webSocketPath":"/rooms/room-1/players/player-1"`) {
-		t.Fatalf("expected matchmaking connection info, got %s", rec.Body.String())
-	}
-
 	var joined struct {
 		Room struct {
+			ID         string             `json:"id"`
 			MaxPlayers int                `json:"maxPlayers"`
 			Map        simulation.MapData `json:"map"`
 		} `json:"room"`
+		Player struct {
+			ID string `json:"id"`
+		} `json:"player"`
+		SessionToken  string `json:"sessionToken"`
+		WebSocketPath string `json:"webSocketPath"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &joined); err != nil {
 		t.Fatalf("decode matchmaking response: %v", err)
+	}
+	assertRandomValue(t, joined.Room.ID, "room_", 16)
+	assertRandomValue(t, joined.Player.ID, "player_", 16)
+	assertRandomValue(t, joined.SessionToken, "", 32)
+	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
+	if joined.WebSocketPath != wantWebSocketPath {
+		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
 	}
 	fixture, err := simulation.LoadDefaultMapFixture()
 	if err != nil {
@@ -78,5 +88,20 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	}
 	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
 		t.Fatalf("expected default fixture map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	}
+}
+
+func assertRandomValue(t *testing.T, value string, prefix string, wantBytes int) {
+	t.Helper()
+
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("expected %q prefix, got %q", prefix, value)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		t.Fatalf("decode random value: %v", err)
+	}
+	if len(decoded) != wantBytes {
+		t.Fatalf("expected %d decoded bytes, got %d", wantBytes, len(decoded))
 	}
 }

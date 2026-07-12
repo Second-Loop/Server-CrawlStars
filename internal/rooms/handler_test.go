@@ -1,17 +1,219 @@
 package rooms
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
+
+func TestStoreCreatesOpaqueIDsAndSessionSecrets(t *testing.T) {
+	random := bytes.NewReader(bytes.Join([][]byte{
+		bytes.Repeat([]byte{0x01}, 16),
+		bytes.Repeat([]byte{0x02}, 16),
+		bytes.Repeat([]byte{0x03}, 32),
+		bytes.Repeat([]byte{0x04}, 16),
+		bytes.Repeat([]byte{0x05}, 32),
+		bytes.Repeat([]byte{0x06}, 16),
+	}, nil))
+	store := NewStoreWithConfig(5, StoreConfig{Random: random})
+	defer store.Close()
+
+	firstRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create first room: %v", err)
+	}
+	firstPlayer, err := store.addPlayer(firstRoom.ID)
+	if err != nil {
+		t.Fatalf("add first player: %v", err)
+	}
+	secondPlayer, err := store.addPlayer(firstRoom.ID)
+	if err != nil {
+		t.Fatalf("add second player: %v", err)
+	}
+	secondRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create second room: %v", err)
+	}
+
+	assertOpaqueID(t, firstRoom.ID, "room_", 16)
+	assertOpaqueID(t, secondRoom.ID, "room_", 16)
+	assertOpaqueID(t, firstPlayer.Player.ID, "player_", 16)
+	assertOpaqueID(t, secondPlayer.Player.ID, "player_", 16)
+	if firstRoom.ID == secondRoom.ID {
+		t.Fatalf("expected distinct room IDs, got %q", firstRoom.ID)
+	}
+	if firstPlayer.Player.ID == secondPlayer.Player.ID {
+		t.Fatalf("expected distinct player IDs, got %q", firstPlayer.Player.ID)
+	}
+	assertOpaqueID(t, firstPlayer.SessionToken, "", 32)
+	assertOpaqueID(t, secondPlayer.SessionToken, "", 32)
+	if firstPlayer.SessionToken == secondPlayer.SessionToken {
+		t.Fatal("expected distinct player session tokens")
+	}
+
+	wantDigest := sha256.Sum256([]byte(firstPlayer.SessionToken))
+	store.mu.Lock()
+	storedRoom := store.rooms[firstRoom.ID]
+	storedSession := storedRoom.sessions[firstPlayer.Player.ID]
+	store.mu.Unlock()
+	if storedSession.digest != wantDigest {
+		t.Fatalf("expected only SHA-256 session digest in room state, got %x", storedSession.digest)
+	}
+}
+
+func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
+	random := bytes.NewReader(bytes.Join([][]byte{
+		bytes.Repeat([]byte{0x11}, 16),
+		bytes.Repeat([]byte{0x12}, 16),
+		bytes.Repeat([]byte{0x13}, 32),
+	}, nil))
+	store := NewStoreWithConfig(5, StoreConfig{Random: random})
+	defer store.Close()
+	handler := Handler(store)
+
+	room := createRoom(t, handler)
+	rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create player status 201, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var issued playerSessionResponse
+	decodeResponse(t, rec, &issued)
+	assertOpaqueID(t, issued.Player.ID, "player_", 16)
+	assertOpaqueID(t, issued.SessionToken, "", 32)
+	wantPath := "/rooms/" + room.ID + "/players/" + issued.Player.ID + "?token=" + issued.SessionToken
+	if issued.WebSocketPath != wantPath {
+		t.Fatalf("expected websocket path %q, got %q", wantPath, issued.WebSocketPath)
+	}
+
+	store.mu.Lock()
+	storedRoom := store.rooms[room.ID]
+	ready := readyEventMessage{
+		Type:    "Ready",
+		Map:     mapResponseFromSimulation(store.gameConfig.Map),
+		Players: readyEventPlayers(storedRoom.Players, store.gameConfig),
+	}
+	snapshot := storedRoom.matchSnapshotMessage(MatchStatusMatched, 0)
+	store.mu.Unlock()
+
+	responses := map[string][]byte{
+		"room list":   request(handler, http.MethodGet, "/rooms").Body.Bytes(),
+		"room detail": request(handler, http.MethodGet, "/rooms/"+room.ID).Body.Bytes(),
+		"Ready":       mustMarshalTestJSON(t, ready),
+		"snapshot":    mustMarshalTestJSON(t, snapshot),
+	}
+	for name, payload := range responses {
+		if bytes.Contains(payload, []byte(issued.SessionToken)) {
+			t.Fatalf("expected %s to omit raw session token, got %s", name, payload)
+		}
+		if bytes.Contains(payload, []byte("sessionToken")) || bytes.Contains(payload, []byte("digest")) {
+			t.Fatalf("expected %s to omit session fields, got %s", name, payload)
+		}
+	}
+}
+
+func TestHandlerSessionSecretFailureIsAtomic(t *testing.T) {
+	t.Run("reader error", func(t *testing.T) {
+		readerErr := errors.New("entropy source private detail")
+		store := NewStoreWithConfig(5, StoreConfig{Random: iotest.ErrReader(readerErr)})
+		defer store.Close()
+
+		rec := request(Handler(store), http.MethodPost, "/rooms")
+		if strings.Contains(rec.Body.String(), readerErr.Error()) {
+			t.Fatalf("expected response to omit reader error details, got %s", rec.Body.String())
+		}
+		assertInternalError(t, rec)
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected no partial room, got %d", got)
+		}
+	})
+
+	t.Run("room ID short read", func(t *testing.T) {
+		store := NewStoreWithConfig(5, StoreConfig{Random: bytes.NewReader(make([]byte, 15))})
+		defer store.Close()
+		handler := Handler(store)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms"))
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected no partial room, got %d", got)
+		}
+	})
+
+	t.Run("player token short read", func(t *testing.T) {
+		random := bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{0x21}, 16),
+			bytes.Repeat([]byte{0x22}, 16),
+			bytes.Repeat([]byte{0x23}, 31),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms/"+room.ID+"/players"))
+		assertRoomHasPlayerAndSessionCount(t, store, room.ID, 0)
+	})
+
+	t.Run("matchmaking token short read", func(t *testing.T) {
+		random := bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{0x31}, 16),
+			bytes.Repeat([]byte{0x32}, 16),
+			bytes.Repeat([]byte{0x33}, 31),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+
+		assertInternalError(t, request(Handler(store), http.MethodPost, "/matchmaking/join"))
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected failed matchmaking to leave no room, got %d", got)
+		}
+	})
+}
+
+func TestStoreOpaqueIDCollisionExhaustionIsAtomic(t *testing.T) {
+	t.Run("room ID", func(t *testing.T) {
+		candidate := bytes.Repeat([]byte{0x41}, 16)
+		store := NewStoreWithConfig(5, StoreConfig{Random: bytes.NewReader(bytes.Repeat(candidate, 9))})
+		defer store.Close()
+		handler := Handler(store)
+
+		_ = createRoom(t, handler)
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms"))
+		if got := len(store.listRooms().Rooms); got != 1 {
+			t.Fatalf("expected one original room after collision exhaustion, got %d", got)
+		}
+	})
+
+	t.Run("player ID", func(t *testing.T) {
+		roomID := bytes.Repeat([]byte{0x51}, 16)
+		playerID := bytes.Repeat([]byte{0x52}, 16)
+		token := bytes.Repeat([]byte{0x53}, 32)
+		random := bytes.NewReader(bytes.Join([][]byte{
+			roomID,
+			playerID,
+			token,
+			bytes.Repeat(playerID, 8),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+		_ = createPlayer(t, handler, room.ID)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms/"+room.ID+"/players"))
+		assertRoomHasPlayerAndSessionCount(t, store, room.ID, 1)
+	})
+}
 
 func TestStoreReturnsTypedErrors(t *testing.T) {
 	t.Run("active room cap from create", func(t *testing.T) {
@@ -117,10 +319,10 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("add player: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.ID); err != nil {
+		if err := store.reserveClient(room.ID, player.Player.ID); err != nil {
 			t.Fatalf("reserve first client: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
+		if err := store.reserveClient(room.ID, player.Player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
 			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
 		}
 	})
@@ -416,7 +618,7 @@ func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 		{name: "room detail", method: http.MethodGet, path: "/rooms/" + room.ID, wantStatus: http.StatusOK, wantPattern: "GET /rooms/{roomID}", wantRoomID: room.ID},
 		{name: "player collection", method: http.MethodPost, path: "/rooms/" + room.ID + "/players", wantStatus: http.StatusCreated, wantPattern: "POST /rooms/{roomID}/players", wantRoomID: room.ID},
 		{name: "start", method: http.MethodPost, path: "/rooms/" + room.ID + "/start", wantStatus: http.StatusOK, wantPattern: "POST /rooms/{roomID}/start", wantRoomID: room.ID},
-		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.ID},
+		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.Player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.Player.ID},
 	}
 
 	for _, tt := range tests {
@@ -820,7 +1022,8 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 	if joined.Player.ID == "" || joined.Player.Team != "red" || joined.Player.Slot != 0 {
 		t.Fatalf("unexpected player assignment: %+v", joined.Player)
 	}
-	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID
+	assertOpaqueID(t, joined.SessionToken, "", 32)
+	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
 	if joined.WebSocketPath != wantWebSocketPath {
 		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
 	}
@@ -1261,6 +1464,58 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 	if body.Error.Code != code {
 		t.Fatalf("expected error code %q, got %+v", code, body)
 	}
+}
+
+func assertOpaqueID(t *testing.T, value string, prefix string, wantBytes int) {
+	t.Helper()
+
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("expected %q prefix, got %q", prefix, value)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		t.Fatalf("decode %q: %v", value, err)
+	}
+	if len(decoded) != wantBytes {
+		t.Fatalf("expected %d decoded bytes, got %d", wantBytes, len(decoded))
+	}
+}
+
+func assertInternalError(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d with body %s", rec.Code, rec.Body.String())
+	}
+	var body errorResponse
+	decodeResponse(t, rec, &body)
+	if body.Error.Code != "internal_error" || body.Error.Message != "internal server error" {
+		t.Fatalf("expected generic internal error, got %+v", body)
+	}
+}
+
+func assertRoomHasPlayerAndSessionCount(t *testing.T, store *Store, roomID string, want int) {
+	t.Helper()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	room := store.rooms[roomID]
+	if room == nil {
+		t.Fatalf("expected room %q", roomID)
+	}
+	if len(room.Players) != want || len(room.sessions) != want {
+		t.Fatalf("expected %d players and sessions, got %d and %d", want, len(room.Players), len(room.sessions))
+	}
+}
+
+func mustMarshalTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return payload
 }
 
 func assertJSONRouteResponse(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {

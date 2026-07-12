@@ -33,6 +33,10 @@ func newRouter(store *Store) *http.ServeMux {
 	mux.HandleFunc("POST /matchmaking/join", func(w http.ResponseWriter, _ *http.Request) {
 		joined, err := store.joinMatchmaking()
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
@@ -48,6 +52,10 @@ func newRouter(store *Store) *http.ServeMux {
 	mux.HandleFunc("POST /rooms", func(w http.ResponseWriter, _ *http.Request) {
 		created, err := store.createRoom()
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
@@ -95,6 +103,10 @@ func newRouter(store *Store) *http.ServeMux {
 		roomID := r.PathValue("roomID")
 		player, err := store.addPlayer(roomID)
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			status := http.StatusNotFound
 			code := "room_not_found"
 			if errors.Is(err, ErrRoomFull) {
@@ -223,6 +235,10 @@ func writeRoomNotFound(w http.ResponseWriter) {
 
 func writeRouteNotFound(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "not_found", "route not found")
+}
+
+func writeInternalError(w http.ResponseWriter) {
+	writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
