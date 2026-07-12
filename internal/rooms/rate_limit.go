@@ -168,9 +168,24 @@ func canonicalIP(ip netip.Addr) netip.Addr {
 
 func isTrustedProxy(peer netip.Addr, trustedPrefixes []netip.Prefix) bool {
 	for _, prefix := range trustedPrefixes {
-		if prefix.Contains(peer) {
+		if canonicalPrefix(prefix).Contains(peer) {
 			return true
 		}
 	}
 	return false
+}
+
+func canonicalPrefix(prefix netip.Prefix) netip.Prefix {
+	if !prefix.IsValid() {
+		return prefix
+	}
+	address := prefix.Addr()
+	bits := prefix.Bits()
+	if address.Is4In6() && bits >= 96 {
+		return netip.PrefixFrom(address.Unmap(), bits-96).Masked()
+	}
+	if address.Is6() {
+		address = address.WithZone("")
+	}
+	return netip.PrefixFrom(address, bits).Masked()
 }

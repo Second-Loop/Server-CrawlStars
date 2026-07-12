@@ -251,6 +251,17 @@ func TestClientIPTrustBoundary(t *testing.T) {
 	}
 }
 
+func TestClientIPCanonicalizesMappedTrustedPrefix(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+	req.RemoteAddr = "[::ffff:192.0.2.10]:1234"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
+
+	got := clientIP(req, []netip.Prefix{netip.MustParsePrefix("::ffff:192.0.2.0/120")})
+	if got.String() != "203.0.113.10" {
+		t.Fatalf("expected mapped trusted prefix to accept forwarded client, got %q", got.String())
+	}
+}
+
 func TestMatchmakingRateLimitUsesDefaultBurst(t *testing.T) {
 	store := NewStore(10)
 	defer store.Close()
