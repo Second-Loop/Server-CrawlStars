@@ -282,6 +282,34 @@ func TestHandlerRouteEncodedWildcardContract(t *testing.T) {
 	}
 }
 
+func TestHandlerRouteDotSegmentDetailContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "dot get", method: http.MethodGet, path: "/rooms/.", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot delete", method: http.MethodDelete, path: "/rooms/.", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot head", method: http.MethodHead, path: "/rooms/.", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "dot dot get", method: http.MethodGet, path: "/rooms/..", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot dot delete", method: http.MethodDelete, path: "/rooms/..", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot dot head", method: http.MethodHead, path: "/rooms/..", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot get", method: http.MethodGet, path: "/rooms/%2e", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot head", method: http.MethodHead, path: "/rooms/%2e", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			rec := request(Handler(store), tt.method, tt.path)
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
 func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 	store := NewStore(5)
 	defer store.Close()

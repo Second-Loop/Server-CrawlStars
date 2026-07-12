@@ -14,6 +14,15 @@ func Handler(store *Store) http.Handler {
 
 	router := newRouter(store)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rooms/." || r.URL.Path == "/rooms/.." {
+			switch r.Method {
+			case http.MethodGet, http.MethodDelete:
+				writeRoomNotFound(w)
+			default:
+				writeMethodNotAllowed(w, r)
+			}
+			return
+		}
 		if muxWouldCanonicalRedirect(r.URL.Path) {
 			if strings.HasPrefix(r.URL.Path, "/rooms//") {
 				writeRoomNotFound(w)
