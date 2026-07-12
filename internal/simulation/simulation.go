@@ -446,19 +446,22 @@ func isFinite(vector Vector2) bool {
 }
 
 func clampDirection(direction Vector2) Vector2 {
-	magnitude := math.Hypot(direction.X, direction.Y)
-	if magnitude == 0 || magnitude <= 1 {
+	maxComponent := math.Max(math.Abs(direction.X), math.Abs(direction.Y))
+	if maxComponent <= 1 && math.Hypot(direction.X, direction.Y) <= 1 {
 		return direction
 	}
-	return Vector2{X: direction.X / magnitude, Y: direction.Y / magnitude}
+	return normalizeDirection(direction)
 }
 
 func normalizeDirection(direction Vector2) Vector2 {
-	magnitude := math.Hypot(direction.X, direction.Y)
-	if magnitude == 0 {
+	maxComponent := math.Max(math.Abs(direction.X), math.Abs(direction.Y))
+	if maxComponent == 0 {
 		return direction
 	}
-	return Vector2{X: direction.X / magnitude, Y: direction.Y / magnitude}
+
+	scaled := Vector2{X: direction.X / maxComponent, Y: direction.Y / maxComponent}
+	scaledMagnitude := math.Hypot(scaled.X, scaled.Y)
+	return Vector2{X: scaled.X / scaledMagnitude, Y: scaled.Y / scaledMagnitude}
 }
 
 func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool {

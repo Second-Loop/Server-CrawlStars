@@ -444,6 +444,24 @@ func TestStepClampsDiagonalMovementDirection(t *testing.T) {
 	assertVector(t, "diagonal position", snapshot.Players[0].Pos, wantPosition)
 }
 
+func TestStepClampsExtremeFiniteMovementDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  Vector2{X: math.MaxFloat64, Y: math.MaxFloat64},
+	}})
+
+	component := 1 / math.Sqrt(2)
+	wantDirection := Vector2{X: component, Y: component}
+	wantPosition := Vector2{
+		X: DefaultPlayerSpeed * TickDuration * component,
+		Y: DefaultPlayerSpeed * TickDuration * component,
+	}
+	assertVector(t, "extreme finite movement direction", snapshot.Players[0].MoveDir, wantDirection)
+	assertVector(t, "extreme finite position", snapshot.Players[0].Pos, wantPosition)
+}
+
 func TestStepClampPreservesAnalogMovementDirection(t *testing.T) {
 	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
 	direction := Vector2{X: 0.25}
@@ -476,6 +494,24 @@ func TestStepNormalizesOversizedAttackDirection(t *testing.T) {
 
 	assertVector(t, "normalized attack direction", oversized.Players[0].AttackDir, unit.Players[0].AttackDir)
 	assertVector(t, "normalized projectile direction", oversized.Projectiles[0].Dir, unit.Projectiles[0].Dir)
+}
+
+func TestStepNormalizesExtremeFiniteAttackDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		AttackDir:     Vector2{X: math.MaxFloat64, Y: math.MaxFloat64},
+		PressedAttack: true,
+	}})
+
+	component := 1 / math.Sqrt(2)
+	wantDirection := Vector2{X: component, Y: component}
+	assertVector(t, "extreme finite attack direction", snapshot.Players[0].AttackDir, wantDirection)
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected extreme finite attack direction to create 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	assertVector(t, "extreme finite projectile direction", snapshot.Projectiles[0].Dir, wantDirection)
 }
 
 func TestStepDeadPlayerInputIsIgnoredAfterProjectileHit(t *testing.T) {
