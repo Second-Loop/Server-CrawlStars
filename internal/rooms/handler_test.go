@@ -1452,6 +1452,7 @@ func debugHandler(t *testing.T, store *Store) http.Handler {
 	handler, err := HandlerWithConfig(store, HandlerConfig{
 		EnableDebugAPI: true,
 		DebugAPIToken:  testDebugAPIToken,
+		JoinLimiter:    NewIPRateLimiter(1, 10_000, nil),
 	})
 	if err != nil {
 		t.Fatalf("create debug handler: %v", err)

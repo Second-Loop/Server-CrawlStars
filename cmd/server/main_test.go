@@ -187,17 +187,37 @@ func TestNewMuxRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
 
 func TestLoadRoomHandlerConfig(t *testing.T) {
 	tests := []struct {
-		name        string
-		environment map[string]string
-		wantEnabled bool
-		wantToken   string
-		wantError   bool
+		name         string
+		environment  map[string]string
+		wantEnabled  bool
+		wantToken    string
+		wantLimiter  bool
+		wantPrefixes []string
+		wantError    bool
 	}{
 		{name: "default", environment: map[string]string{}},
 		{name: "explicit false", environment: map[string]string{"ENABLE_DEBUG_API": "false", "DEBUG_API_TOKEN": "unused"}, wantToken: "unused"},
 		{name: "enabled", environment: map[string]string{"ENABLE_DEBUG_API": "true", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
 		{name: "enabled numeric", environment: map[string]string{"ENABLE_DEBUG_API": "1", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
 		{name: "invalid flag", environment: map[string]string{"ENABLE_DEBUG_API": "sometimes"}, wantError: true},
+		{name: "enabled missing token", environment: map[string]string{"ENABLE_DEBUG_API": "true"}, wantError: true},
+		{name: "rate override", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "20.5"}, wantLimiter: true},
+		{name: "burst override", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "8"}, wantLimiter: true},
+		{name: "rate and burst override", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "2", "MATCHMAKING_JOIN_BURST": "3"}, wantLimiter: true},
+		{name: "trusted proxies", environment: map[string]string{"TRUSTED_PROXY_CIDRS": " 127.0.0.1/32, 2001:db8::1/64 "}, wantPrefixes: []string{"127.0.0.1/32", "2001:db8::/64"}},
+		{name: "zero rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "0"}, wantError: true},
+		{name: "negative rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "-1"}, wantError: true},
+		{name: "NaN rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "NaN"}, wantError: true},
+		{name: "infinite rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "+Inf"}, wantError: true},
+		{name: "invalid rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "fast", "DEBUG_API_TOKEN": "sensitive-debug-token"}, wantError: true},
+		{name: "zero burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "0"}, wantError: true},
+		{name: "negative burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "-1"}, wantError: true},
+		{name: "decimal burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "1.5"}, wantError: true},
+		{name: "overflow burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "999999999999999999999999"}, wantError: true},
+		{name: "invalid CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "not-a-cidr"}, wantError: true},
+		{name: "bare trusted IP", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1"}, wantError: true},
+		{name: "empty middle CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1/32,,::1/128"}, wantError: true},
+		{name: "empty trailing CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1/32,"}, wantError: true},
 	}
 
 	for _, tt := range tests {
@@ -208,6 +228,9 @@ func TestLoadRoomHandlerConfig(t *testing.T) {
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("expected configuration error")
+				}
+				if token := tt.environment["DEBUG_API_TOKEN"]; token != "" && strings.Contains(err.Error(), token) {
+					t.Fatal("expected configuration error to omit debug token")
 				}
 				return
 			}
@@ -220,7 +243,41 @@ func TestLoadRoomHandlerConfig(t *testing.T) {
 			if config.DebugAPIToken != tt.wantToken {
 				t.Fatal("expected debug token to match environment")
 			}
+			if (config.JoinLimiter != nil) != tt.wantLimiter {
+				t.Fatalf("expected limiter configured %t", tt.wantLimiter)
+			}
+			if len(config.TrustedProxyPrefixes) != len(tt.wantPrefixes) {
+				t.Fatalf("expected %d trusted prefixes, got %d", len(tt.wantPrefixes), len(config.TrustedProxyPrefixes))
+			}
+			for index, want := range tt.wantPrefixes {
+				if got := config.TrustedProxyPrefixes[index].String(); got != want {
+					t.Fatalf("expected trusted prefix %q, got %q", want, got)
+				}
+			}
 		})
+	}
+}
+
+func TestLoadRoomHandlerConfigWiresRateOverrides(t *testing.T) {
+	config, err := loadRoomHandlerConfig(func(name string) string {
+		return map[string]string{
+			"MATCHMAKING_JOIN_RATE_PER_MINUTE": "10",
+			"MATCHMAKING_JOIN_BURST":           "2",
+		}[name]
+	})
+	if err != nil {
+		t.Fatalf("load room handler config: %v", err)
+	}
+	handler := mustNewMux(t, config)
+
+	for attempt, wantStatus := range []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests} {
+		req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+		req.RemoteAddr = "198.51.100.10:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != wantStatus {
+			t.Fatalf("attempt %d: expected status %d, got %d", attempt+1, wantStatus, rec.Code)
+		}
 	}
 }
 

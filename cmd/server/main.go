@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -76,10 +78,78 @@ func loadRoomHandlerConfig(getenv func(string) string) (rooms.HandlerConfig, err
 		}
 		enabled = parsed
 	}
+	debugToken := getenv("DEBUG_API_TOKEN")
+	if enabled && strings.TrimSpace(debugToken) == "" {
+		return rooms.HandlerConfig{}, fmt.Errorf("DEBUG_API_TOKEN is required when ENABLE_DEBUG_API is true")
+	}
+
+	rateValue := strings.TrimSpace(getenv("MATCHMAKING_JOIN_RATE_PER_MINUTE"))
+	burstValue := strings.TrimSpace(getenv("MATCHMAKING_JOIN_BURST"))
+	var joinLimiter *rooms.IPRateLimiter
+	if rateValue != "" || burstValue != "" {
+		ratePerMinute, err := parseJoinRate(rateValue)
+		if err != nil {
+			return rooms.HandlerConfig{}, err
+		}
+		burst, err := parseJoinBurst(burstValue)
+		if err != nil {
+			return rooms.HandlerConfig{}, err
+		}
+		joinLimiter = rooms.NewIPRateLimiter(ratePerMinute, burst, nil)
+	}
+
+	trustedProxyPrefixes, err := parseTrustedProxyPrefixes(getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return rooms.HandlerConfig{}, err
+	}
 	return rooms.HandlerConfig{
-		EnableDebugAPI: enabled,
-		DebugAPIToken:  getenv("DEBUG_API_TOKEN"),
+		EnableDebugAPI:       enabled,
+		DebugAPIToken:        debugToken,
+		JoinLimiter:          joinLimiter,
+		TrustedProxyPrefixes: trustedProxyPrefixes,
 	}, nil
+}
+
+func parseJoinRate(value string) (float64, error) {
+	if value == "" {
+		return rooms.DefaultJoinRatePerMinute, nil
+	}
+	ratePerMinute, err := strconv.ParseFloat(value, 64)
+	if err != nil || ratePerMinute <= 0 || math.IsNaN(ratePerMinute) || math.IsInf(ratePerMinute, 0) {
+		return 0, fmt.Errorf("MATCHMAKING_JOIN_RATE_PER_MINUTE must be finite and positive")
+	}
+	return ratePerMinute, nil
+}
+
+func parseJoinBurst(value string) (int, error) {
+	if value == "" {
+		return rooms.DefaultJoinBurst, nil
+	}
+	burst, err := strconv.Atoi(value)
+	if err != nil || burst <= 0 || uint64(burst) > uint64(1<<53) {
+		return 0, fmt.Errorf("MATCHMAKING_JOIN_BURST must be a positive exact integer")
+	}
+	return burst, nil
+}
+
+func parseTrustedProxyPrefixes(value string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains an empty CIDR")
+		}
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains an invalid CIDR")
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func loadGameConfig() simulation.GameConfig {

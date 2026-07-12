@@ -7,13 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
 type HandlerConfig struct {
-	EnableDebugAPI bool
-	DebugAPIToken  string
+	EnableDebugAPI       bool
+	DebugAPIToken        string
+	JoinLimiter          *IPRateLimiter
+	TrustedProxyPrefixes []netip.Prefix
 }
 
 func Handler(store *Store) http.Handler {
@@ -34,6 +38,11 @@ func HandlerWithConfig(store *Store, config HandlerConfig) (http.Handler, error)
 
 	debugAPIEnabled := config.EnableDebugAPI
 	debugTokenDigest := sha256.Sum256([]byte(config.DebugAPIToken))
+	joinLimiter := config.JoinLimiter
+	if joinLimiter == nil {
+		joinLimiter = NewIPRateLimiter(DefaultJoinRatePerMinute, DefaultJoinBurst, nil)
+	}
+	trustedProxyPrefixes := append([]netip.Prefix(nil), config.TrustedProxyPrefixes...)
 	debugGuard := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if !authorizeDebugRequest(w, r, debugAPIEnabled, debugTokenDigest) {
@@ -42,7 +51,7 @@ func HandlerWithConfig(store *Store, config HandlerConfig) (http.Handler, error)
 			next(w, r)
 		}
 	}
-	router := newRouterWithDebugGuard(store, debugGuard)
+	router := newRouterWithDebugGuard(store, debugGuard, joinLimiter, trustedProxyPrefixes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "//") {
 			if strings.HasPrefix(r.URL.Path, "/rooms//") {
@@ -85,16 +94,27 @@ func authorizeDebugRequest(w http.ResponseWriter, r *http.Request, enabled bool,
 func newRouter(store *Store) *http.ServeMux {
 	return newRouterWithDebugGuard(store, func(handler http.HandlerFunc) http.HandlerFunc {
 		return handler
-	})
+	}, NewIPRateLimiter(DefaultJoinRatePerMinute, DefaultJoinBurst, nil), nil)
 }
 
-func newRouterWithDebugGuard(store *Store, debugGuard func(http.HandlerFunc) http.HandlerFunc) *http.ServeMux {
+func newRouterWithDebugGuard(
+	store *Store,
+	debugGuard func(http.HandlerFunc) http.HandlerFunc,
+	joinLimiter *IPRateLimiter,
+	trustedProxyPrefixes []netip.Prefix,
+) *http.ServeMux {
 	mux := http.NewServeMux()
 	debugHandleFunc := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pattern, debugGuard(handler))
 	}
 
-	mux.HandleFunc("POST /matchmaking/join", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /matchmaking/join", func(w http.ResponseWriter, r *http.Request) {
+		allowed, retryAfter := joinLimiter.Allow(clientIP(r, trustedProxyPrefixes))
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(retryAfter), 10))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+			return
+		}
 		joined, err := store.joinMatchmaking()
 		if err != nil {
 			if errors.Is(err, ErrInternal) {
