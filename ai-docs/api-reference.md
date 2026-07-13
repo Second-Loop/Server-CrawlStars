@@ -123,7 +123,7 @@ Room response:
 
 `map`은 서버 simulation이 실제 collision에 쓰는 tile grid입니다. tile 값은 `0=ground`, `1=wall`, `2=spawnPoint`입니다. `map` row는 Base64 문자열이 아니라 JSON number array입니다.
 
-기본 맵 파일은 `internal/simulation/fixtures/default-map.json`입니다. 서버는 시작할 때 이 JSON fixture를 로드해 room store에 주입하고, 파일 로드나 검증에 실패하면 `internal/simulation.StaticMapFixture()`의 5x5 map으로 fallback합니다. 실제 client map file과 공통 artifact로 맞추는 작업은 `SL-30` 범위입니다.
+기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 현재 기본 map은 spawn point tile을 포함한 20x20이며, 이 문서의 예시는 간결함을 위해 5x5 fallback map 기준입니다. config 로드나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 남아 있습니다.
 
 `latestSnapshot`은 마지막으로 생성된 snapshot의 요약입니다. 아직 room이 started 전이거나 첫 tick 전이면 `tick: 0`입니다.
 
@@ -146,6 +146,8 @@ Error response:
 - `room_has_no_players`
 - `method_not_allowed`
 - `not_found`
+- `player_not_found` (WebSocket upgrade 전 검증에서 반환)
+- `player_already_connected` (WebSocket upgrade 전 검증에서 반환)
 
 ### 409 room cap 회복
 

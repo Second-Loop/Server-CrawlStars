@@ -118,6 +118,7 @@ components:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
         - name: readyEvent
+          summary: 예시는 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server-config/game-config.json의 20x20 map이며 spawn point tile(2)에서 spawn을 발급합니다.
           payload:
             Type: Ready
             Map:
