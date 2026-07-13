@@ -20,6 +20,7 @@ type playerSession struct {
 	digest [sha256.Size]byte
 }
 
+// authenticatePlayer requires r.mu because sessions is room-owned state.
 func (r *room) authenticatePlayer(playerID string, rawToken string) bool {
 	session, ok := r.sessions[playerID]
 	if !ok {

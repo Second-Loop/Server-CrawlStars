@@ -3,10 +3,13 @@ package rooms
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,18 +152,18 @@ func TestWebSocketFailedUpgradeRollsBackReservationWithoutCancelingMatch(t *test
 		t.Fatal("expected a non-WebSocket request to fail the upgrade")
 	}
 
-	store.mu.Lock()
-	matched := store.rooms[first.Room.ID]
+	matched := store.lookupRoom(first.Room.ID)
 	roomExists := matched != nil
 	clientCount := 0
 	reservationCount := 0
 	matchStatus := MatchStatus("")
 	if matched != nil {
+		matched.mu.Lock()
 		clientCount = len(matched.clients)
 		reservationCount = len(matched.reservations)
 		matchStatus = matched.matchStatus
+		matched.mu.Unlock()
 	}
-	store.mu.Unlock()
 
 	if !roomExists || matchStatus != MatchStatusMatched {
 		t.Fatal("expected failed upgrade to preserve the matched room")
@@ -222,28 +225,28 @@ func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
 	issued := issuePlayer(t, handler, roomResponse.ID)
 	previousDisconnectedAt := fakeClock.Now().Add(-time.Minute)
 
-	store.mu.Lock()
-	room := store.rooms[roomResponse.ID]
+	room := store.lookupRoom(roomResponse.ID)
+	room.mu.Lock()
 	room.Status = RoomStatusStarted
 	room.disconnectedAt = previousDisconnectedAt
-	store.mu.Unlock()
+	room.mu.Unlock()
 
 	reservation, err := store.reserveClient(roomResponse.ID, issued.ID, []string{issued.SessionToken})
 	if err != nil {
 		t.Fatalf("reserve client: %v", err)
 	}
-	store.mu.Lock()
+	room.mu.Lock()
 	reservedDisconnectedAt := room.disconnectedAt
-	store.mu.Unlock()
+	room.mu.Unlock()
 	if !reservedDisconnectedAt.Equal(previousDisconnectedAt) {
 		t.Fatal("expected reservation to preserve the disconnected timestamp")
 	}
 	store.rollbackClientReservation(reservation)
 
-	store.mu.Lock()
+	room.mu.Lock()
 	gotDisconnectedAt := room.disconnectedAt
 	reservationCount := len(room.reservations)
-	store.mu.Unlock()
+	room.mu.Unlock()
 	if !gotDisconnectedAt.Equal(previousDisconnectedAt) {
 		t.Fatal("expected rollback to restore the disconnected timestamp")
 	}
@@ -271,11 +274,11 @@ func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
 			first := issuePlayer(t, handler, roomResponse.ID)
 			second := issuePlayer(t, handler, roomResponse.ID)
 
-			store.mu.Lock()
-			room := store.rooms[roomResponse.ID]
+			room := store.lookupRoom(roomResponse.ID)
+			room.mu.Lock()
 			originalLastActivityAt := fakeClock.Now()
 			room.lastActivityAt = originalLastActivityAt
-			store.mu.Unlock()
+			room.mu.Unlock()
 
 			fakeClock.Advance(time.Minute)
 			firstReservation, err := store.reserveClient(roomResponse.ID, first.ID, []string{first.SessionToken})
@@ -288,9 +291,9 @@ func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
 				t.Fatalf("reserve second client: %v", err)
 			}
 
-			store.mu.Lock()
+			room.mu.Lock()
 			gotAfterReservations := room.lastActivityAt
-			store.mu.Unlock()
+			room.mu.Unlock()
 			if !gotAfterReservations.Equal(originalLastActivityAt) {
 				t.Fatal("expected reservations not to count as room activity")
 			}
@@ -300,10 +303,10 @@ func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
 				store.rollbackClientReservation(reservations[index])
 			}
 
-			store.mu.Lock()
+			room.mu.Lock()
 			gotLastActivityAt := room.lastActivityAt
 			reservationCount := len(room.reservations)
-			store.mu.Unlock()
+			room.mu.Unlock()
 			if !gotLastActivityAt.Equal(originalLastActivityAt) {
 				t.Fatal("expected rollback order not to change room activity")
 			}
@@ -336,10 +339,10 @@ func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testin
 				issuePlayer(t, handler, roomResponse.ID),
 			}
 
-			store.mu.Lock()
-			room := store.rooms[roomResponse.ID]
+			room := store.lookupRoom(roomResponse.ID)
+			room.mu.Lock()
 			room.lastActivityAt = fakeClock.Now().Add(-time.Minute)
-			store.mu.Unlock()
+			room.mu.Unlock()
 
 			reservations := make([]*clientReservation, len(players))
 			for index, player := range players {
@@ -354,10 +357,10 @@ func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testin
 			}
 			store.rollbackClientReservation(reservations[tt.rollbackIndex])
 
-			store.mu.Lock()
+			room.mu.Lock()
 			gotLastActivityAt := room.lastActivityAt
 			reservationCount := len(room.reservations)
-			store.mu.Unlock()
+			room.mu.Unlock()
 			if !gotLastActivityAt.Equal(fakeClock.Now()) {
 				t.Fatal("expected successful attachment to remain the latest room activity")
 			}
@@ -985,11 +988,312 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 	waitForRoomDeleted(t, store, room.ID)
 }
 
-type fakeClock struct {
+func TestStoreTicksRoomsInParallel(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	first := createStartedRoomInStore(t, store)
+	second := createStartedRoomInStore(t, store)
+	firstRoom := store.lookupRoom(first.ID)
+	secondRoom := store.lookupRoom(second.ID)
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstRoom.mu.Lock()
+	firstStepper := firstRoom.state
+	firstRoom.state = testRoomStepper(func(inputs []simulation.InputCommand) simulation.Snapshot {
+		close(firstStarted)
+		<-releaseFirst
+		return firstStepper.Step(inputs)
+	})
+	firstRoom.mu.Unlock()
+
+	firstDone := make(chan struct{})
+	go func() {
+		store.tickRoom(first.ID)
+		close(firstDone)
+	}()
+	<-firstStarted
+
+	secondDone := make(chan struct{})
+	go func() {
+		store.tickRoom(second.ID)
+		close(secondDone)
+	}()
+
+	secondCompletedWhileFirstBlocked := false
+	select {
+	case <-secondDone:
+		secondCompletedWhileFirstBlocked = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(releaseFirst)
+	<-firstDone
+	if !secondCompletedWhileFirstBlocked {
+		t.Fatal("expected room B tick to complete while room A step is blocked")
+	}
+
+	secondRoom.mu.Lock()
+	secondTick := secondRoom.latestSnapshot.Tick
+	secondRoom.mu.Unlock()
+	if secondTick != 1 {
+		t.Fatalf("expected room B to advance to tick 1, got %d", secondTick)
+	}
+}
+
+func TestStoreStaleRoomTickPreservesReplacementPlayerID(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	started := createStartedRoomInStore(t, store)
+	original := store.lookupRoom(started.ID)
+	player := started.Players[0]
+
+	original.mu.Lock()
+	original.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{Players: []simulation.PlayerData{{
+			ID:     simulation.PlayerID(player.ID),
+			IsDead: true,
+		}}}
+	})
+	original.mu.Unlock()
+
+	store.mu.Lock()
+	replacement := store.newRoomLocked(started.ID)
+	replacement.Players = append(replacement.Players, player)
+	store.rooms[started.ID] = replacement
+	store.mu.Unlock()
+
+	store.tickRoomState(original)
+	if got := store.lookupRoom(started.ID); got != replacement {
+		t.Fatal("expected stale room tick not to delete replacement")
+	}
+	store.mu.RLock()
+	_, playerIDReserved := store.playerIDs[player.ID]
+	store.mu.RUnlock()
+	if !playerIDReserved {
+		t.Fatal("expected stale room cleanup not to release replacement player ID")
+	}
+}
+
+func TestStoreConcurrentInputListDeleteAndTick(t *testing.T) {
+	store := NewStoreWithClock(64, newFakeClock())
+	t.Cleanup(store.Close)
+
+	for range 32 {
+		started := createStartedRoomInStore(t, store)
+		playerID := started.Players[0].ID
+		begin := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			<-begin
+			store.setInput(started.ID, playerID, inputMessage{MoveDir: simulation.Vector2{X: 1}})
+		}()
+		go func() {
+			defer wg.Done()
+			<-begin
+			_ = store.listRooms()
+		}()
+		go func() {
+			defer wg.Done()
+			<-begin
+			store.tickRoom(started.ID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-begin
+			store.deleteRoom(started.ID)
+		}()
+		close(begin)
+		wg.Wait()
+
+		if got := store.lookupRoom(started.ID); got != nil {
+			t.Fatalf("expected concurrently deleted room %q to leave the registry", started.ID)
+		}
+	}
+}
+
+func TestStoreConcurrentReservationAndDeleteRejectsStaleAttach(t *testing.T) {
+	store := NewStoreWithClock(64, newFakeClock())
+	t.Cleanup(store.Close)
+	resourceTickers := make([]*countingTicker, 0, 32)
+
+	for range 32 {
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		resourceTicker := newCountingTicker()
+		resourceTickers = append(resourceTickers, resourceTicker)
+		resourceStop := make(chan struct{})
+		room := store.lookupRoom(created.ID)
+		room.mu.Lock()
+		room.ticker = resourceTicker
+		room.stop = resourceStop
+		room.mu.Unlock()
+
+		begin := make(chan struct{})
+		var wg sync.WaitGroup
+		var reservation *clientReservation
+		var reserveErr error
+		var deleted bool
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-begin
+			reservation, reserveErr = store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		}()
+		go func() {
+			defer wg.Done()
+			<-begin
+			_, deleted = store.deleteRoom(created.ID)
+		}()
+		close(begin)
+		wg.Wait()
+
+		if reserveErr != nil && !errors.Is(reserveErr, ErrRoomNotFound) {
+			t.Fatalf("expected reservation or room-not-found, got %v", reserveErr)
+		}
+		if !deleted {
+			t.Fatal("expected concurrent delete to remove the room")
+		}
+		if reservation != nil && store.attachClient(reservation, nil) {
+			t.Fatal("expected reservation from a deleted room not to attach")
+		}
+		if got := store.lookupRoom(created.ID); got != nil {
+			t.Fatalf("expected deleted room %q to leave the registry", created.ID)
+		}
+		select {
+		case <-resourceStop:
+		default:
+			t.Fatal("expected deleted room stop channel to close")
+		}
+	}
+	for index, resourceTicker := range resourceTickers {
+		if got := resourceTicker.stopCount.Load(); got != 1 {
+			t.Fatalf("expected room %d ticker to stop exactly once, got %d", index, got)
+		}
+	}
+}
+
+func TestStoreConcurrentCountdownAndDelete(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := store.addPlayer(created.ID); err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+
+	countdownTicker := fakeClock.NewTicker(time.Second)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.matchStatus = MatchStatusStarting
+	room.countdown = 2
+	room.countdownTicker = countdownTicker
+	room.countdownStop = make(chan struct{})
+	room.mu.Unlock()
+
+	begin := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-begin
+		store.tickMatchCountdown(created.ID, countdownTicker)
+	}()
+	go func() {
+		defer wg.Done()
+		<-begin
+		store.deleteRoom(created.ID)
+	}()
+	close(begin)
+	wg.Wait()
+
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected countdown/delete race to remove the room")
+	}
+}
+
+func TestFakeClockTicksIndependentTickersWithSameDuration(t *testing.T) {
+	fakeClock := newFakeClock()
+	first := fakeClock.NewTicker(time.Second)
+	second := fakeClock.NewTicker(time.Second)
+
+	fakeClock.TickTicker(time.Second, 0)
+	select {
+	case <-first.C():
+	default:
+		t.Fatal("expected first ticker to receive its tick")
+	}
+	select {
+	case <-second.C():
+		t.Fatal("expected second ticker not to receive the first ticker's tick")
+	default:
+	}
+}
+
+type testRoomStepper func([]simulation.InputCommand) simulation.Snapshot
+
+func (step testRoomStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
+	return step(inputs)
+}
+
+func createStartedRoomInStore(t *testing.T, store *Store) roomResponse {
+	t.Helper()
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := store.addPlayer(created.ID); err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	started, err := store.startRoom(created.ID)
+	if err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	return started
+}
+
+type countingTicker struct {
 	ticks     chan time.Time
-	duration  time.Duration
+	stopCount atomic.Int32
+}
+
+func newCountingTicker() *countingTicker {
+	return &countingTicker{ticks: make(chan time.Time)}
+}
+
+func (t *countingTicker) C() <-chan time.Time {
+	return t.ticks
+}
+
+func (t *countingTicker) Stop() {
+	t.stopCount.Add(1)
+}
+
+type fakeClock struct {
+	mu        sync.Mutex
+	tickers   []*fakeTicker
 	stopCount int
 	now       time.Time
+}
+
+type fakeTicker struct {
+	clock    *fakeClock
+	duration time.Duration
+	ticks    chan time.Time
+	stopped  bool
 }
 
 func newFakeClock() *fakeClock {
@@ -1003,36 +1307,107 @@ func fastRechargeGameConfig() simulation.GameConfig {
 }
 
 func newFakeClockAt(now time.Time) *fakeClock {
-	return &fakeClock{ticks: make(chan time.Time, 8), now: now}
+	return &fakeClock{now: now}
 }
 
 func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.now
 }
 
 func (c *fakeClock) NewTicker(duration time.Duration) ticker {
-	c.duration = duration
-	return c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ticker := &fakeTicker{
+		clock:    c,
+		duration: duration,
+		ticks:    make(chan time.Time, 8),
+	}
+	c.tickers = append(c.tickers, ticker)
+	return ticker
 }
 
-func (c *fakeClock) C() <-chan time.Time {
-	return c.ticks
+func (t *fakeTicker) C() <-chan time.Time {
+	return t.ticks
 }
 
-func (c *fakeClock) Stop() {
-	c.stopCount++
+func (t *fakeTicker) Stop() {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped {
+		return
+	}
+	t.stopped = true
+	t.clock.stopCount++
 }
 
 func (c *fakeClock) Tick() {
-	c.ticks <- time.Now()
+	c.mu.Lock()
+	var ticker *fakeTicker
+	for index := len(c.tickers) - 1; index >= 0; index-- {
+		if !c.tickers[index].stopped {
+			ticker = c.tickers[index]
+			break
+		}
+	}
+	c.mu.Unlock()
+	if ticker != nil {
+		ticker.tick()
+	}
+}
+
+func (c *fakeClock) TickTicker(duration time.Duration, ordinal int) {
+	c.mu.Lock()
+	var ticker *fakeTicker
+	for _, candidate := range c.tickers {
+		if candidate.duration != duration {
+			continue
+		}
+		if ordinal == 0 {
+			ticker = candidate
+			break
+		}
+		ordinal--
+	}
+	c.mu.Unlock()
+	if ticker != nil {
+		ticker.tick()
+	}
+}
+
+func (t *fakeTicker) tick() {
+	t.clock.mu.Lock()
+	if t.stopped {
+		t.clock.mu.Unlock()
+		return
+	}
+	now := t.clock.now
+	t.clock.mu.Unlock()
+	t.ticks <- now
 }
 
 func (c *fakeClock) Advance(duration time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(duration)
 }
 
 func (c *fakeClock) RequestedDuration() time.Duration {
-	return c.duration
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.tickers) == 0 {
+		return 0
+	}
+	return c.tickers[len(c.tickers)-1].duration
+
+}
+
+func (c *fakeClock) StopCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopCount
 }
 
 func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID string) {
@@ -1040,10 +1415,13 @@ func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID str
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		room := store.rooms[roomID]
-		_, ok := room.pendingInputs[playerID]
-		store.mu.Unlock()
+		room := store.lookupRoom(roomID)
+		ok := false
+		if room != nil {
+			room.mu.Lock()
+			_, ok = room.pendingInputs[playerID]
+			room.mu.Unlock()
+		}
 		if ok {
 			return
 		}
@@ -1058,10 +1436,13 @@ func waitForAttachedClient(t *testing.T, store *Store, roomID string, playerID s
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		room := store.rooms[roomID]
-		conn := room.clients[playerID]
-		store.mu.Unlock()
+		room := store.lookupRoom(roomID)
+		var conn *websocket.Conn
+		if room != nil {
+			room.mu.Lock()
+			conn = room.clients[playerID]
+			room.mu.Unlock()
+		}
 		if conn != nil {
 			return
 		}
@@ -1076,10 +1457,13 @@ func waitForDetachedClient(t *testing.T, store *Store, roomID string, playerID s
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		room := store.rooms[roomID]
-		_, ok := room.clients[playerID]
-		store.mu.Unlock()
+		room := store.lookupRoom(roomID)
+		ok := false
+		if room != nil {
+			room.mu.Lock()
+			_, ok = room.clients[playerID]
+			room.mu.Unlock()
+		}
 		if !ok {
 			return
 		}
@@ -1094,10 +1478,7 @@ func waitForRoomDeleted(t *testing.T, store *Store, roomID string) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		store.mu.Lock()
-		_, ok := store.rooms[roomID]
-		store.mu.Unlock()
-		if !ok {
+		if store.lookupRoom(roomID) == nil {
 			return
 		}
 		time.Sleep(time.Millisecond)

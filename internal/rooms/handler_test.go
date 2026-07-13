@@ -63,10 +63,10 @@ func TestStoreCreatesOpaqueIDsAndSessionSecrets(t *testing.T) {
 	}
 
 	wantDigest := sha256.Sum256([]byte(firstPlayer.SessionToken))
-	store.mu.Lock()
-	storedRoom := store.rooms[firstRoom.ID]
+	storedRoom := store.lookupRoom(firstRoom.ID)
+	storedRoom.mu.Lock()
 	storedSession := storedRoom.sessions[firstPlayer.Player.ID]
-	store.mu.Unlock()
+	storedRoom.mu.Unlock()
 	if storedSession.digest != wantDigest {
 		t.Fatal("expected only the issued session digest in room state")
 	}
@@ -96,15 +96,15 @@ func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
 		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 
-	store.mu.Lock()
-	storedRoom := store.rooms[room.ID]
+	storedRoom := store.lookupRoom(room.ID)
+	storedRoom.mu.Lock()
 	ready := readyEventMessage{
 		Type:    "Ready",
 		Map:     mapResponseFromSimulation(store.gameConfig.Map),
 		Players: readyEventPlayers(storedRoom.Players, store.gameConfig),
 	}
 	snapshot := storedRoom.matchSnapshotMessage(MatchStatusMatched, 0)
-	store.mu.Unlock()
+	storedRoom.mu.Unlock()
 
 	responses := map[string][]byte{
 		"room list":   request(handler, http.MethodGet, "/rooms").Body.Bytes(),
@@ -973,6 +973,130 @@ func TestHandlerClearsRoomsForDebugCapRecovery(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteRoomIfSamePreservesReplacement(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	original := store.lookupRoom(created.ID)
+
+	store.mu.Lock()
+	replacement := store.newRoomLocked(created.ID)
+	store.rooms[created.ID] = replacement
+	store.mu.Unlock()
+
+	if store.deleteRoomIfSame(created.ID, original) {
+		t.Fatal("expected stale pointer not to delete its replacement")
+	}
+	if got := store.lookupRoom(created.ID); got != replacement {
+		t.Fatal("expected replacement room to remain registered")
+	}
+}
+
+func TestStoreDeletedRoomReleasesPlayerIDForReuse(t *testing.T) {
+	firstRoomID := bytes.Repeat([]byte{0x61}, 16)
+	playerID := bytes.Repeat([]byte{0x62}, 16)
+	firstToken := bytes.Repeat([]byte{0x63}, 32)
+	secondRoomID := bytes.Repeat([]byte{0x64}, 16)
+	secondToken := bytes.Repeat([]byte{0x65}, 32)
+	random := bytes.NewReader(bytes.Join([][]byte{
+		firstRoomID,
+		playerID,
+		firstToken,
+		secondRoomID,
+		playerID,
+		secondToken,
+	}, nil))
+	store := NewStoreWithConfig(5, StoreConfig{Random: random})
+	t.Cleanup(store.Close)
+
+	firstRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create first room: %v", err)
+	}
+	firstPlayer, err := store.addPlayer(firstRoom.ID)
+	if err != nil {
+		t.Fatalf("add first player: %v", err)
+	}
+	if _, ok := store.deleteRoom(firstRoom.ID); !ok {
+		t.Fatal("delete first room")
+	}
+
+	secondRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create second room: %v", err)
+	}
+	secondPlayer, err := store.addPlayer(secondRoom.ID)
+	if err != nil {
+		t.Fatalf("add second player: %v", err)
+	}
+	if secondPlayer.Player.ID != firstPlayer.Player.ID {
+		t.Fatalf("expected deleted room player ID to be reusable, got %q then %q", firstPlayer.Player.ID, secondPlayer.Player.ID)
+	}
+}
+
+func TestStoreRemovedRoomRejectsNewStateAccess(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+
+	removed := store.lookupRoom(created.ID)
+	var resources roomResources
+	removed.mu.Lock()
+	playerIDs, markedRemoved := resources.removeRoomLocked(removed)
+	if !markedRemoved {
+		removed.mu.Unlock()
+		t.Fatal("mark room removed")
+	}
+	removed.mu.Unlock()
+	defer func() {
+		if store.deleteRoomIfSame(created.ID, removed) {
+			store.releasePlayerIDs(playerIDs)
+		}
+		resources.close(defaultRoomDebugDeleteMsg)
+	}()
+
+	if got := store.listRooms().Rooms; len(got) != 0 {
+		t.Fatalf("expected removed room to be omitted from list, got %+v", got)
+	}
+	if _, err := store.addPlayer(created.ID); !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected removed room add to fail with ErrRoomNotFound, got %v", err)
+	}
+	store.setInput(created.ID, issued.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}})
+	removed.mu.Lock()
+	_, hasPendingInput := removed.pendingInputs[issued.Player.ID]
+	removed.mu.Unlock()
+	if hasPendingInput {
+		t.Fatal("expected removed room not to accept input")
+	}
+	if _, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken}); !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected removed room reservation to fail with ErrRoomNotFound, got %v", err)
+	}
+	if store.attachClient(reservation, nil) {
+		t.Fatal("expected removed room reservation not to attach")
+	}
+	joined, err := store.joinMatchmaking()
+	if err != nil {
+		t.Fatalf("join matchmaking after removed room: %v", err)
+	}
+	if joined.Room.ID == created.ID {
+		t.Fatal("expected matchmaking not to re-enter removed room")
+	}
+}
+
 func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -992,8 +1116,8 @@ func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 	if deleted.Deleted != 1 {
 		t.Fatalf("expected one deleted room, got %d", deleted.Deleted)
 	}
-	if fakeClock.stopCount != 1 {
-		t.Fatalf("expected room ticker to stop once, got %d", fakeClock.stopCount)
+	if fakeClock.StopCount() != 1 {
+		t.Fatalf("expected room ticker to stop once, got %d", fakeClock.StopCount())
 	}
 
 	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
@@ -1512,12 +1636,12 @@ func assertInternalError(t *testing.T, rec *httptest.ResponseRecorder) {
 func assertRoomHasPlayerAndSessionCount(t *testing.T, store *Store, roomID string, want int) {
 	t.Helper()
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	room := store.rooms[roomID]
+	room := store.lookupRoom(roomID)
 	if room == nil {
 		t.Fatalf("expected room %q", roomID)
 	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
 	if len(room.Players) != want || len(room.sessions) != want {
 		t.Fatalf("expected %d players and sessions, got %d and %d", want, len(room.Players), len(room.sessions))
 	}

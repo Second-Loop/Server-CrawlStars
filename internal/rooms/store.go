@@ -11,10 +11,17 @@ import (
 	"nhooyr.io/websocket"
 )
 
+// Store owns registry and store-lifecycle synchronization only.
+//
+// mu protects rooms, playerIDs, random, and closed. Room gameplay, connection,
+// countdown, and resource fields are protected by room.mu instead. When both
+// locks are ever needed, Store.mu must be acquired before room.mu; acquiring
+// Store.mu while holding room.mu is forbidden.
 type Store struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	maxActiveRooms int
 	rooms          map[string]*room
+	playerIDs      map[string]struct{}
 	random         io.Reader
 	clock          clock
 	gameMap        simulation.MapData
@@ -28,15 +35,21 @@ type StoreConfig struct {
 	Random     io.Reader
 }
 
+// room owns synchronization for one room independently of the Store registry.
+// ID is immutable. mu protects every other field, including removed and all
+// gameplay, client, countdown, and resource state.
 type room struct {
-	ID              string
+	ID string
+	mu sync.Mutex
+
+	removed         bool
 	Status          RoomStatus
 	Players         []playerResponse
 	matchStatus     MatchStatus
 	readyPlayers    map[string]bool
 	sessions        map[string]playerSession
 	countdown       int
-	state           *simulation.State
+	state           simulationStepper
 	pendingInputs   map[string]simulation.InputCommand
 	clients         map[string]*websocket.Conn
 	reservations    map[string]*clientReservation
@@ -48,6 +61,10 @@ type room struct {
 	stop            chan struct{}
 	countdownTicker ticker
 	countdownStop   chan struct{}
+}
+
+type simulationStepper interface {
+	Step([]simulation.InputCommand) simulation.Snapshot
 }
 
 func NewStore(maxActiveRooms int) *Store {
@@ -88,6 +105,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	return &Store{
 		maxActiveRooms: maxActiveRooms,
 		rooms:          make(map[string]*room),
+		playerIDs:      make(map[string]struct{}),
 		random:         random,
 		clock:          clock,
 		gameMap:        resolvedConfig.Map,
@@ -98,12 +116,14 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 func (s *Store) listRooms() roomListResponse {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	rooms := make([]roomResponse, 0, len(s.rooms))
-	for _, room := range s.rooms {
-		rooms = append(rooms, room.toResponse(s.gameMap))
+	registered := s.registeredRooms()
+	rooms := make([]roomResponse, 0, len(registered))
+	for _, room := range registered {
+		room.mu.Lock()
+		if !room.removed {
+			rooms = append(rooms, room.toResponse(s.gameMap))
+		}
+		room.mu.Unlock()
 	}
 	return roomListResponse{Rooms: rooms}
 }
@@ -114,6 +134,9 @@ func (s *Store) createRoom() (roomResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return roomResponse{}, ErrInternal
+	}
 	if len(s.rooms) >= s.maxActiveRooms {
 		return roomResponse{}, ErrActiveRoomCapReached
 	}
@@ -123,21 +146,26 @@ func (s *Store) createRoom() (roomResponse, error) {
 		return roomResponse{}, err
 	}
 	room := s.newRoomLocked(roomID)
+	response := room.toResponse(s.gameMap)
 	s.rooms[room.ID] = room
-	return room.toResponse(s.gameMap), nil
+	return response, nil
 }
 
 func (s *Store) clearRooms() clearRoomsResponse {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	deleted := len(s.rooms)
+	registered := s.registeredRooms()
+	deleted := 0
 	var resources roomResources
-	for _, room := range s.rooms {
-		resources.add(room)
+	for _, room := range registered {
+		room.mu.Lock()
+		playerIDs, removed := resources.removeRoomLocked(room)
+		room.mu.Unlock()
+		if removed && s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+			deleted++
+		}
 	}
-	s.rooms = make(map[string]*room)
-	s.mu.Unlock()
 
 	resources.close(defaultRoomDebugDeleteMsg)
 	return clearRoomsResponse{Deleted: deleted}
@@ -146,29 +174,68 @@ func (s *Store) clearRooms() clearRoomsResponse {
 func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	room, ok := s.rooms[roomID]
-	if !ok {
-		s.mu.Unlock()
+	room := s.lookupRoom(roomID)
+	if room == nil {
 		return clearRoomsResponse{}, false
 	}
-	delete(s.rooms, roomID)
-	var resources roomResources
-	resources.add(room)
-	s.mu.Unlock()
 
+	var resources roomResources
+	room.mu.Lock()
+	playerIDs, removed := resources.removeRoomLocked(room)
+	room.mu.Unlock()
+	if !removed || !s.deleteRoomIfSame(roomID, room) {
+		resources.close(defaultRoomDebugDeleteMsg)
+		return clearRoomsResponse{}, false
+	}
+
+	s.releasePlayerIDs(playerIDs)
 	resources.close(defaultRoomDebugDeleteMsg)
 	return clearRoomsResponse{Deleted: 1}, true
 }
 
-func (s *Store) getRoom(roomID string) (roomResponse, bool) {
-	s.cleanupExpired()
+func (s *Store) lookupRoom(roomID string) *room {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rooms[roomID]
+}
 
+func (s *Store) isClosed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.closed
+}
+
+func (s *Store) registeredRooms() []*room {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rooms := make([]*room, 0, len(s.rooms))
+	for _, room := range s.rooms {
+		rooms = append(rooms, room)
+	}
+	return rooms
+}
+
+func (s *Store) deleteRoomIfSame(roomID string, expected *room) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if expected == nil || s.rooms[roomID] != expected {
+		return false
+	}
+	delete(s.rooms, roomID)
+	return true
+}
 
-	room, ok := s.rooms[roomID]
-	if !ok {
+func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
+	s.cleanupExpired()
+
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return roomResponse{}, false
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed {
 		return roomResponse{}, false
 	}
 	return room.toResponse(s.gameMap), true
@@ -177,75 +244,132 @@ func (s *Store) getRoom(roomID string) (roomResponse, bool) {
 func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[roomID]
-	if !ok {
+	room := s.lookupRoom(roomID)
+	if room == nil {
 		return playerSessionResponse{}, ErrRoomNotFound
 	}
-	if len(room.Players) >= s.debugRoomCapacity() {
-		return playerSessionResponse{}, ErrRoomFull
-	}
 
-	issued, session, err := s.preparePlayerLocked(room)
+	credentials, err := s.issuePlayerCredentials()
 	if err != nil {
 		return playerSessionResponse{}, err
 	}
-	s.addPlayerLocked(room, issued.Player, session)
+
+	room.mu.Lock()
+	if room.removed {
+		room.mu.Unlock()
+		s.releasePlayerID(credentials.id)
+		return playerSessionResponse{}, ErrRoomNotFound
+	}
+	if len(room.Players) >= s.debugRoomCapacity() {
+		room.mu.Unlock()
+		s.releasePlayerID(credentials.id)
+		return playerSessionResponse{}, ErrRoomFull
+	}
+	issued := s.addPlayerLocked(room, credentials)
+	room.mu.Unlock()
 	return issued, nil
 }
 
 func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 	s.cleanupExpired()
 
+	var credentials *playerCredentials
+	for _, room := range s.registeredRooms() {
+		room.mu.Lock()
+		canJoin := room.canAcceptMatchmakingLocked(s.debugRoomCapacity(), s.matchCapacity())
+		room.mu.Unlock()
+		if !canJoin {
+			continue
+		}
+		if credentials == nil {
+			issued, err := s.issuePlayerCredentials()
+			if err != nil {
+				return matchmakingJoinResponse{}, err
+			}
+			credentials = &issued
+		}
+		if joined, ok := s.tryJoinMatchmakingRoom(room, *credentials); ok {
+			return joined, nil
+		}
+	}
+
+	return s.createMatchmakingRoom(credentials)
+}
+
+func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, bool) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if !room.canAcceptMatchmakingLocked(s.debugRoomCapacity(), s.matchCapacity()) {
+		return matchmakingJoinResponse{}, false
+	}
+
+	issued := s.addPlayerLocked(room, credentials)
+	s.markRoomMatchedIfFullLocked(room)
+	return matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued), true
+}
+
+func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmakingJoinResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	room := s.findWaitingRoomWithCapacity()
-	newRoom := false
-	if room == nil {
-		if len(s.rooms) >= s.maxActiveRooms {
-			return matchmakingJoinResponse{}, ErrActiveRoomCapReached
+	releaseCredentials := func() {
+		if credentials != nil {
+			delete(s.playerIDs, credentials.id)
 		}
-		roomID, err := s.uniqueRoomIDLocked()
+	}
+	if s.closed {
+		releaseCredentials()
+		return matchmakingJoinResponse{}, ErrInternal
+	}
+	if len(s.rooms) >= s.maxActiveRooms {
+		releaseCredentials()
+		return matchmakingJoinResponse{}, ErrActiveRoomCapReached
+	}
+	roomID, err := s.uniqueRoomIDLocked()
+	if err != nil {
+		releaseCredentials()
+		return matchmakingJoinResponse{}, err
+	}
+	if credentials == nil {
+		issued, err := s.issuePlayerCredentialsLocked()
 		if err != nil {
 			return matchmakingJoinResponse{}, err
 		}
-		room = s.newRoomLocked(roomID)
-		newRoom = true
+		credentials = &issued
 	}
 
-	issued, session, err := s.preparePlayerLocked(room)
-	if err != nil {
-		return matchmakingJoinResponse{}, err
-	}
-	if newRoom {
-		s.rooms[room.ID] = room
-	}
-	s.addPlayerLocked(room, issued.Player, session)
-	if len(room.Players) == s.matchCapacity() {
-		room.matchStatus = MatchStatusMatched
-		room.readyPlayers = make(map[string]bool)
-		room.lastActivityAt = s.clock.Now()
-	}
+	room := s.newRoomLocked(roomID)
+	issued := s.addPlayerLocked(room, *credentials)
+	s.markRoomMatchedIfFullLocked(room)
+	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
+	s.rooms[room.ID] = room
+	return response, nil
+}
 
-	roomResponse := room.toResponse(s.gameMap)
+func (s *Store) markRoomMatchedIfFullLocked(room *room) {
+	if len(room.Players) != s.matchCapacity() {
+		return
+	}
+	room.matchStatus = MatchStatusMatched
+	room.readyPlayers = make(map[string]bool)
+	room.lastActivityAt = s.clock.Now()
+}
+
+func matchmakingJoinResponseFrom(room roomResponse, issued playerSessionResponse) matchmakingJoinResponse {
 	return matchmakingJoinResponse{
-		Room:          roomResponse,
+		Room:          room,
 		Player:        issued.Player,
 		SessionToken:  issued.SessionToken,
 		WebSocketPath: issued.WebSocketPath,
-	}, nil
+	}
 }
 
-func (s *Store) findWaitingRoomWithCapacity() *room {
-	for _, room := range s.rooms {
-		if room.Status == RoomStatusWaiting && room.matchStatus == "" && len(room.Players) < s.debugRoomCapacity() && len(room.Players) < s.matchCapacity() {
-			return room
-		}
-	}
-	return nil
+func (r *room) canAcceptMatchmakingLocked(debugCapacity int, matchCapacity int) bool {
+	return !r.removed &&
+		r.Status == RoomStatusWaiting &&
+		r.matchStatus == "" &&
+		len(r.Players) < debugCapacity &&
+		len(r.Players) < matchCapacity
 }
 
 func (s *Store) debugRoomCapacity() int {
@@ -259,11 +383,13 @@ func (s *Store) matchCapacity() int {
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[roomID]
-	if !ok {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return roomResponse{}, ErrRoomNotFound
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed {
 		return roomResponse{}, ErrRoomNotFound
 	}
 	if len(room.Players) == 0 {
@@ -289,33 +415,70 @@ func (s *Store) newRoomLocked(roomID string) *room {
 	return room
 }
 
-func (s *Store) preparePlayerLocked(room *room) (playerSessionResponse, playerSession, error) {
+type playerCredentials struct {
+	id           string
+	sessionToken string
+	session      playerSession
+}
+
+func (s *Store) issuePlayerCredentials() (playerCredentials, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return playerCredentials{}, ErrInternal
+	}
+	return s.issuePlayerCredentialsLocked()
+}
+
+func (s *Store) issuePlayerCredentialsLocked() (playerCredentials, error) {
 	playerID, err := s.uniquePlayerIDLocked()
 	if err != nil {
-		return playerSessionResponse{}, playerSession{}, err
+		return playerCredentials{}, err
 	}
 	sessionToken, err := randomValue(s.random, "", sessionRandomBytes)
 	if err != nil {
-		return playerSessionResponse{}, playerSession{}, ErrInternal
+		return playerCredentials{}, ErrInternal
 	}
+	s.playerIDs[playerID] = struct{}{}
+	return playerCredentials{
+		id:           playerID,
+		sessionToken: sessionToken,
+		session:      playerSession{digest: sha256.Sum256([]byte(sessionToken))},
+	}, nil
+}
+
+func (s *Store) releasePlayerID(playerID string) {
+	s.releasePlayerIDs([]string{playerID})
+}
+
+func (s *Store) releasePlayerIDs(playerIDs []string) {
+	if len(playerIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, playerID := range playerIDs {
+		delete(s.playerIDs, playerID)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playerSessionResponse {
 	playerIndex := len(room.Players)
 	team, slot := s.playerAssignmentForIndex(playerIndex)
 	player := playerResponse{
-		ID:   playerID,
+		ID:   credentials.id,
 		Team: string(team),
 		Slot: slot,
 	}
-	return playerSessionResponse{
+	issued := playerSessionResponse{
 		Player:        player,
-		SessionToken:  sessionToken,
-		WebSocketPath: webSocketPath(room.ID, player.ID, sessionToken),
-	}, playerSession{digest: sha256.Sum256([]byte(sessionToken))}, nil
-}
-
-func (s *Store) addPlayerLocked(room *room, player playerResponse, session playerSession) {
+		SessionToken:  credentials.sessionToken,
+		WebSocketPath: webSocketPath(room.ID, player.ID, credentials.sessionToken),
+	}
 	room.Players = append(room.Players, player)
-	room.sessions[player.ID] = session
+	room.sessions[player.ID] = credentials.session
 	room.lastActivityAt = s.clock.Now()
+	return issued
 }
 
 func (s *Store) uniqueRoomIDLocked() (string, error) {
@@ -337,20 +500,11 @@ func (s *Store) uniquePlayerIDLocked() (string, error) {
 		if err != nil {
 			return "", ErrInternal
 		}
-		if !s.hasPlayerLocked(playerID) {
+		if _, exists := s.playerIDs[playerID]; !exists {
 			return playerID, nil
 		}
 	}
 	return "", ErrInternal
-}
-
-func (s *Store) hasPlayerLocked(playerID string) bool {
-	for _, room := range s.rooms {
-		if room.hasPlayer(playerID) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Store) startRoomLocked(room *room) {
@@ -371,7 +525,7 @@ func (s *Store) startRoomLocked(room *room) {
 	if room.ticker == nil {
 		room.ticker = s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
 		room.stop = make(chan struct{})
-		go s.runRoom(room.ID, room.ticker, room.stop)
+		go s.runRoom(room, room.ticker, room.stop)
 	}
 }
 
@@ -383,6 +537,7 @@ func (s *Store) playerAssignmentForIndex(playerIndex int) (simulation.Team, int)
 	return team, slot
 }
 
+// hasPlayer requires r.mu because Players is room-owned state.
 func (r *room) hasPlayer(playerID string) bool {
 	for _, player := range r.Players {
 		if player.ID == playerID {

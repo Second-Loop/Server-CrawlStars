@@ -13,33 +13,62 @@ func (s *Store) Close() {
 		return
 	}
 	s.closed = true
-
-	var resources roomResources
+	rooms := make([]*room, 0, len(s.rooms))
 	for _, room := range s.rooms {
-		resources.add(room)
+		rooms = append(rooms, room)
 	}
 	s.mu.Unlock()
 
+	var resources roomResources
+	for _, room := range rooms {
+		room.mu.Lock()
+		playerIDs, removed := resources.removeRoomLocked(room)
+		room.mu.Unlock()
+		if removed && s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
+	}
 	resources.close("store closed")
 }
 
 func (s *Store) cleanupExpired() {
+	s.cleanupExpiredRooms(false)
+}
+
+// cleanupExpiredForTick keeps the legacy tick-triggered sweep without waiting
+// on a different room's gameplay lock. Task 2 replaces this scan with a janitor.
+func (s *Store) cleanupExpiredForTick() {
+	s.cleanupExpiredRooms(true)
+}
+
+func (s *Store) cleanupExpiredRooms(skipBusyRooms bool) {
 	now := s.clock.Now()
 
-	s.mu.Lock()
+	rooms := s.registeredRooms()
 	var resources roomResources
-	for id, room := range s.rooms {
-		if !room.isExpired(now) {
+	for _, room := range rooms {
+		if skipBusyRooms {
+			if !room.mu.TryLock() {
+				continue
+			}
+		} else {
+			room.mu.Lock()
+		}
+		if room.removed || !room.isExpired(now) {
+			room.mu.Unlock()
 			continue
 		}
-		delete(s.rooms, id)
-		resources.add(room)
+		playerIDs, removed := resources.removeRoomLocked(room)
+		room.mu.Unlock()
+		if removed && s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
 	}
-	s.mu.Unlock()
 
 	resources.close(defaultRoomWebSocketCloseMsg)
 }
 
+// isExpired requires r.mu because TTL eligibility depends on room-owned state.
 func (r *room) isExpired(now time.Time) bool {
 	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
 		return true
@@ -62,7 +91,17 @@ type roomResources struct {
 	conns   []*websocket.Conn
 }
 
-func (r *roomResources) add(room *room) {
+// removeRoomLocked marks a room unavailable and detaches resources for closing.
+// The caller must hold room.mu and must release it before touching Store.mu.
+func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
+	if room.removed {
+		return nil, false
+	}
+	room.removed = true
+	playerIDs := make([]string, 0, len(room.Players))
+	for _, player := range room.Players {
+		playerIDs = append(playerIDs, player.ID)
+	}
 	if room.countdownTicker != nil {
 		r.tickers = append(r.tickers, room.countdownTicker)
 		room.countdownTicker = nil
@@ -86,6 +125,7 @@ func (r *roomResources) add(room *room) {
 	}
 	room.clients = nil
 	room.reservations = nil
+	return playerIDs, true
 }
 
 func (r roomResources) close(reason string) {

@@ -108,14 +108,16 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
 	s.cleanupExpired()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
+	if s.isClosed() {
 		return nil, ErrRoomNotFound
 	}
-	room, ok := s.rooms[roomID]
-	if !ok {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return nil, ErrRoomNotFound
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed {
 		return nil, ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
@@ -143,11 +145,10 @@ func (s *Store) rollbackClientReservation(reservation *clientReservation) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[reservation.room.ID]
-	if !ok || room != reservation.room || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	room := reservation.room
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		return
 	}
 	delete(room.reservations, reservation.playerID)
@@ -156,15 +157,13 @@ func (s *Store) rollbackClientReservation(reservation *clientReservation) {
 func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Conn) bool {
 	var deliveries []webSocketDelivery
 
-	s.mu.Lock()
-
-	if s.closed || reservation == nil {
-		s.mu.Unlock()
+	if reservation == nil || s.isClosed() {
 		return false
 	}
-	room, ok := s.rooms[reservation.room.ID]
-	if !ok || room != reservation.room || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
-		s.mu.Unlock()
+	room := reservation.room
+	room.mu.Lock()
+	if room.removed || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+		room.mu.Unlock()
 		return false
 	}
 	delete(room.reservations, reservation.playerID)
@@ -179,7 +178,7 @@ func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Con
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
 	writeWebSocketDeliveries(deliveries)
 	return true
@@ -189,37 +188,43 @@ func (s *Store) releaseClient(roomID string, playerID string) {
 	var resources roomResources
 	shouldClose := false
 
-	s.mu.Lock()
-
-	room, ok := s.rooms[roomID]
-	if !ok {
-		s.mu.Unlock()
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	if room.removed {
+		room.mu.Unlock()
 		return
 	}
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
 	delete(room.readyPlayers, playerID)
+	var playerIDs []string
 	if room.hasPreStartMatch() {
-		delete(s.rooms, roomID)
-		resources.add(room)
-		shouldClose = true
+		playerIDs, shouldClose = resources.removeRoomLocked(room)
 	}
 	if room.Status == RoomStatusStarted && len(room.clients) == 0 {
 		room.disconnectedAt = s.clock.Now()
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
 	if shouldClose {
+		if s.deleteRoomIfSame(roomID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
 		resources.close(defaultMatchCancelMsg)
 	}
 }
 
 func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[roomID]
-	if !ok || !room.hasPlayer(playerID) {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed || !room.hasPlayer(playerID) {
 		return
 	}
 	room.lastActivityAt = s.clock.Now()
@@ -234,10 +239,13 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
 func (s *Store) markClientReady(roomID string, playerID string) {
 	var deliveries []webSocketDelivery
 
-	s.mu.Lock()
-	room, ok := s.rooms[roomID]
-	if !ok || !room.hasPlayer(playerID) || !room.hasPreStartMatch() {
-		s.mu.Unlock()
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	if room.removed || !room.hasPlayer(playerID) || !room.hasPreStartMatch() {
+		room.mu.Unlock()
 		return
 	}
 	if room.readyPlayers == nil {
@@ -249,7 +257,7 @@ func (s *Store) markClientReady(roomID string, playerID string) {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
 	writeWebSocketDeliveries(deliveries)
 }
@@ -259,7 +267,7 @@ func (s *Store) startMatchCountdownLocked(room *room) {
 	room.countdown = matchCountdownSeconds
 	room.countdownTicker = s.clock.NewTicker(time.Second)
 	room.countdownStop = make(chan struct{})
-	go s.runMatchCountdown(room.ID, room.countdownTicker, room.countdownStop)
+	go s.runMatchCountdown(room, room.countdownTicker, room.countdownStop)
 }
 
 func (s *Store) stopMatchCountdownLocked(room *room) {
@@ -273,22 +281,23 @@ func (s *Store) stopMatchCountdownLocked(room *room) {
 	}
 }
 
-func (s *Store) runRoom(roomID string, ticker ticker, stop <-chan struct{}) {
+func (s *Store) runRoom(room *room, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C():
-			s.tickRoom(roomID)
+			s.cleanupExpiredForTick()
+			s.tickRoomState(room)
 		case <-stop:
 			return
 		}
 	}
 }
 
-func (s *Store) runMatchCountdown(roomID string, ticker ticker, stop <-chan struct{}) {
+func (s *Store) runMatchCountdown(room *room, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C():
-			if s.tickMatchCountdown(roomID, ticker) {
+			if s.tickMatchCountdownRoom(room, ticker) {
 				return
 			}
 		case <-stop:
@@ -298,25 +307,32 @@ func (s *Store) runMatchCountdown(roomID string, ticker ticker, stop <-chan stru
 }
 
 func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return true
+	}
+	return s.tickMatchCountdownRoom(room, countdownTicker)
+}
+
+func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool {
 	var deliveries []webSocketDelivery
 
-	s.mu.Lock()
-	room, ok := s.rooms[roomID]
-	if !ok || room.matchStatus != MatchStatusStarting {
-		s.mu.Unlock()
+	room.mu.Lock()
+	if room.removed || room.countdownTicker != countdownTicker || room.matchStatus != MatchStatusStarting {
+		room.mu.Unlock()
 		return true
 	}
 	if room.countdown > 1 {
 		room.countdown--
 		room.lastActivityAt = s.clock.Now()
-		s.mu.Unlock()
+		room.mu.Unlock()
 		return false
 	}
 
 	room.countdown = 0
 	s.startRoomLocked(room)
 	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
-	s.mu.Unlock()
+	room.mu.Unlock()
 
 	countdownTicker.Stop()
 	writeWebSocketDeliveries(deliveries)
@@ -324,17 +340,22 @@ func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
 }
 
 func (s *Store) tickRoom(roomID string) {
-	s.cleanupExpired()
+	s.cleanupExpiredForTick()
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	s.tickRoomState(room)
+}
 
+func (s *Store) tickRoomState(room *room) {
 	var resources roomResources
 	var deliveries []webSocketDelivery
 	gameEnded := false
 
-	s.mu.Lock()
-
-	room, ok := s.rooms[roomID]
-	if !ok || room.Status != RoomStatusStarted || room.state == nil {
-		s.mu.Unlock()
+	room.mu.Lock()
+	if room.removed || room.Status != RoomStatusStarted || room.state == nil {
+		room.mu.Unlock()
 		return
 	}
 
@@ -353,14 +374,18 @@ func (s *Store) tickRoom(roomID string) {
 		}
 	}
 	results := calculateGameEndResults(s.gameConfig, snapshot)
+	var playerIDs []string
 	if len(results) > 0 {
 		deliveries = append(deliveries, room.gameEndDeliveries(results)...)
-		delete(s.rooms, roomID)
-		resources.add(room)
-		gameEnded = true
+		playerIDs, gameEnded = resources.removeRoomLocked(room)
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
+	if gameEnded {
+		if s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
+	}
 	writeWebSocketDeliveries(deliveries)
 	if gameEnded {
 		resources.close(defaultGameEndCloseMsg)
