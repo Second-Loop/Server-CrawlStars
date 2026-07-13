@@ -26,9 +26,12 @@ func (s *Store) Close() {
 		rooms := s.registeredRooms()
 		var resources roomResources
 		for _, room := range rooms {
+			clientStart := len(resources.clientObservations)
 			room.mu.Lock()
 			playerIDs, removed := resources.removeRoomLocked(room)
+			clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 			room.mu.Unlock()
+			s.publishDisconnectedClients(clientTransitions)
 			if removed && s.deleteRoomIfSame(room.ID, room) {
 				s.releasePlayerIDs(playerIDs)
 			}
@@ -74,15 +77,19 @@ func (s *Store) cleanupExpired(now time.Time) int {
 	deleted := 0
 	var resources roomResources
 	for _, room := range rooms {
+		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
 		if room.removed || !room.isExpired(now) {
 			room.mu.Unlock()
 			continue
 		}
 		playerIDs, removed := resources.removeRoomLocked(room)
+		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
+		s.publishDisconnectedClients(clientTransitions)
 		if removed && s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
+			s.logRoomEvent("room_expired", room.ID)
 			deleted++
 		}
 	}
@@ -109,9 +116,16 @@ func (r *room) isExpired(now time.Time) bool {
 }
 
 type roomResources struct {
-	tickers  []ticker
-	stops    []chan struct{}
-	sessions []*clientSession
+	tickers            []ticker
+	stops              []chan struct{}
+	sessions           []*clientSession
+	clientObservations []clientObservation
+}
+
+type clientObservation struct {
+	roomID   string
+	playerID string
+	session  *clientSession
 }
 
 // removeRoomLocked marks a room unavailable and detaches resources for closing.
@@ -141,9 +155,14 @@ func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 		r.stops = append(r.stops, room.stop)
 		room.stop = nil
 	}
-	for _, session := range room.clients {
+	for playerID, session := range room.clients {
 		if session != nil {
 			r.sessions = append(r.sessions, session)
+			r.clientObservations = append(r.clientObservations, clientObservation{
+				roomID:   room.ID,
+				playerID: playerID,
+				session:  session,
+			})
 		}
 	}
 	room.clients = nil

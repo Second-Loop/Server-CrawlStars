@@ -1,10 +1,14 @@
 package rooms
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
 func TestObservationTransitionsDropLateStalePublish(t *testing.T) {
@@ -77,11 +81,573 @@ func TestObservationStateIsOwnedIndependentlyByEachStore(t *testing.T) {
 	}
 }
 
+func TestActiveRoomGaugeCoversCreateDeleteExpiryCancelGameEndClearAndClose(t *testing.T) {
+	t.Run("create and delete", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if _, deleted := store.deleteRoom(created.ID); !deleted {
+			t.Fatal("expected room deletion")
+		}
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
+	})
+
+	t.Run("expiry", func(t *testing.T) {
+		observer := &recordingObserver{}
+		clock := newFakeClock()
+		store := newStore(5, clock, StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		if _, err := store.createRoom(); err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		clock.Advance(defaultWaitingRoomIdleTTL)
+		if deleted := store.cleanupExpired(clock.Now()); deleted != 1 {
+			t.Fatalf("expected one expiry, got %d", deleted)
+		}
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
+	})
+
+	t.Run("pre-start cancel", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		first, err := store.joinMatchmaking()
+		if err != nil {
+			t.Fatalf("first matchmaking join: %v", err)
+		}
+		if _, err := store.joinMatchmaking(); err != nil {
+			t.Fatalf("second matchmaking join: %v", err)
+		}
+		reservation, err := store.reserveClient(first.Room.ID, first.Player.ID, []string{first.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+		if !attached {
+			t.Fatal("expected client attach")
+		}
+		session.close(1000, "test close")
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
+	})
+
+	t.Run("game end", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		started := createStartedRoomInStore(t, store)
+		room := store.lookupRoom(started.ID)
+		room.mu.Lock()
+		room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+			return simulation.Snapshot{Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(started.Players[0].ID),
+				IsDead: true,
+			}}}
+		})
+		room.mu.Unlock()
+		store.tickRoomState(room)
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		for range 2 {
+			if _, err := store.createRoom(); err != nil {
+				t.Fatalf("create room: %v", err)
+			}
+		}
+		if cleared := store.clearRooms(); cleared.Deleted != 2 {
+			t.Fatalf("expected two cleared rooms, got %d", cleared.Deleted)
+		}
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 2, 1, 0})
+	})
+
+	t.Run("store close", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		for range 2 {
+			if _, err := store.createRoom(); err != nil {
+				t.Fatalf("create room: %v", err)
+			}
+		}
+		store.Close()
+		assertObserverValues(t, observer.activeRoomValues(), []int{1, 2, 1, 0})
+	})
+}
+
+func TestConnectedClientGaugeCoversAttachFailureReconnectDetachAndStoreClose(t *testing.T) {
+	t.Run("auth and attach failure", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if _, err := store.reserveClient(created.ID, issued.Player.ID, []string{"wrong"}); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("expected unauthorized reservation, got %v", err)
+		}
+		reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		if _, deleted := store.deleteRoom(created.ID); !deleted {
+			t.Fatal("expected room deletion")
+		}
+		if _, attached := store.attachClientSession(reservation, newFakeClientConn(false)); attached {
+			t.Fatal("expected stale reservation attach to fail")
+		}
+		assertObserverValues(t, observer.connectedClientValues(), nil)
+	})
+
+	t.Run("detach reconnect and stale close", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if _, err := store.startRoom(created.ID); err != nil {
+			t.Fatalf("start room: %v", err)
+		}
+
+		firstReservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve first client: %v", err)
+		}
+		first, attached := store.attachClientSession(firstReservation, newFakeClientConn(false))
+		if !attached {
+			t.Fatal("expected first attach")
+		}
+		if _, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken}); !errors.Is(err, ErrPlayerAlreadyConnected) {
+			t.Fatalf("expected duplicate connection rejection, got %v", err)
+		}
+		first.close(1000, "first close")
+
+		secondReservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve reconnect: %v", err)
+		}
+		second, attached := store.attachClientSession(secondReservation, newFakeClientConn(false))
+		if !attached {
+			t.Fatal("expected reconnect attach")
+		}
+		first.close(1000, "stale duplicate close")
+		second.close(1000, "second close")
+
+		assertObserverValues(t, observer.connectedClientValues(), []int{1, 0, 1, 0})
+	})
+
+	t.Run("bulk store close", func(t *testing.T) {
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		players := make([]playerSessionResponse, 0, 2)
+		for range 2 {
+			issued, err := store.addPlayer(created.ID)
+			if err != nil {
+				t.Fatalf("add player: %v", err)
+			}
+			players = append(players, issued)
+		}
+		if _, err := store.startRoom(created.ID); err != nil {
+			t.Fatalf("start room: %v", err)
+		}
+		sessions := make([]*clientSession, 0, len(players))
+		for _, player := range players {
+			reservation, err := store.reserveClient(created.ID, player.Player.ID, []string{player.SessionToken})
+			if err != nil {
+				t.Fatalf("reserve client: %v", err)
+			}
+			session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+			if !attached {
+				t.Fatal("expected client attach")
+			}
+			sessions = append(sessions, session)
+		}
+
+		store.Close()
+		for _, session := range sessions {
+			session.close(1000, "late duplicate close")
+		}
+		assertObserverValues(t, observer.connectedClientValues(), []int{1, 2, 1, 0})
+	})
+
+	t.Run("game end with connected client", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{Logger: jsonTestLogger(logs), Observer: observer})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if _, err := store.startRoom(created.ID); err != nil {
+			t.Fatalf("start room: %v", err)
+		}
+		reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+		if !attached {
+			t.Fatal("expected client attach")
+		}
+		room := store.lookupRoom(created.ID)
+		room.mu.Lock()
+		room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+			return simulation.Snapshot{Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(issued.Player.ID),
+				IsDead: true,
+			}}}
+		})
+		room.mu.Unlock()
+
+		store.tickRoomState(room)
+		<-session.writerDone
+
+		assertObserverValues(t, observer.connectedClientValues(), []int{1, 0})
+		assertLogEventCount(t, logs, "websocket_connected", 1)
+		assertLogEventCount(t, logs, "websocket_disconnected", 1)
+		assertLogEventCount(t, logs, "room_ended", 1)
+	})
+
+	t.Run("stale room bulk detach", func(t *testing.T) {
+		observer := &recordingObserver{}
+		clock := newFakeClock()
+		store := newStore(5, clock, StoreConfig{Observer: observer})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if _, err := store.startRoom(created.ID); err != nil {
+			t.Fatalf("start room: %v", err)
+		}
+		reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		if _, attached := store.attachClientSession(reservation, newFakeClientConn(false)); !attached {
+			t.Fatal("expected client attach")
+		}
+		original := store.lookupRoom(created.ID)
+		clock.Advance(defaultHardRoomLifetime)
+		const staleSnapshotKey = "observation-stale-room"
+		store.mu.Lock()
+		replacement := store.newRoomLocked(created.ID)
+		store.rooms[created.ID] = replacement
+		store.rooms[staleSnapshotKey] = original
+		store.mu.Unlock()
+		t.Cleanup(func() {
+			store.mu.Lock()
+			delete(store.rooms, staleSnapshotKey)
+			store.mu.Unlock()
+		})
+
+		if deleted := store.cleanupExpired(clock.Now()); deleted != 0 {
+			t.Fatalf("expected stale registry delete to fail, got %d", deleted)
+		}
+		assertObserverValues(t, observer.connectedClientValues(), []int{1, 0})
+		assertObserverValues(t, observer.activeRoomValues(), []int{1})
+	})
+}
+
+func TestObservationCallbacksRunOutsideCoreLocks(t *testing.T) {
+	observer := &lockCheckingObserver{}
+	store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+	observer.setStore(store)
+	t.Cleanup(store.Close)
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+	observer.addRoom(room)
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+	if !attached {
+		t.Fatal("expected client attach")
+	}
+	store.mu.RLock()
+	lifecycleDone := store.activeSessions[session]
+	store.mu.RUnlock()
+	if lifecycleDone == nil {
+		t.Fatal("expected active session lifecycle")
+	}
+	session.close(1000, "test close")
+	<-lifecycleDone
+	if _, deleted := store.deleteRoom(created.ID); !deleted {
+		t.Fatal("expected room deletion")
+	}
+
+	tickRoomResponse := createStartedRoomInStore(t, store)
+	tickRoom := store.lookupRoom(tickRoomResponse.ID)
+	observer.addRoom(tickRoom)
+	tickRoom.mu.Lock()
+	tickRoom.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{Players: []simulation.PlayerData{{
+			ID: simulation.PlayerID(tickRoomResponse.Players[0].ID),
+		}}}
+	})
+	tickRoom.mu.Unlock()
+	store.tickRoomState(tickRoom)
+
+	if failures := observer.failuresSnapshot(); len(failures) > 0 {
+		t.Fatalf("observer callback ran under core lock: %v", failures)
+	}
+	if observer.tickCount() != 1 {
+		t.Fatalf("expected one tick observation, got %d", observer.tickCount())
+	}
+}
+
+func TestTickHistogramMeasuresOnlyStateStep(t *testing.T) {
+	observer := &recordingObserver{}
+	store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+	if !attached {
+		t.Fatal("expected client attach")
+	}
+
+	const stepDuration = 37 * time.Millisecond
+	base := time.Unix(100, 0)
+	var wallMu sync.Mutex
+	wallCalls := 0
+	firstTimestamp := make(chan struct{})
+	secondTimestamp := make(chan struct{})
+	store.wallNow = func() time.Time {
+		wallMu.Lock()
+		defer wallMu.Unlock()
+		wallCalls++
+		switch wallCalls {
+		case 1:
+			close(firstTimestamp)
+			return base
+		case 2:
+			close(secondTimestamp)
+			return base.Add(stepDuration)
+		default:
+			return base.Add(stepDuration)
+		}
+	}
+	wallCallCount := func() int {
+		wallMu.Lock()
+		defer wallMu.Unlock()
+		return wallCalls
+	}
+
+	stepEntered := make(chan int, 1)
+	room := store.lookupRoom(created.ID)
+	session.enqueueMu.Lock()
+	enqueueLocked := true
+	t.Cleanup(func() {
+		if enqueueLocked {
+			session.enqueueMu.Unlock()
+		}
+	})
+	room.mu.Lock()
+	roomLocked := true
+	t.Cleanup(func() {
+		if roomLocked {
+			room.mu.Unlock()
+		}
+	})
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		stepEntered <- wallCallCount()
+		return simulation.Snapshot{Players: []simulation.PlayerData{{
+			ID: simulation.PlayerID(issued.Player.ID),
+		}}}
+	})
+	tickStarted := make(chan struct{})
+	tickDone := make(chan struct{})
+	go func() {
+		close(tickStarted)
+		store.tickRoomState(room)
+		close(tickDone)
+	}()
+	<-tickStarted
+	select {
+	case <-firstTimestamp:
+		t.Fatal("tick timing started while waiting for room.mu")
+	case <-time.After(20 * time.Millisecond):
+	}
+	room.mu.Unlock()
+	roomLocked = false
+
+	select {
+	case calls := <-stepEntered:
+		if calls != 1 {
+			t.Fatalf("expected first timestamp immediately before State.Step, got %d wall calls", calls)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected State.Step to run")
+	}
+	select {
+	case <-secondTimestamp:
+	case <-time.After(time.Second):
+		t.Fatal("expected second timestamp immediately after State.Step")
+	}
+	if got := observer.tickDurationValues(); len(got) != 0 {
+		t.Fatalf("tick observation published while snapshot fanout still held room.mu: %v", got)
+	}
+
+	session.enqueueMu.Unlock()
+	enqueueLocked = false
+	select {
+	case <-tickDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected tick to finish after snapshot fanout unblocked")
+	}
+	if got := observer.tickDurationValues(); !slices.Equal(got, []time.Duration{stepDuration}) {
+		t.Fatalf("expected State.Step-only duration %v, got %v", stepDuration, got)
+	}
+	if got := wallCallCount(); got != 2 {
+		t.Fatalf("expected exactly two wall-clock reads around State.Step, got %d", got)
+	}
+	session.close(1000, "test close")
+}
+
+func assertObserverValues(t *testing.T, got []int, want []int) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected observer values %v, got %v", want, got)
+	}
+}
+
 type recordingObserver struct {
 	mu               sync.Mutex
 	activeRooms      []int
 	connectedClients []int
 	tickDurations    []time.Duration
+}
+
+type lockCheckingObserver struct {
+	mu       sync.Mutex
+	store    *Store
+	rooms    []*room
+	failures []string
+	ticks    int
+}
+
+func (o *lockCheckingObserver) setStore(store *Store) {
+	o.mu.Lock()
+	o.store = store
+	o.mu.Unlock()
+}
+
+func (o *lockCheckingObserver) addRoom(room *room) {
+	o.mu.Lock()
+	o.rooms = append(o.rooms, room)
+	o.mu.Unlock()
+}
+
+func (o *lockCheckingObserver) SetActiveRooms(count int) {
+	o.checkCoreLocks(fmt.Sprintf("active rooms=%d", count))
+}
+
+func (o *lockCheckingObserver) SetConnectedClients(count int) {
+	o.checkCoreLocks(fmt.Sprintf("connected clients=%d", count))
+}
+
+func (o *lockCheckingObserver) ObserveTick(time.Duration) {
+	o.checkCoreLocks("tick")
+	o.mu.Lock()
+	o.ticks++
+	o.mu.Unlock()
+}
+
+func (o *lockCheckingObserver) checkCoreLocks(callback string) {
+	o.mu.Lock()
+	store := o.store
+	rooms := slices.Clone(o.rooms)
+	o.mu.Unlock()
+	if store != nil {
+		if !store.mu.TryRLock() {
+			o.recordFailure(callback + " held Store.mu")
+		} else {
+			store.mu.RUnlock()
+		}
+	}
+	for _, room := range rooms {
+		if room == nil {
+			continue
+		}
+		if !room.mu.TryLock() {
+			o.recordFailure(callback + " held room.mu")
+			continue
+		}
+		room.mu.Unlock()
+	}
+}
+
+func (o *lockCheckingObserver) recordFailure(failure string) {
+	o.mu.Lock()
+	o.failures = append(o.failures, failure)
+	o.mu.Unlock()
+}
+
+func (o *lockCheckingObserver) failuresSnapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.failures)
+}
+
+func (o *lockCheckingObserver) tickCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ticks
 }
 
 func (o *recordingObserver) SetActiveRooms(count int) {
@@ -112,4 +678,10 @@ func (o *recordingObserver) connectedClientValues() []int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return slices.Clone(o.connectedClients)
+}
+
+func (o *recordingObserver) tickDurationValues() []time.Duration {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.tickDurations)
 }
