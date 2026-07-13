@@ -375,6 +375,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 일반 gameplay snapshot만 client별 크기 1 latest-only slot에서 coalescing합니다. `Ready`, `starting`, `started`, `error`는 reliable control queue를 사용합니다.
 - Terminal delivery는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 writer 안에서 순서대로 실행합니다. Payload write마다 새 5초 context를 사용합니다.
 - Connection마다 writer와 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once와 expected-session release를 공유합니다.
+- `Store.mu`가 active client session registry를 함께 보호합니다. Attach는 Store close 판정, active 등록, heartbeat 시작을 `Store.mu -> room.mu` 순서 안에서 끝냅니다. Lifecycle monitor는 connection close, writer, heartbeat가 모두 끝난 뒤 session을 registry에서 제거하므로, GameEnd가 room을 먼저 삭제해도 `Store.Close`가 terminal in-flight session을 close하고 join할 수 있습니다.
 - Heartbeat failure는 기존 lifecycle을 재사용합니다. Pre-start match는 cancel하고, started room의 마지막 client가 사라지면 disconnected TTL을 시작합니다. Bot replacement와 reconnect grace는 추가하지 않습니다.
 - Store당 30초 janitor 하나가 TTL을 검사합니다. Create/matchmaking이 cap에 닿았을 때만 즉시 cleanup과 생성 retry를 각각 한 번 수행합니다.
 

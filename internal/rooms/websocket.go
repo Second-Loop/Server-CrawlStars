@@ -40,19 +40,23 @@ type terminalWriterCommand struct {
 }
 
 type clientSession struct {
-	conn            clientConn
-	snapshots       chan []byte
-	control         chan writerCommand
-	terminalHandoff chan terminalWriterCommand
-	done            chan struct{}
-	writerDone      chan struct{}
-	heartbeatDone   chan struct{}
-	writerCtx       context.Context
-	cancelWriter    context.CancelFunc
-	enqueueMu       sync.Mutex
-	closeOnce       sync.Once
-	onClose         func(*clientSession)
-	terminal        bool
+	conn              clientConn
+	snapshots         chan []byte
+	control           chan writerCommand
+	terminalHandoff   chan terminalWriterCommand
+	done              chan struct{}
+	closeDone         chan struct{}
+	writerDone        chan struct{}
+	heartbeatDone     chan struct{}
+	writerCtx         context.Context
+	cancelWriter      context.CancelFunc
+	enqueueMu         sync.Mutex
+	heartbeatMu       sync.Mutex
+	closeOnce         sync.Once
+	heartbeatDoneOnce sync.Once
+	onClose           func(*clientSession)
+	heartbeatStarted  bool
+	terminal          bool
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
@@ -63,7 +67,9 @@ func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSess
 		control:         make(chan writerCommand, 8),
 		terminalHandoff: make(chan terminalWriterCommand, 1),
 		done:            make(chan struct{}),
+		closeDone:       make(chan struct{}),
 		writerDone:      make(chan struct{}),
+		heartbeatDone:   make(chan struct{}),
 		writerCtx:       writerCtx,
 		cancelWriter:    cancelWriter,
 		onClose:         onClose,
@@ -73,13 +79,16 @@ func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSess
 }
 
 func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, timeout time.Duration) {
-	if s.conn == nil {
+	s.heartbeatMu.Lock()
+	if s.conn == nil || s.isDone() {
+		s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
+		s.heartbeatMu.Unlock()
 		return
 	}
 	ticker := clock.NewTicker(interval)
-	s.heartbeatDone = make(chan struct{})
+	s.heartbeatStarted = true
 	go func() {
-		defer close(s.heartbeatDone)
+		defer s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
 		defer ticker.Stop()
 		for {
 			select {
@@ -96,6 +105,7 @@ func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, time
 			}
 		}
 	}()
+	s.heartbeatMu.Unlock()
 }
 
 func (s *clientSession) enqueueSnapshot(payload []byte) {
@@ -268,8 +278,14 @@ func (s *clientSession) isDone() bool {
 
 func (s *clientSession) close(code websocket.StatusCode, reason string) {
 	s.closeOnce.Do(func() {
+		defer close(s.closeDone)
 		close(s.done)
 		s.cancelWriter()
+		s.heartbeatMu.Lock()
+		if !s.heartbeatStarted {
+			s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
+		}
+		s.heartbeatMu.Unlock()
 		if s.onClose != nil {
 			s.onClose(s)
 		}
@@ -433,13 +449,19 @@ func (s *Store) attachClient(reservation *clientReservation, conn clientConn) bo
 func (s *Store) attachClientSession(reservation *clientReservation, conn clientConn) (*clientSession, bool) {
 	var deliveries []webSocketDelivery
 
-	if reservation == nil || s.isClosed() {
+	if reservation == nil || reservation.room == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 		return nil, false
 	}
 	room := reservation.room
 	room.mu.Lock()
 	if room.removed || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		room.mu.Unlock()
+		s.mu.Unlock()
 		return nil, false
 	}
 	session := newClientSession(conn, func(expected *clientSession) {
@@ -447,7 +469,11 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	})
 	delete(room.reservations, reservation.playerID)
 	room.clients[reservation.playerID] = session
+	lifecycleDone := make(chan struct{})
+	s.activeSessions[session] = lifecycleDone
+	s.monitorClientSession(session, lifecycleDone)
 	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
+	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
 	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
@@ -463,6 +489,21 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 
 	closeClientSessions(failedSessions, "control delivery failed")
 	return session, true
+}
+
+func (s *Store) monitorClientSession(session *clientSession, lifecycleDone chan struct{}) {
+	go func() {
+		<-session.closeDone
+		<-session.writerDone
+		<-session.heartbeatDone
+
+		s.mu.Lock()
+		if s.activeSessions[session] == lifecycleDone {
+			delete(s.activeSessions, session)
+		}
+		s.mu.Unlock()
+		close(lifecycleDone)
+	}()
 }
 
 func (s *Store) releaseClient(reservation *clientReservation, expectedSession *clientSession) {

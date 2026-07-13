@@ -1025,6 +1025,166 @@ func TestTerminalDeliveryDoesNotLetRoomResourcesCloseRaceWriter(t *testing.T) {
 	}
 }
 
+func TestStoreCloseStopsTerminalSessionAfterRoomLeavesRegistry(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	conn := newFakeClientConn(true)
+	session := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, conn)
+	t.Cleanup(func() {
+		close(conn.allowWrite)
+		session.close(websocket.StatusNormalClosure, "test cleanup")
+		store.Close()
+	})
+
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{
+			Tick: 1,
+			Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(issued.Player.ID),
+				HP:     0,
+				IsDead: true,
+			}},
+		}
+	})
+	room.mu.Unlock()
+
+	store.tickRoom(created.ID)
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal snapshot write to start")
+	}
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected terminal room to leave the Store registry before shutdown")
+	}
+
+	store.Close()
+	select {
+	case <-session.done:
+	default:
+		t.Fatal("expected Store.Close to close terminal session after room deletion")
+	}
+	select {
+	case <-session.writerDone:
+	default:
+		t.Fatal("expected Store.Close to wait for terminal writer exit")
+	}
+	select {
+	case <-session.heartbeatDone:
+	default:
+		t.Fatal("expected Store.Close to wait for terminal heartbeat exit")
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected Store.Close to close terminal connection once, got %d", got)
+	}
+}
+
+func TestStoreCloseWaitsForTerminalSessionAlreadyBlockingInConnectionClose(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	allowClose := make(chan struct{})
+	var releaseClose sync.Once
+	releaseBlockedClose := func() {
+		releaseClose.Do(func() { close(allowClose) })
+	}
+	conn := newFakeClientConn(false)
+	conn.closeBlock = allowClose
+	conn.closeStarted = make(chan struct{})
+	session := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, conn)
+	t.Cleanup(func() {
+		releaseBlockedClose()
+		session.close(websocket.StatusNormalClosure, "test cleanup")
+		store.Close()
+	})
+
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{
+			Tick: 1,
+			Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(issued.Player.ID),
+				HP:     0,
+				IsDead: true,
+			}},
+		}
+	})
+	room.mu.Unlock()
+
+	store.tickRoom(created.ID)
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal writer to enter connection close")
+	}
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected terminal room to leave the Store registry")
+	}
+
+	storeCloseDone := make(chan struct{})
+	go func() {
+		store.Close()
+		close(storeCloseDone)
+	}()
+	select {
+	case <-storeCloseDone:
+		t.Fatal("expected Store.Close to wait for terminal connection close")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseBlockedClose()
+	select {
+	case <-storeCloseDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected Store.Close to finish after terminal connection close")
+	}
+	select {
+	case <-session.writerDone:
+	default:
+		t.Fatal("expected terminal writer to finish before Store.Close returns")
+	}
+	select {
+	case <-session.heartbeatDone:
+	default:
+		t.Fatal("expected terminal heartbeat to finish before Store.Close returns")
+	}
+	store.mu.RLock()
+	activeCount := len(store.activeSessions)
+	store.mu.RUnlock()
+	if activeCount != 0 {
+		t.Fatalf("expected terminated session to leave active registry, got %d", activeCount)
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected terminal connection close once, got %d", got)
+	}
+}
+
 func TestTerminalSnapshotMarshalFailureClosesWithoutWritingSnapshotOrGameEnd(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
@@ -1408,6 +1568,64 @@ func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 		t.Fatal("expected attachment to fail after store close")
 	}
 	store.rollbackClientReservation(reservation)
+}
+
+func TestClientAttachReleasesStoreLockBeforeRoomStateWork(t *testing.T) {
+	baseClock := newFakeClock()
+	clock := &blockingNextNowClock{
+		base:       baseClock,
+		nowStarted: make(chan struct{}),
+		allowNow:   make(chan struct{}),
+	}
+	store := NewStoreWithClock(5, clock)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+
+	clock.blockNext.Store(true)
+	attachDone := make(chan struct{})
+	var session *clientSession
+	var attached bool
+	go func() {
+		session, attached = store.attachClientSession(reservation, newFakeClientConn(false))
+		close(attachDone)
+	}()
+	select {
+	case <-clock.nowStarted:
+	case <-time.After(time.Second):
+		close(clock.allowNow)
+		<-attachDone
+		store.Close()
+		t.Fatal("expected attach to reach room activity update")
+	}
+
+	storeLockAvailable := store.mu.TryRLock()
+	if storeLockAvailable {
+		store.mu.RUnlock()
+	}
+	close(clock.allowNow)
+	select {
+	case <-attachDone:
+	case <-time.After(time.Second):
+		store.Close()
+		t.Fatal("expected attach to finish after room activity update resumes")
+	}
+	store.Close()
+	if !attached || session == nil {
+		t.Fatal("expected reserved client to attach")
+	}
+	if !storeLockAvailable {
+		t.Fatal("expected attach to release Store.mu before room-only state work")
+	}
 }
 
 func TestStaleSessionReaderReleasePreservesReplacementRoomSession(t *testing.T) {
@@ -2763,6 +2981,25 @@ func (t *countingTicker) C() <-chan time.Time {
 
 func (t *countingTicker) Stop() {
 	t.stopCount.Add(1)
+}
+
+type blockingNextNowClock struct {
+	base       *fakeClock
+	blockNext  atomic.Bool
+	nowStarted chan struct{}
+	allowNow   chan struct{}
+}
+
+func (c *blockingNextNowClock) Now() time.Time {
+	if c.blockNext.CompareAndSwap(true, false) {
+		close(c.nowStarted)
+		<-c.allowNow
+	}
+	return c.base.Now()
+}
+
+func (c *blockingNextNowClock) NewTicker(duration time.Duration) ticker {
+	return c.base.NewTicker(duration)
 }
 
 type fakeClock struct {

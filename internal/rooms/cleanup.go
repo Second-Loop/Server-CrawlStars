@@ -12,6 +12,12 @@ func (s *Store) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		activeSessions := make([]*clientSession, 0, len(s.activeSessions))
+		activeSessionDone := make([]<-chan struct{}, 0, len(s.activeSessions))
+		for session, lifecycleDone := range s.activeSessions {
+			activeSessions = append(activeSessions, session)
+			activeSessionDone = append(activeSessionDone, lifecycleDone)
+		}
 		s.mu.Unlock()
 
 		close(s.janitorStop)
@@ -27,8 +33,23 @@ func (s *Store) Close() {
 				s.releasePlayerIDs(playerIDs)
 			}
 		}
+		resources.sessions = append(resources.sessions, activeSessions...)
 		resources.close("store closed")
+		waitClientSessions(resources.sessions)
+		for _, lifecycleDone := range activeSessionDone {
+			<-lifecycleDone
+		}
 	})
+}
+
+func waitClientSessions(sessions []*clientSession) {
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		<-session.writerDone
+		<-session.heartbeatDone
+	}
 }
 
 func (s *Store) startJanitor() {

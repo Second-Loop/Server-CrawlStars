@@ -13,15 +13,16 @@ import (
 
 // Store owns registry and store-lifecycle synchronization only.
 //
-// mu protects rooms, playerIDs, random, and closed. Room gameplay, connection,
-// countdown, and resource fields are protected by room.mu instead. When both
-// locks are ever needed, Store.mu must be acquired before room.mu; acquiring
-// Store.mu while holding room.mu is forbidden.
+// mu protects rooms, activeSessions, playerIDs, random, and closed. Room
+// gameplay, connection, countdown, and resource fields are protected by room.mu
+// instead. When both locks are ever needed, Store.mu must be acquired before
+// room.mu; acquiring Store.mu while holding room.mu is forbidden.
 type Store struct {
 	mu                sync.RWMutex
 	closeOnce         sync.Once
 	maxActiveRooms    int
 	rooms             map[string]*room
+	activeSessions    map[*clientSession]chan struct{}
 	playerIDs         map[string]struct{}
 	random            io.Reader
 	clock             clock
@@ -120,6 +121,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	store := &Store{
 		maxActiveRooms:    maxActiveRooms,
 		rooms:             make(map[string]*room),
+		activeSessions:    make(map[*clientSession]chan struct{}),
 		playerIDs:         make(map[string]struct{}),
 		random:            random,
 		clock:             clock,
