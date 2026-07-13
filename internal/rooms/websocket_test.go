@@ -216,6 +216,94 @@ func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 	store.rollbackClientReservation(reservation)
 }
 
+func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	staleConn := new(websocket.Conn)
+	if !store.attachClient(reservation, staleConn) {
+		t.Fatal("expected stale connection to attach before replacement")
+	}
+
+	original := reservation.room
+	var resources roomResources
+	original.mu.Lock()
+	_, removed := resources.removeRoomLocked(original)
+	original.mu.Unlock()
+	if !removed {
+		t.Fatal("expected original room to be marked removed")
+	}
+
+	currentConn := new(websocket.Conn)
+	store.mu.Lock()
+	replacement := store.newRoomLocked(created.ID)
+	replacement.Players = append(replacement.Players, issued.Player)
+	replacement.clients[issued.Player.ID] = currentConn
+	store.rooms[created.ID] = replacement
+	store.mu.Unlock()
+
+	store.releaseClient(reservation, staleConn)
+
+	if got := store.lookupRoom(created.ID); got != replacement {
+		t.Fatal("expected stale release not to delete the replacement room")
+	}
+	replacement.mu.Lock()
+	gotConn, connected := replacement.clients[issued.Player.ID]
+	delete(replacement.clients, issued.Player.ID)
+	replacement.mu.Unlock()
+	store.Close()
+	if !connected || gotConn != currentConn {
+		t.Fatal("expected stale release not to detach the replacement room connection")
+	}
+}
+
+func TestStoreStaleClientReleasePreservesCurrentConnection(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	staleConn := new(websocket.Conn)
+	if !store.attachClient(reservation, staleConn) {
+		t.Fatal("expected stale connection to attach")
+	}
+
+	currentConn := new(websocket.Conn)
+	room := reservation.room
+	room.mu.Lock()
+	room.clients[issued.Player.ID] = currentConn
+	room.mu.Unlock()
+
+	store.releaseClient(reservation, staleConn)
+
+	room.mu.Lock()
+	gotConn, connected := room.clients[issued.Player.ID]
+	delete(room.clients, issued.Player.ID)
+	room.mu.Unlock()
+	store.Close()
+	if !connected || gotConn != currentConn {
+		t.Fatal("expected stale release not to detach the current connection")
+	}
+}
+
 func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -1221,6 +1309,40 @@ func TestStoreConcurrentCountdownAndDelete(t *testing.T) {
 
 	if got := store.lookupRoom(created.ID); got != nil {
 		t.Fatal("expected countdown/delete race to remove the room")
+	}
+}
+
+func TestStoreCountdownNaturalCompletionStopsTickerOnce(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := store.addPlayer(created.ID); err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+
+	countdownTicker := newCountingTicker()
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.matchStatus = MatchStatusStarting
+	room.countdown = 1
+	room.countdownTicker = countdownTicker
+	room.countdownStop = make(chan struct{})
+	room.mu.Unlock()
+
+	if completed := store.tickMatchCountdownRoom(room, countdownTicker); !completed {
+		t.Fatal("expected final countdown tick to complete")
+	}
+	if got := countdownTicker.stopCount.Load(); got != 1 {
+		t.Fatalf("expected countdown ticker to stop exactly once, got %d", got)
+	}
+	room.mu.Lock()
+	status := room.matchStatus
+	room.mu.Unlock()
+	if status != MatchStatusStarted {
+		t.Fatalf("expected room to start after countdown, got %q", status)
 	}
 }
 

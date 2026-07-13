@@ -54,7 +54,7 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 	defer func() {
-		s.releaseClient(roomID, playerID)
+		s.releaseClient(reservation, conn)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -184,16 +184,22 @@ func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Con
 	return true
 }
 
-func (s *Store) releaseClient(roomID string, playerID string) {
+func (s *Store) releaseClient(reservation *clientReservation, expectedConn *websocket.Conn) {
 	var resources roomResources
 	shouldClose := false
 
-	room := s.lookupRoom(roomID)
-	if room == nil {
+	if reservation == nil || reservation.room == nil {
 		return
 	}
+	room := reservation.room
+	playerID := reservation.playerID
 	room.mu.Lock()
 	if room.removed {
+		room.mu.Unlock()
+		return
+	}
+	currentConn, connected := room.clients[playerID]
+	if !connected || currentConn != expectedConn {
 		room.mu.Unlock()
 		return
 	}
@@ -210,7 +216,7 @@ func (s *Store) releaseClient(roomID string, playerID string) {
 	room.mu.Unlock()
 
 	if shouldClose {
-		if s.deleteRoomIfSame(roomID, room) {
+		if s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
 		}
 		resources.close(defaultMatchCancelMsg)
@@ -334,7 +340,6 @@ func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool 
 	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
 	room.mu.Unlock()
 
-	countdownTicker.Stop()
 	writeWebSocketDeliveries(deliveries)
 	return true
 }
