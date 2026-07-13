@@ -123,11 +123,16 @@ func (s *clientSession) startPublicationDrainLocked() bool {
 }
 
 func (s *clientSession) drainLifecyclePublications() {
+	var firstPanic any
+	hasPanic := false
 	for {
 		s.publicationMu.Lock()
 		if len(s.publications) == 0 || !s.publications[0].ready {
 			s.publicationDraining = false
 			s.publicationMu.Unlock()
+			if hasPanic {
+				panic(firstPanic)
+			}
 			return
 		}
 		publication := s.publications[0]
@@ -137,7 +142,11 @@ func (s *clientSession) drainLifecyclePublications() {
 			s.publications = s.publications[1:]
 		}
 		s.publicationMu.Unlock()
-		publication.publish()
+		panicValue, panicked := captureCallbackPanic(publication.publish)
+		if panicked && !hasPanic {
+			firstPanic = panicValue
+			hasPanic = true
+		}
 	}
 }
 

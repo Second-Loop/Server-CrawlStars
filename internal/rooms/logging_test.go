@@ -449,6 +449,137 @@ func TestWebSocketConnectedCallbacksCanReenterLifecycleWithoutDeadlock(t *testin
 	}
 }
 
+func TestLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T) {
+	for _, callbackKind := range []string{"logger", "observer"} {
+		t.Run(callbackKind, func(t *testing.T) {
+			for _, panicPath := range []string{"enqueue_then_panic", "panic_then_close"} {
+				t.Run(panicPath, func(t *testing.T) {
+					testLifecyclePublicationPanicDoesNotWedgeQueue(t, callbackKind, panicPath)
+				})
+			}
+		})
+	}
+}
+
+func testLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T, callbackKind string, panicPath string) {
+	t.Helper()
+	panicValue := errors.New("lifecycle callback panic sentinel")
+	logHandler := &reentrantLifecycleLogHandler{}
+	observer := &reentrantLifecycleObserver{}
+	store := newStore(5, newFakeClock(), StoreConfig{
+		Logger:   slog.New(logHandler),
+		Observer: observer,
+	})
+	t.Cleanup(store.Close)
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create panic room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add panic player: %v", err)
+	}
+
+	panicCallback := func() {
+		if panicPath == "enqueue_then_panic" {
+			switch callbackKind {
+			case "logger":
+				session := lifecycleTestSession(store, created.ID, issued.Player.ID)
+				if session == nil {
+					panic("connected logger callback could not find attached session")
+				}
+				session.close(websocket.StatusNormalClosure, "panic callback close")
+			case "observer":
+				if _, deleted := store.deleteRoom(created.ID); !deleted {
+					panic("connected observer callback could not delete room")
+				}
+			default:
+				panic("unknown callback kind")
+			}
+		}
+		panic(panicValue)
+	}
+	if callbackKind == "logger" {
+		logHandler.onConnected = panicCallback
+	} else {
+		observer.onConnected = panicCallback
+	}
+
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve panic client: %v", err)
+	}
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		if _, attached := store.attachClientSession(reservation, newFakeClientConn(false)); !attached {
+			t.Fatal("expected panic client attach")
+		}
+	}()
+	if recovered != panicValue {
+		t.Fatalf("expected original callback panic %v, recovered %v", panicValue, recovered)
+	}
+
+	if panicPath == "panic_then_close" {
+		session := lifecycleTestSession(store, created.ID, issued.Player.ID)
+		if session == nil {
+			t.Fatal("expected attached session after recovered callback panic")
+		}
+		session.close(websocket.StatusNormalClosure, "post-panic close")
+	}
+
+	wantFirstEvents := []string{"websocket_connected", "websocket_disconnected"}
+	if callbackKind == "observer" {
+		wantFirstEvents = []string{"websocket_disconnected"}
+	}
+	if got := logHandler.eventsSnapshot(); !slices.Equal(got, wantFirstEvents) {
+		t.Fatalf("expected first lifecycle to drain after callback panic, got %v", got)
+	}
+	assertObserverValues(t, observer.connectedValues(), []int{1, 0})
+
+	nextRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create post-panic room: %v", err)
+	}
+	nextPlayer, err := store.addPlayer(nextRoom.ID)
+	if err != nil {
+		t.Fatalf("add post-panic player: %v", err)
+	}
+	nextSession := attachHeartbeatTestSession(
+		t,
+		store,
+		nextRoom.ID,
+		nextPlayer.Player.ID,
+		nextPlayer.SessionToken,
+		newFakeClientConn(false),
+	)
+	nextSession.close(websocket.StatusNormalClosure, "post-panic lifecycle close")
+	store.Close()
+
+	wantEvents := append(slices.Clone(wantFirstEvents), "websocket_connected", "websocket_disconnected")
+	if got := logHandler.eventsSnapshot(); !slices.Equal(got, wantEvents) {
+		t.Fatalf("expected post-panic lifecycle publication to remain healthy, got %v", got)
+	}
+	assertObserverValues(t, observer.connectedValues(), []int{1, 0, 1, 0})
+	active := observer.activeValues()
+	if len(active) == 0 || active[len(active)-1] != 0 {
+		t.Fatalf("expected active-room gauge to finish at zero after panic recovery, got %v", active)
+	}
+}
+
+func lifecycleTestSession(store *Store, roomID string, playerID string) *clientSession {
+	room := store.lookupRoom(roomID)
+	if room == nil {
+		return nil
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	return room.clients[playerID]
+}
+
 func TestNormalCloseCancellationDoesNotLogWebSocketIOError(t *testing.T) {
 	t.Run("blocking write", func(t *testing.T) {
 		logs := &lockedLogBuffer{}

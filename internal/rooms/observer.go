@@ -94,11 +94,16 @@ func (s *observationState) publish(transition observationTransition) {
 	s.draining = true
 	s.publishMu.Unlock()
 
+	var firstPanic any
+	hasPanic := false
 	for {
 		s.publishMu.Lock()
 		if len(s.pending) == 0 {
 			s.draining = false
 			s.publishMu.Unlock()
+			if hasPanic {
+				panic(firstPanic)
+			}
 			return
 		}
 		pending := s.pending[0]
@@ -114,12 +119,30 @@ func (s *observationState) publish(transition observationTransition) {
 		s.publishedSequence[pending.kind] = pending.sequence
 		s.publishMu.Unlock()
 
-		if pending.kind == activeRoomsObservation {
-			s.observer.SetActiveRooms(pending.value)
-			continue
+		panicValue, panicked := captureCallbackPanic(func() {
+			if pending.kind == activeRoomsObservation {
+				s.observer.SetActiveRooms(pending.value)
+				return
+			}
+			s.observer.SetConnectedClients(pending.value)
+		})
+		if panicked && !hasPanic {
+			firstPanic = panicValue
+			hasPanic = true
 		}
-		s.observer.SetConnectedClients(pending.value)
 	}
+}
+
+// captureCallbackPanic lets a single drainer finish its ready queue before it
+// re-propagates the first external callback panic.
+func captureCallbackPanic(callback func()) (panicValue any, panicked bool) {
+	panicked = true
+	defer func() {
+		panicValue = recover()
+	}()
+	callback()
+	panicked = false
+	return nil, false
 }
 
 // observeTick invokes the external Observer and must be called without a Store
