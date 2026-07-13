@@ -218,6 +218,7 @@ func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 
 func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
 	created, err := store.createRoom()
 	if err != nil {
 		t.Fatalf("create room: %v", err)
@@ -269,6 +270,7 @@ func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T)
 
 func TestStoreStaleClientReleasePreservesCurrentConnection(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
 	created, err := store.createRoom()
 	if err != nil {
 		t.Fatalf("create room: %v", err)
@@ -790,6 +792,8 @@ func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
 	}
 
 	fakeClock.Advance(time.Nanosecond)
+	fakeClock.TickTicker(janitorInterval, 0)
+	waitForRoomDeleted(t, store, room.ID)
 	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected all-disconnected started room after TTL to be cleaned up, got status %d", rec.Code)
@@ -812,8 +816,18 @@ func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
 	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
+	sentinel, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create expired sweep sentinel: %v", err)
+	}
+	sentinelRoom := store.lookupRoom(sentinel.ID)
+	sentinelRoom.mu.Lock()
+	sentinelRoom.lastActivityAt = fakeClock.Now().Add(-defaultWaitingRoomIdleTTL)
+	sentinelRoom.mu.Unlock()
 
 	fakeClock.Advance(5 * time.Minute)
+	fakeClock.TickTicker(janitorInterval, 0)
+	waitForRoomDeleted(t, store, sentinel.ID)
 	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected connected room to survive cleanup TTL, got status %d", rec.Code)
@@ -1524,6 +1538,25 @@ func (c *fakeClock) RequestedDuration() time.Duration {
 	}
 	return c.tickers[len(c.tickers)-1].duration
 
+}
+
+func (c *fakeClock) TickerCount(duration time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	count := 0
+	for _, ticker := range c.tickers {
+		if ticker.duration == duration {
+			count++
+		}
+	}
+	return count
+}
+
+func (c *fakeClock) TotalTickerCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.tickers)
 }
 
 func (c *fakeClock) StopCount() int {

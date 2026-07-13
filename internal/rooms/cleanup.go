@@ -6,54 +6,54 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func (s *Store) Close() {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-	s.closed = true
-	rooms := make([]*room, 0, len(s.rooms))
-	for _, room := range s.rooms {
-		rooms = append(rooms, room)
-	}
-	s.mu.Unlock()
+const janitorInterval = 30 * time.Second
 
+func (s *Store) Close() {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+
+		close(s.janitorStop)
+		<-s.janitorDone
+
+		rooms := s.registeredRooms()
+		var resources roomResources
+		for _, room := range rooms {
+			room.mu.Lock()
+			playerIDs, removed := resources.removeRoomLocked(room)
+			room.mu.Unlock()
+			if removed && s.deleteRoomIfSame(room.ID, room) {
+				s.releasePlayerIDs(playerIDs)
+			}
+		}
+		resources.close("store closed")
+	})
+}
+
+func (s *Store) startJanitor() {
+	ticker := s.clock.NewTicker(janitorInterval)
+	go func() {
+		defer close(s.janitorDone)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case now := <-ticker.C():
+				s.cleanupExpired(now)
+			case <-s.janitorStop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Store) cleanupExpired(now time.Time) int {
+	rooms := s.registeredRooms()
+	deleted := 0
 	var resources roomResources
 	for _, room := range rooms {
 		room.mu.Lock()
-		playerIDs, removed := resources.removeRoomLocked(room)
-		room.mu.Unlock()
-		if removed && s.deleteRoomIfSame(room.ID, room) {
-			s.releasePlayerIDs(playerIDs)
-		}
-	}
-	resources.close("store closed")
-}
-
-func (s *Store) cleanupExpired() {
-	s.cleanupExpiredRooms(false)
-}
-
-// cleanupExpiredForTick keeps the legacy tick-triggered sweep without waiting
-// on a different room's gameplay lock. Task 2 replaces this scan with a janitor.
-func (s *Store) cleanupExpiredForTick() {
-	s.cleanupExpiredRooms(true)
-}
-
-func (s *Store) cleanupExpiredRooms(skipBusyRooms bool) {
-	now := s.clock.Now()
-
-	rooms := s.registeredRooms()
-	var resources roomResources
-	for _, room := range rooms {
-		if skipBusyRooms {
-			if !room.mu.TryLock() {
-				continue
-			}
-		} else {
-			room.mu.Lock()
-		}
 		if room.removed || !room.isExpired(now) {
 			room.mu.Unlock()
 			continue
@@ -62,10 +62,12 @@ func (s *Store) cleanupExpiredRooms(skipBusyRooms bool) {
 		room.mu.Unlock()
 		if removed && s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
+			deleted++
 		}
 	}
 
 	resources.close(defaultRoomWebSocketCloseMsg)
+	return deleted
 }
 
 // isExpired requires r.mu because TTL eligibility depends on room-owned state.

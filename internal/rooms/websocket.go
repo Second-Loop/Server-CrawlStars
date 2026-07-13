@@ -106,8 +106,6 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 }
 
 func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
-	s.cleanupExpired()
-
 	if s.isClosed() {
 		return nil, ErrRoomNotFound
 	}
@@ -291,7 +289,6 @@ func (s *Store) runRoom(room *room, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C():
-			s.cleanupExpiredForTick()
 			s.tickRoomState(room)
 		case <-stop:
 			return
@@ -345,7 +342,6 @@ func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool 
 }
 
 func (s *Store) tickRoom(roomID string) {
-	s.cleanupExpiredForTick()
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return

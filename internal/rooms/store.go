@@ -3,6 +3,7 @@ package rooms
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 // Store.mu while holding room.mu is forbidden.
 type Store struct {
 	mu             sync.RWMutex
+	closeOnce      sync.Once
 	maxActiveRooms int
 	rooms          map[string]*room
 	playerIDs      map[string]struct{}
@@ -26,6 +28,8 @@ type Store struct {
 	clock          clock
 	gameMap        simulation.MapData
 	gameConfig     simulation.GameConfig
+	janitorStop    chan struct{}
+	janitorDone    chan struct{}
 	closed         bool
 }
 
@@ -102,7 +106,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		resolvedConfig = simulation.StaticGameConfig()
 	}
 
-	return &Store{
+	store := &Store{
 		maxActiveRooms: maxActiveRooms,
 		rooms:          make(map[string]*room),
 		playerIDs:      make(map[string]struct{}),
@@ -110,12 +114,14 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		clock:          clock,
 		gameMap:        resolvedConfig.Map,
 		gameConfig:     resolvedConfig,
+		janitorStop:    make(chan struct{}),
+		janitorDone:    make(chan struct{}),
 	}
+	store.startJanitor()
+	return store
 }
 
 func (s *Store) listRooms() roomListResponse {
-	s.cleanupExpired()
-
 	registered := s.registeredRooms()
 	rooms := make([]roomResponse, 0, len(registered))
 	for _, room := range registered {
@@ -129,8 +135,16 @@ func (s *Store) listRooms() roomListResponse {
 }
 
 func (s *Store) createRoom() (roomResponse, error) {
-	s.cleanupExpired()
+	response, err := s.createRoomOnce()
+	if !errors.Is(err, ErrActiveRoomCapReached) {
+		return response, err
+	}
 
+	s.cleanupExpired(s.clock.Now())
+	return s.createRoomOnce()
+}
+
+func (s *Store) createRoomOnce() (roomResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -152,8 +166,6 @@ func (s *Store) createRoom() (roomResponse, error) {
 }
 
 func (s *Store) clearRooms() clearRoomsResponse {
-	s.cleanupExpired()
-
 	registered := s.registeredRooms()
 	deleted := 0
 	var resources roomResources
@@ -172,8 +184,6 @@ func (s *Store) clearRooms() clearRoomsResponse {
 }
 
 func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
-	s.cleanupExpired()
-
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return clearRoomsResponse{}, false
@@ -227,8 +237,6 @@ func (s *Store) deleteRoomIfSame(roomID string, expected *room) bool {
 }
 
 func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
-	s.cleanupExpired()
-
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return roomResponse{}, false
@@ -242,8 +250,6 @@ func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
 }
 
 func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
-	s.cleanupExpired()
-
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return playerSessionResponse{}, ErrRoomNotFound
@@ -271,8 +277,6 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 }
 
 func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
-	s.cleanupExpired()
-
 	var credentials *playerCredentials
 	for _, room := range s.registeredRooms() {
 		room.mu.Lock()
@@ -293,7 +297,15 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 		}
 	}
 
-	return s.createMatchmakingRoom(credentials)
+	response, err := s.createMatchmakingRoom(credentials)
+	if errors.Is(err, ErrActiveRoomCapReached) {
+		s.cleanupExpired(s.clock.Now())
+		response, err = s.createMatchmakingRoom(credentials)
+	}
+	if err != nil && credentials != nil {
+		s.releasePlayerID(credentials.id)
+	}
+	return response, err
 }
 
 func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, bool) {
@@ -312,22 +324,14 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmaki
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	releaseCredentials := func() {
-		if credentials != nil {
-			delete(s.playerIDs, credentials.id)
-		}
-	}
 	if s.closed {
-		releaseCredentials()
 		return matchmakingJoinResponse{}, ErrInternal
 	}
 	if len(s.rooms) >= s.maxActiveRooms {
-		releaseCredentials()
 		return matchmakingJoinResponse{}, ErrActiveRoomCapReached
 	}
 	roomID, err := s.uniqueRoomIDLocked()
 	if err != nil {
-		releaseCredentials()
 		return matchmakingJoinResponse{}, err
 	}
 	if credentials == nil {
@@ -381,8 +385,6 @@ func (s *Store) matchCapacity() int {
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
-	s.cleanupExpired()
-
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return roomResponse{}, ErrRoomNotFound

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -995,6 +996,502 @@ func TestStoreDeleteRoomIfSamePreservesReplacement(t *testing.T) {
 	}
 }
 
+func TestStoreJanitorCleanupDoesNotDeleteReplacementFromStaleSnapshot(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create waiting room: %v", err)
+	}
+	original := store.lookupRoom(created.ID)
+	fakeClock.Advance(defaultWaitingRoomIdleTTL)
+
+	const staleSnapshotKey = "stale-snapshot-entry"
+	store.mu.Lock()
+	replacement := store.newRoomLocked(created.ID)
+	store.rooms[created.ID] = replacement
+	store.rooms[staleSnapshotKey] = original
+	store.mu.Unlock()
+	t.Cleanup(func() {
+		store.mu.Lock()
+		delete(store.rooms, staleSnapshotKey)
+		store.mu.Unlock()
+	})
+
+	if deleted := store.cleanupExpired(fakeClock.Now()); deleted != 0 {
+		t.Fatalf("expected stale cleanup not to delete a replacement, got %d deletions", deleted)
+	}
+	if got := store.lookupRoom(created.ID); got != replacement {
+		t.Fatal("expected replacement room to remain registered")
+	}
+	replacement.mu.Lock()
+	replacementRemoved := replacement.removed
+	replacement.mu.Unlock()
+	if replacementRemoved {
+		t.Fatal("expected stale cleanup not to mark replacement removed")
+	}
+}
+
+func TestStoreStartsExactlyOneThirtySecondJanitor(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	if got := fakeClock.TickerCount(30 * time.Second); got != 1 {
+		t.Fatalf("expected exactly one 30s janitor ticker, got %d", got)
+	}
+	if got := fakeClock.TotalTickerCount(); got != 1 {
+		t.Fatalf("expected janitor to be the only constructor ticker, got %d tickers", got)
+	}
+}
+
+func TestStoreCloseStopsWaitsForJanitorAndIsIdempotent(t *testing.T) {
+	clock := newBlockingStopClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(func() {
+		clock.ticker.release()
+		store.Close()
+	})
+
+	firstDone := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		store.Close()
+		close(firstDone)
+	}()
+	go func() {
+		store.Close()
+		close(secondDone)
+	}()
+
+	select {
+	case <-clock.ticker.stopStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected Close to stop the janitor ticker")
+	}
+	for name, done := range map[string]<-chan struct{}{"first": firstDone, "second": secondDone} {
+		select {
+		case <-done:
+			t.Fatalf("expected %s Close call to wait for janitor shutdown", name)
+		default:
+		}
+	}
+
+	clock.ticker.release()
+	for name, done := range map[string]<-chan struct{}{"first": firstDone, "second": secondDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("expected %s Close call to finish after janitor shutdown", name)
+		}
+	}
+
+	store.Close()
+	if got := clock.ticker.stops(); got != 1 {
+		t.Fatalf("expected idempotent Close to stop janitor once, got %d", got)
+	}
+}
+
+func TestStoreJanitorSweepsAllExpiredRooms(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	for range 3 {
+		if _, err := store.createRoom(); err != nil {
+			t.Fatalf("create waiting room: %v", err)
+		}
+	}
+	fakeClock.Advance(defaultWaitingRoomIdleTTL)
+	fakeClock.TickTicker(30*time.Second, 0)
+
+	waitForStoreRoomCount(t, store, 0)
+}
+
+func TestStoreTickRoomDoesNotSweepExpiredRooms(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	started := createStartedRoomInStore(t, store)
+	keepRoomActiveForCleanupTest(store.lookupRoom(started.ID))
+	expired, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create waiting room: %v", err)
+	}
+	fakeClock.Advance(defaultWaitingRoomIdleTTL)
+
+	store.tickRoom(started.ID)
+
+	if store.lookupRoom(expired.ID) == nil {
+		t.Fatal("expected tickRoom not to scan or clean another room")
+	}
+}
+
+func TestStoreRunRoomDoesNotSweepExpiredRooms(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	started := createStartedRoomInStore(t, store)
+	startedRoom := store.lookupRoom(started.ID)
+	keepRoomActiveForCleanupTest(startedRoom)
+	stepped := make(chan struct{}, 1)
+	startedRoom.mu.Lock()
+	originalStepper := startedRoom.state
+	startedRoom.state = testRoomStepper(func(inputs []simulation.InputCommand) simulation.Snapshot {
+		stepped <- struct{}{}
+		return originalStepper.Step(inputs)
+	})
+	startedRoom.mu.Unlock()
+
+	expired, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create waiting room: %v", err)
+	}
+	fakeClock.Advance(defaultWaitingRoomIdleTTL)
+	fakeClock.TickTicker(time.Second/time.Duration(store.gameConfig.TickRate), 0)
+
+	select {
+	case <-stepped:
+	case <-time.After(time.Second):
+		t.Fatal("expected runRoom to process the gameplay ticker")
+	}
+	if store.lookupRoom(expired.ID) == nil {
+		t.Fatal("expected runRoom not to scan or clean another room")
+	}
+}
+
+func TestStoreJanitorClosesExpiredResourcesOutsideStoreAndRoomLocks(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create waiting room: %v", err)
+	}
+	resourceTicker := newBlockingStopTicker()
+	t.Cleanup(resourceTicker.release)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.ticker = resourceTicker
+	room.mu.Unlock()
+
+	fakeClock.Advance(defaultWaitingRoomIdleTTL)
+	fakeClock.TickTicker(30*time.Second, 0)
+	select {
+	case <-resourceTicker.stopStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected janitor to close expired room resources")
+	}
+
+	assertCompletes(t, "Store lock while resource close blocks", func() {
+		store.mu.Lock()
+		store.mu.Unlock()
+	})
+	assertCompletes(t, "room lock while resource close blocks", func() {
+		room.mu.Lock()
+		room.mu.Unlock()
+	})
+	if store.lookupRoom(created.ID) != nil {
+		t.Fatal("expected expired room to be deleted before resource close")
+	}
+
+	resourceTicker.release()
+	if got := resourceTicker.stops(); got != 1 {
+		t.Fatalf("expected expired room ticker to stop once, got %d", got)
+	}
+}
+
+func TestStoreDebugCreateAtCapCleansUpAndRetriesExactlyOnce(t *testing.T) {
+	t.Run("expired room is reclaimed", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(1, clock)
+		t.Cleanup(store.Close)
+		handler := debugHandler(t, store)
+
+		expired := createRoom(t, handler)
+		clock.Advance(defaultWaitingRoomIdleTTL)
+		clock.ResetNowCalls()
+
+		rec := request(handler, http.MethodPost, "/rooms")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected cap cleanup retry to create a room, got status %d", rec.Code)
+		}
+		if store.lookupRoom(expired.ID) != nil {
+			t.Fatal("expected cap cleanup to remove the expired room")
+		}
+		if got := clock.NowCalls(); got != 2 {
+			t.Fatalf("expected one cleanup time read and one retried room creation, got %d time reads", got)
+		}
+	})
+
+	t.Run("non-expired cap remains conflict", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(1, clock)
+		t.Cleanup(store.Close)
+		handler := debugHandler(t, store)
+
+		original := createRoom(t, handler)
+		clock.ResetNowCalls()
+
+		rec := request(handler, http.MethodPost, "/rooms")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected non-expired cap status 409, got %d", rec.Code)
+		}
+		assertError(t, rec, "room_cap_reached")
+		if store.lookupRoom(original.ID) == nil {
+			t.Fatal("expected non-expired capped room to remain")
+		}
+		if got := clock.NowCalls(); got != 1 {
+			t.Fatalf("expected exactly one cap cleanup attempt, got %d time reads", got)
+		}
+	})
+}
+
+func TestStoreMatchmakingAtCapCleansUpAndRetriesExactlyOnce(t *testing.T) {
+	t.Run("expired room is reclaimed", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(1, clock)
+		t.Cleanup(store.Close)
+		handler := debugHandler(t, store)
+
+		expired := createRoom(t, handler)
+		for range store.matchCapacity() {
+			_ = createPlayer(t, handler, expired.ID)
+		}
+		clock.Advance(defaultWaitingRoomIdleTTL)
+		clock.ResetNowCalls()
+
+		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected matchmaking cap cleanup retry to create a room, got status %d", rec.Code)
+		}
+		if store.lookupRoom(expired.ID) != nil {
+			t.Fatal("expected matchmaking cap cleanup to remove the expired room")
+		}
+		if got := clock.NowCalls(); got != 3 {
+			t.Fatalf("expected one cleanup read plus retried room and player activity reads, got %d", got)
+		}
+	})
+
+	t.Run("non-expired cap remains conflict", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(1, clock)
+		t.Cleanup(store.Close)
+		handler := debugHandler(t, store)
+
+		original := createRoom(t, handler)
+		for range store.matchCapacity() {
+			_ = createPlayer(t, handler, original.ID)
+		}
+		clock.ResetNowCalls()
+
+		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected non-expired matchmaking cap status 409, got %d", rec.Code)
+		}
+		assertError(t, rec, "room_cap_reached")
+		if store.lookupRoom(original.ID) == nil {
+			t.Fatal("expected non-expired capped room to remain")
+		}
+		if got := clock.NowCalls(); got != 1 {
+			t.Fatalf("expected exactly one matchmaking cap cleanup attempt, got %d time reads", got)
+		}
+	})
+}
+
+func TestStoreBelowCapDoesNotCleanExpiredRooms(t *testing.T) {
+	t.Run("debug create", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(2, clock)
+		t.Cleanup(store.Close)
+
+		expired, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create waiting room: %v", err)
+		}
+		clock.Advance(defaultWaitingRoomIdleTTL)
+		clock.ResetNowCalls()
+
+		if _, err := store.createRoom(); err != nil {
+			t.Fatalf("create room below cap: %v", err)
+		}
+		if store.lookupRoom(expired.ID) == nil {
+			t.Fatal("expected below-cap debug create not to clean the expired room")
+		}
+		if got := clock.NowCalls(); got != 1 {
+			t.Fatalf("expected only the new room creation time read, got %d", got)
+		}
+	})
+
+	t.Run("matchmaking join", func(t *testing.T) {
+		clock := newCountingNowClock()
+		store := NewStoreWithClock(2, clock)
+		t.Cleanup(store.Close)
+
+		expired, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create waiting room: %v", err)
+		}
+		clock.Advance(defaultWaitingRoomIdleTTL)
+		clock.ResetNowCalls()
+
+		joined, err := store.joinMatchmaking()
+		if err != nil {
+			t.Fatalf("join matchmaking below cap: %v", err)
+		}
+		if joined.Room.ID != expired.ID {
+			t.Fatalf("expected below-cap matchmaking to use the registered room, got %q", joined.Room.ID)
+		}
+		if got := clock.NowCalls(); got != 1 {
+			t.Fatalf("expected only joined player activity time read, got %d", got)
+		}
+	})
+}
+
+func keepRoomActiveForCleanupTest(room *room) {
+	room.mu.Lock()
+	room.clients["cleanup-test-client"] = nil
+	room.disconnectedAt = time.Time{}
+	room.mu.Unlock()
+}
+
+func waitForStoreRoomCount(t *testing.T, store *Store, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		got := len(store.rooms)
+		store.mu.RUnlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	store.mu.RLock()
+	got := len(store.rooms)
+	store.mu.RUnlock()
+	t.Fatalf("expected %d registered rooms, got %d", want, got)
+}
+
+func assertCompletes(t *testing.T, name string, operation func()) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		operation()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("expected %s to complete", name)
+	}
+}
+
+type blockingStopClock struct {
+	now    time.Time
+	ticker *blockingStopTicker
+}
+
+type countingNowClock struct {
+	clock *fakeClock
+	mu    sync.Mutex
+	calls int
+}
+
+func newCountingNowClock() *countingNowClock {
+	return &countingNowClock{clock: newFakeClock()}
+}
+
+func (c *countingNowClock) Now() time.Time {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.clock.Now()
+}
+
+func (c *countingNowClock) NewTicker(duration time.Duration) ticker {
+	return c.clock.NewTicker(duration)
+}
+
+func (c *countingNowClock) Advance(duration time.Duration) {
+	c.clock.Advance(duration)
+}
+
+func (c *countingNowClock) ResetNowCalls() {
+	c.mu.Lock()
+	c.calls = 0
+	c.mu.Unlock()
+}
+
+func (c *countingNowClock) NowCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func newBlockingStopClock() *blockingStopClock {
+	return &blockingStopClock{
+		now:    time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+		ticker: newBlockingStopTicker(),
+	}
+}
+
+func (c *blockingStopClock) Now() time.Time {
+	return c.now
+}
+
+func (c *blockingStopClock) NewTicker(time.Duration) ticker {
+	return c.ticker
+}
+
+type blockingStopTicker struct {
+	ticks       chan time.Time
+	stopStarted chan struct{}
+	releaseStop chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+	mu          sync.Mutex
+	stopCount   int
+}
+
+func newBlockingStopTicker() *blockingStopTicker {
+	return &blockingStopTicker{
+		ticks:       make(chan time.Time),
+		stopStarted: make(chan struct{}),
+		releaseStop: make(chan struct{}),
+	}
+}
+
+func (t *blockingStopTicker) C() <-chan time.Time {
+	return t.ticks
+}
+
+func (t *blockingStopTicker) Stop() {
+	t.mu.Lock()
+	t.stopCount++
+	t.mu.Unlock()
+	t.startOnce.Do(func() { close(t.stopStarted) })
+	<-t.releaseStop
+}
+
+func (t *blockingStopTicker) release() {
+	t.releaseOnce.Do(func() { close(t.releaseStop) })
+}
+
+func (t *blockingStopTicker) stops() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopCount
+}
+
 func TestStoreDeletedRoomReleasesPlayerIDForReuse(t *testing.T) {
 	firstRoomID := bytes.Repeat([]byte{0x61}, 16)
 	playerID := bytes.Repeat([]byte{0x62}, 16)
@@ -1279,8 +1776,9 @@ func TestHandlerMatchmakingSecondJoinUsesSameRoomAndWaitsForReady(t *testing.T) 
 	if len(second.Room.Players) != 2 || second.Room.LatestSnapshot.PlayerCount != 2 {
 		t.Fatalf("expected two players in matched room, got %+v", second.Room)
 	}
-	if fakeClock.RequestedDuration() != 0 {
-		t.Fatalf("expected matchmaking join not to create ticker before ready, got %s", fakeClock.RequestedDuration())
+	gameplayInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+	if got := fakeClock.TickerCount(gameplayInterval); got != 0 {
+		t.Fatalf("expected matchmaking join not to create a gameplay ticker before ready, got %d", got)
 	}
 }
 
@@ -1337,8 +1835,9 @@ func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
 	if len(second.Room.Players) != 2 || second.Room.LatestSnapshot.PlayerCount != 2 {
 		t.Fatalf("expected matched room to contain two players, got %+v", second.Room)
 	}
-	if fakeClock.RequestedDuration() != 0 {
-		t.Fatalf("expected matchmaking join not to start ticker before ready, got %s", fakeClock.RequestedDuration())
+	gameplayInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+	if got := fakeClock.TickerCount(gameplayInterval); got != 0 {
+		t.Fatalf("expected matchmaking join not to start a gameplay ticker before ready, got %d", got)
 	}
 
 	third := joinMatchmaking(t, handler)
@@ -1390,8 +1889,9 @@ func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 	if len(fourth.Room.Players) != 4 || fourth.Room.LatestSnapshot.PlayerCount != 4 {
 		t.Fatalf("expected configured quartet room to contain four players, got %+v", fourth.Room)
 	}
-	if fakeClock.RequestedDuration() != 0 {
-		t.Fatalf("expected configured matchmaking not to start ticker before ready, got %s", fakeClock.RequestedDuration())
+	gameplayInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+	if got := fakeClock.TickerCount(gameplayInterval); got != 0 {
+		t.Fatalf("expected configured matchmaking not to start a gameplay ticker before ready, got %d", got)
 	}
 
 	fifth := joinMatchmaking(t, handler)
@@ -1488,6 +1988,8 @@ func TestStoreCleansUpWaitingRoomAfterIdleTTL(t *testing.T) {
 	}
 
 	fakeClock.Advance(time.Nanosecond)
+	fakeClock.TickTicker(janitorInterval, 0)
+	waitForRoomDeleted(t, store, room.ID)
 	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected waiting room after idle TTL to be cleaned up, got status %d", rec.Code)
@@ -1517,6 +2019,8 @@ func TestStoreCleansUpHardLifetimeExpiredRoom(t *testing.T) {
 	}
 
 	fakeClock.Advance(time.Nanosecond)
+	fakeClock.TickTicker(janitorInterval, 0)
+	waitForRoomDeleted(t, store, room.ID)
 	rec := request(handler, http.MethodGet, "/rooms/"+room.ID)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected room after hard lifetime to be cleaned up, got status %d", rec.Code)
@@ -1572,6 +2076,7 @@ func request(handler http.Handler, method string, path string) *httptest.Respons
 
 func debugHandler(t *testing.T, store *Store) http.Handler {
 	t.Helper()
+	t.Cleanup(store.Close)
 
 	handler, err := HandlerWithConfig(store, HandlerConfig{
 		EnableDebugAPI: true,
