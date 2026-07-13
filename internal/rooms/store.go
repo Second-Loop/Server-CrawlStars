@@ -301,25 +301,27 @@ func (s *Store) clientObservationTransitionsLocked(clients []clientObservation, 
 	return transitions
 }
 
-func (s *Store) publishConnectedClient(client clientObservation, transition observationTransition) {
-	defer client.session.completeConnectedPublication()
-	s.observation.publish(transition)
-	s.logWebSocketEvent("websocket_connected", client.roomID, client.playerID)
+func (s *Store) prepareConnectedClientPublication(client clientObservation, transition observationTransition) *clientLifecyclePublication {
+	return client.session.enqueueLifecyclePublication(false, func() {
+		s.observation.publish(transition)
+		s.logWebSocketEvent("websocket_connected", client.roomID, client.playerID)
+	})
 }
 
 func (s *Store) publishDisconnectedClients(transitions []clientObservationTransition) {
 	for _, observed := range transitions {
-		observed.session.waitConnectedPublication()
-		s.observation.publish(observed.transition)
-		category, status := observed.session.ioError()
-		if category != "" {
-			attrs := []any{"category", category}
-			if status != "" {
-				attrs = append(attrs, "status", status)
+		observed.session.enqueueLifecyclePublication(true, func() {
+			s.observation.publish(observed.transition)
+			category, status := observed.session.ioError()
+			if category != "" {
+				attrs := []any{"category", category}
+				if status != "" {
+					attrs = append(attrs, "status", status)
+				}
+				s.logWebSocketEvent("websocket_io_error", observed.roomID, observed.playerID, attrs...)
 			}
-			s.logWebSocketEvent("websocket_io_error", observed.roomID, observed.playerID, attrs...)
-		}
-		s.logWebSocketEvent("websocket_disconnected", observed.roomID, observed.playerID)
+			s.logWebSocketEvent("websocket_disconnected", observed.roomID, observed.playerID)
+		})
 	}
 }
 
@@ -665,9 +667,7 @@ func (s *Store) uniquePlayerIDLocked() (string, error) {
 }
 
 func (s *Store) startRoomLocked(room *room) bool {
-	if room.Status == RoomStatusStarted {
-		return false
-	}
+	started := room.Status != RoomStatusStarted
 	now := s.clock.Now()
 	s.stopMatchCountdownLocked(room)
 	room.Status = RoomStatusStarted
@@ -687,7 +687,7 @@ func (s *Store) startRoomLocked(room *room) bool {
 		room.stop = make(chan struct{})
 		go s.runRoom(room, room.ticker, room.stop)
 	}
-	return true
+	return started
 }
 
 func (s *Store) playerAssignmentForIndex(playerIndex int) (simulation.Team, int) {

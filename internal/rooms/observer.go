@@ -40,6 +40,8 @@ type observationState struct {
 	activeRooms       int
 	connectedClients  int
 	publishedSequence [2]uint64
+	pending           []observationTransition
+	draining          bool
 }
 
 func newObservationState(observer Observer) *observationState {
@@ -84,17 +86,40 @@ func (s *observationState) transition(kind observationKind, delta int) observati
 // a newer value.
 func (s *observationState) publish(transition observationTransition) {
 	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
+	s.pending = append(s.pending, transition)
+	if s.draining {
+		s.publishMu.Unlock()
+		return
+	}
+	s.draining = true
+	s.publishMu.Unlock()
 
-	if transition.sequence <= s.publishedSequence[transition.kind] {
-		return
+	for {
+		s.publishMu.Lock()
+		if len(s.pending) == 0 {
+			s.draining = false
+			s.publishMu.Unlock()
+			return
+		}
+		pending := s.pending[0]
+		if len(s.pending) == 1 {
+			s.pending = nil
+		} else {
+			s.pending = s.pending[1:]
+		}
+		if pending.sequence <= s.publishedSequence[pending.kind] {
+			s.publishMu.Unlock()
+			continue
+		}
+		s.publishedSequence[pending.kind] = pending.sequence
+		s.publishMu.Unlock()
+
+		if pending.kind == activeRoomsObservation {
+			s.observer.SetActiveRooms(pending.value)
+			continue
+		}
+		s.observer.SetConnectedClients(pending.value)
 	}
-	s.publishedSequence[transition.kind] = transition.sequence
-	if transition.kind == activeRoomsObservation {
-		s.observer.SetActiveRooms(transition.value)
-		return
-	}
-	s.observer.SetConnectedClients(transition.value)
 }
 
 // observeTick invokes the external Observer and must be called without a Store

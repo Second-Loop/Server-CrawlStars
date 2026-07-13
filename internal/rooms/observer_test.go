@@ -438,7 +438,7 @@ func TestObservationCallbacksRunOutsideCoreLocks(t *testing.T) {
 }
 
 func TestTickHistogramMeasuresOnlyStateStep(t *testing.T) {
-	observer := &recordingObserver{}
+	observer := &tickBoundaryObserver{}
 	store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
 	t.Cleanup(store.Close)
 	created, err := store.createRoom()
@@ -452,111 +452,57 @@ func TestTickHistogramMeasuresOnlyStateStep(t *testing.T) {
 	if _, err := store.startRoom(created.ID); err != nil {
 		t.Fatalf("start room: %v", err)
 	}
-	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
-	if err != nil {
-		t.Fatalf("reserve client: %v", err)
-	}
-	session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
-	if !attached {
-		t.Fatal("expected client attach")
-	}
-
 	const stepDuration = 37 * time.Millisecond
 	base := time.Unix(100, 0)
-	var wallMu sync.Mutex
 	wallCalls := 0
-	firstTimestamp := make(chan struct{})
-	secondTimestamp := make(chan struct{})
+	timingOutsideRoomLock := false
+	room := store.lookupRoom(created.ID)
+	observer.room = room
 	store.wallNow = func() time.Time {
-		wallMu.Lock()
-		defer wallMu.Unlock()
+		if room.mu.TryLock() {
+			timingOutsideRoomLock = true
+			room.mu.Unlock()
+		}
 		wallCalls++
 		switch wallCalls {
 		case 1:
-			close(firstTimestamp)
 			return base
 		case 2:
-			close(secondTimestamp)
 			return base.Add(stepDuration)
 		default:
 			return base.Add(stepDuration)
 		}
 	}
-	wallCallCount := func() int {
-		wallMu.Lock()
-		defer wallMu.Unlock()
-		return wallCalls
-	}
 
-	stepEntered := make(chan int, 1)
-	room := store.lookupRoom(created.ID)
-	session.enqueueMu.Lock()
-	enqueueLocked := true
-	t.Cleanup(func() {
-		if enqueueLocked {
-			session.enqueueMu.Unlock()
-		}
-	})
+	stepCalls := 0
+	stepSawWallCalls := 0
 	room.mu.Lock()
-	roomLocked := true
-	t.Cleanup(func() {
-		if roomLocked {
-			room.mu.Unlock()
-		}
-	})
 	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
-		stepEntered <- wallCallCount()
+		stepCalls++
+		stepSawWallCalls = wallCalls
 		return simulation.Snapshot{Players: []simulation.PlayerData{{
 			ID: simulation.PlayerID(issued.Player.ID),
 		}}}
 	})
-	tickStarted := make(chan struct{})
-	tickDone := make(chan struct{})
-	go func() {
-		close(tickStarted)
-		store.tickRoomState(room)
-		close(tickDone)
-	}()
-	<-tickStarted
-	select {
-	case <-firstTimestamp:
-		t.Fatal("tick timing started while waiting for room.mu")
-	case <-time.After(20 * time.Millisecond):
-	}
 	room.mu.Unlock()
-	roomLocked = false
 
-	select {
-	case calls := <-stepEntered:
-		if calls != 1 {
-			t.Fatalf("expected first timestamp immediately before State.Step, got %d wall calls", calls)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected State.Step to run")
-	}
-	select {
-	case <-secondTimestamp:
-	case <-time.After(time.Second):
-		t.Fatal("expected second timestamp immediately after State.Step")
-	}
-	if got := observer.tickDurationValues(); len(got) != 0 {
-		t.Fatalf("tick observation published while snapshot fanout still held room.mu: %v", got)
-	}
+	store.tickRoomState(room)
 
-	session.enqueueMu.Unlock()
-	enqueueLocked = false
-	select {
-	case <-tickDone:
-	case <-time.After(time.Second):
-		t.Fatal("expected tick to finish after snapshot fanout unblocked")
+	if timingOutsideRoomLock {
+		t.Fatal("expected both wall-clock reads to occur while room.mu was held")
 	}
-	if got := observer.tickDurationValues(); !slices.Equal(got, []time.Duration{stepDuration}) {
+	if stepCalls != 1 || stepSawWallCalls != 1 {
+		t.Fatalf("expected one Step after the first wall-clock read, calls=%d wallCallsAtStep=%d", stepCalls, stepSawWallCalls)
+	}
+	if wallCalls != 2 {
+		t.Fatalf("expected exactly two wall-clock reads around State.Step, got %d", wallCalls)
+	}
+	if observer.callbackWhileRoomLocked {
+		t.Fatal("tick observer callback ran while room.mu was held")
+	}
+	if got := observer.tickDurations; !slices.Equal(got, []time.Duration{stepDuration}) {
 		t.Fatalf("expected State.Step-only duration %v, got %v", stepDuration, got)
 	}
-	if got := wallCallCount(); got != 2 {
-		t.Fatalf("expected exactly two wall-clock reads around State.Step, got %d", got)
-	}
-	session.close(1000, "test close")
 }
 
 func assertObserverValues(t *testing.T, got []int, want []int) {
@@ -571,6 +517,25 @@ type recordingObserver struct {
 	activeRooms      []int
 	connectedClients []int
 	tickDurations    []time.Duration
+}
+
+type tickBoundaryObserver struct {
+	room                    *room
+	tickDurations           []time.Duration
+	callbackWhileRoomLocked bool
+}
+
+func (*tickBoundaryObserver) SetActiveRooms(int) {}
+
+func (*tickBoundaryObserver) SetConnectedClients(int) {}
+
+func (o *tickBoundaryObserver) ObserveTick(duration time.Duration) {
+	if !o.room.mu.TryLock() {
+		o.callbackWhileRoomLocked = true
+	} else {
+		o.room.mu.Unlock()
+	}
+	o.tickDurations = append(o.tickDurations, duration)
 }
 
 type lockCheckingObserver struct {

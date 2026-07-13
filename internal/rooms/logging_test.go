@@ -174,6 +174,60 @@ func TestRoomStartedLogsOnceAcrossManualCountdownRace(t *testing.T) {
 	assertLogEventCount(t, concurrentLogs, "room_started", 1)
 }
 
+func TestDuplicateStartRefreshesRoomLifecycleWithoutDuplicateLog(t *testing.T) {
+	logs := &lockedLogBuffer{}
+	clock := newFakeClock()
+	store := newStore(5, clock, StoreConfig{Logger: jsonTestLogger(logs)})
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := store.addPlayer(created.ID); err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("initial start: %v", err)
+	}
+
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	initialActivity := room.lastActivityAt
+	if room.ticker != nil {
+		room.ticker.Stop()
+		room.ticker = nil
+	}
+	if room.stop != nil {
+		close(room.stop)
+		room.stop = nil
+	}
+	room.state = nil
+	room.disconnectedAt = time.Time{}
+	room.mu.Unlock()
+	clock.Advance(7 * time.Second)
+
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("duplicate start: %v", err)
+	}
+	room.mu.Lock()
+	lastActivityAt := room.lastActivityAt
+	disconnectedAt := room.disconnectedAt
+	stateRestored := room.state != nil
+	tickerRestored := room.ticker != nil && room.stop != nil
+	room.mu.Unlock()
+
+	if !lastActivityAt.Equal(clock.Now()) || !lastActivityAt.After(initialActivity) {
+		t.Fatalf("expected duplicate start to refresh lastActivityAt from %v to %v, got %v", initialActivity, clock.Now(), lastActivityAt)
+	}
+	if !disconnectedAt.Equal(clock.Now()) {
+		t.Fatalf("expected duplicate start without clients to refresh disconnectedAt to %v, got %v", clock.Now(), disconnectedAt)
+	}
+	if !stateRestored || !tickerRestored {
+		t.Fatalf("expected duplicate start to restore missing state/ticker, state=%t ticker=%t", stateRestored, tickerRestored)
+	}
+	assertLogEventCount(t, logs, "room_started", 1)
+}
+
 func TestRoomEndedAndExpiredLogOnlySuccessfulDelete(t *testing.T) {
 	t.Run("game end", func(t *testing.T) {
 		logs := &lockedLogBuffer{}
@@ -381,6 +435,227 @@ func TestWebSocketLifecycleLogsOnceAcrossReadWritePingAndCloseRace(t *testing.T)
 		}
 		assertStructuredLogSchema(t, logs)
 	})
+}
+
+func TestWebSocketConnectedCallbacksCanReenterLifecycleWithoutDeadlock(t *testing.T) {
+	for _, callbackKind := range []string{"logger", "observer"} {
+		t.Run(callbackKind, func(t *testing.T) {
+			for _, action := range []string{"session_close", "delete_room", "store_close"} {
+				t.Run(action, func(t *testing.T) {
+					testWebSocketConnectedCallbackReentry(t, callbackKind, action)
+				})
+			}
+		})
+	}
+}
+
+func TestNormalCloseCancellationDoesNotLogWebSocketIOError(t *testing.T) {
+	t.Run("blocking write", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		store := newStore(5, newFakeClock(), StoreConfig{Logger: jsonTestLogger(logs)})
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		errorReturned := make(chan struct{})
+		conn := newFakeClientConn(false)
+		conn.writeFn = func(ctx context.Context, _ []byte) error {
+			<-ctx.Done()
+			close(errorReturned)
+			return ctx.Err()
+		}
+		session := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, conn)
+		delayClientReleaseUntilTransportErrorSettles(session, errorReturned)
+		if !session.enqueueControl([]byte("blocking write")) {
+			t.Fatal("expected control enqueue")
+		}
+		select {
+		case <-conn.writeStarted:
+		case <-time.After(time.Second):
+			t.Fatal("expected blocking write to start")
+		}
+
+		session.close(websocket.StatusNormalClosure, "normal close")
+		<-session.writerDone
+		<-session.heartbeatDone
+		store.Close()
+
+		assertLogEventCount(t, logs, "websocket_connected", 1)
+		assertLogEventCount(t, logs, "websocket_disconnected", 1)
+		assertLogEventCount(t, logs, "websocket_io_error", 0)
+		if category, status := session.ioError(); category != "" || status != "" {
+			t.Fatalf("normal close retained transport cause category=%q status=%q", category, status)
+		}
+	})
+
+	t.Run("blocking ping", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		clock := newFakeClock()
+		store := newStore(5, clock, StoreConfig{
+			Logger:            jsonTestLogger(logs),
+			HeartbeatInterval: time.Second,
+		})
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		errorReturned := make(chan struct{})
+		pingStarted := make(chan struct{})
+		conn := newFakeClientConn(false)
+		conn.pingFn = func(ctx context.Context) error {
+			close(pingStarted)
+			<-ctx.Done()
+			close(errorReturned)
+			return ctx.Err()
+		}
+		session := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, conn)
+		delayClientReleaseUntilTransportErrorSettles(session, errorReturned)
+		clock.TickTicker(time.Second, 0)
+		select {
+		case <-pingStarted:
+		case <-time.After(time.Second):
+			t.Fatal("expected blocking ping to start")
+		}
+
+		session.close(websocket.StatusNormalClosure, "normal close")
+		<-session.writerDone
+		<-session.heartbeatDone
+		store.Close()
+
+		assertLogEventCount(t, logs, "websocket_connected", 1)
+		assertLogEventCount(t, logs, "websocket_disconnected", 1)
+		assertLogEventCount(t, logs, "websocket_io_error", 0)
+		if category, status := session.ioError(); category != "" || status != "" {
+			t.Fatalf("normal close retained transport cause category=%q status=%q", category, status)
+		}
+	})
+}
+
+func delayClientReleaseUntilTransportErrorSettles(session *clientSession, errorReturned <-chan struct{}) {
+	originalOnClose := session.onClose
+	session.onClose = func(expected *clientSession) {
+		<-errorReturned
+		deadline := time.NewTimer(100 * time.Millisecond)
+		ticker := time.NewTicker(time.Millisecond)
+		defer deadline.Stop()
+		defer ticker.Stop()
+		for {
+			category, _ := expected.ioError()
+			if category != "" {
+				break
+			}
+			select {
+			case <-deadline.C:
+				originalOnClose(expected)
+				return
+			case <-ticker.C:
+			}
+		}
+		originalOnClose(expected)
+	}
+}
+
+func testWebSocketConnectedCallbackReentry(t *testing.T, callbackKind string, action string) {
+	t.Helper()
+	logHandler := &reentrantLifecycleLogHandler{}
+	observer := &reentrantLifecycleObserver{}
+	config := StoreConfig{Logger: slog.New(logHandler)}
+	if callbackKind == "observer" {
+		config.Observer = observer
+	}
+	store := newStore(5, newFakeClock(), config)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	deleteRoomID := created.ID
+	if callbackKind == "observer" && action == "delete_room" {
+		extra, createErr := store.createRoom()
+		if createErr != nil {
+			t.Fatalf("create reentrant delete target: %v", createErr)
+		}
+		deleteRoomID = extra.ID
+	}
+	reenter := func() {
+		switch action {
+		case "session_close":
+			room := store.lookupRoom(created.ID)
+			if room == nil {
+				return
+			}
+			room.mu.Lock()
+			session := room.clients[issued.Player.ID]
+			room.mu.Unlock()
+			if session != nil {
+				session.close(websocket.StatusNormalClosure, "reentrant close")
+			}
+		case "delete_room":
+			store.deleteRoom(deleteRoomID)
+		case "store_close":
+			store.Close()
+		default:
+			t.Fatalf("unknown reentrant action %q", action)
+		}
+	}
+	if callbackKind == "logger" {
+		logHandler.onConnected = reenter
+	} else {
+		observer.onConnected = reenter
+	}
+
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	type attachResult struct {
+		session  *clientSession
+		attached bool
+	}
+	result := make(chan attachResult, 1)
+	go func() {
+		session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+		result <- attachResult{session: session, attached: attached}
+	}()
+
+	var attached attachResult
+	select {
+	case attached = <-result:
+	case <-time.After(time.Second):
+		t.Fatalf("%s callback action %s deadlocked lifecycle publication", callbackKind, action)
+	}
+	if !attached.attached || attached.session == nil {
+		t.Fatal("expected client attach to commit before reentrant lifecycle action")
+	}
+	attached.session.close(websocket.StatusNormalClosure, "post-callback close")
+	store.Close()
+
+	if got := logHandler.eventsSnapshot(); !slices.Equal(got, []string{"websocket_connected", "websocket_disconnected"}) {
+		t.Fatalf("expected connected then disconnected logs, got %v", got)
+	}
+	if callbackKind == "observer" {
+		assertObserverValues(t, observer.connectedValues(), []int{1, 0})
+		wantActive := []int{1, 0}
+		if action == "delete_room" {
+			wantActive = []int{1, 2, 1, 0}
+		}
+		assertObserverValues(t, observer.activeValues(), wantActive)
+	}
 }
 
 func TestWebSocketReconnectIgnoresStaleSessionObservation(t *testing.T) {
@@ -594,6 +869,76 @@ type orderedLifecycleLogHandler struct {
 	disconnectedPublished chan struct{}
 	connectedOnce         sync.Once
 	disconnectedOnce      sync.Once
+}
+
+type reentrantLifecycleLogHandler struct {
+	mu          sync.Mutex
+	events      []string
+	onConnected func()
+	once        sync.Once
+}
+
+func (*reentrantLifecycleLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *reentrantLifecycleLogHandler) Handle(_ context.Context, record slog.Record) error {
+	event := logRecordString(record, "event")
+	if event != "websocket_connected" && event != "websocket_disconnected" {
+		return nil
+	}
+	h.mu.Lock()
+	h.events = append(h.events, event)
+	h.mu.Unlock()
+	if event == "websocket_connected" && h.onConnected != nil {
+		h.once.Do(h.onConnected)
+	}
+	return nil
+}
+
+func (h *reentrantLifecycleLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *reentrantLifecycleLogHandler) WithGroup(string) slog.Handler { return h }
+
+func (h *reentrantLifecycleLogHandler) eventsSnapshot() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.events)
+}
+
+type reentrantLifecycleObserver struct {
+	mu               sync.Mutex
+	activeRooms      []int
+	connectedClients []int
+	onConnected      func()
+	once             sync.Once
+}
+
+func (o *reentrantLifecycleObserver) SetActiveRooms(count int) {
+	o.mu.Lock()
+	o.activeRooms = append(o.activeRooms, count)
+	o.mu.Unlock()
+}
+
+func (o *reentrantLifecycleObserver) SetConnectedClients(count int) {
+	o.mu.Lock()
+	o.connectedClients = append(o.connectedClients, count)
+	o.mu.Unlock()
+	if count == 1 && o.onConnected != nil {
+		o.once.Do(o.onConnected)
+	}
+}
+
+func (*reentrantLifecycleObserver) ObserveTick(time.Duration) {}
+
+func (o *reentrantLifecycleObserver) connectedValues() []int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.connectedClients)
+}
+
+func (o *reentrantLifecycleObserver) activeValues() []int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.activeRooms)
 }
 
 func newOrderedLifecycleLogHandler() *orderedLifecycleLogHandler {

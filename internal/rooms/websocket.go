@@ -39,72 +39,106 @@ type terminalWriterCommand struct {
 	reason   string
 }
 
+type clientLifecyclePublication struct {
+	ready   bool
+	publish func()
+}
+
 type clientSession struct {
-	conn               clientConn
-	snapshots          chan []byte
-	control            chan writerCommand
-	terminalHandoff    chan terminalWriterCommand
-	done               chan struct{}
-	closeDone          chan struct{}
-	writerDone         chan struct{}
-	heartbeatDone      chan struct{}
-	writerCtx          context.Context
-	cancelWriter       context.CancelFunc
-	enqueueMu          sync.Mutex
-	heartbeatMu        sync.Mutex
-	ioErrorMu          sync.Mutex
-	closeOnce          sync.Once
-	heartbeatDoneOnce  sync.Once
-	ioErrorOnce        sync.Once
-	onClose            func(*clientSession)
-	connectedPublished chan struct{}
-	ioErrorCategory    string
-	ioErrorStatus      string
-	heartbeatStarted   bool
-	terminal           bool
+	conn                clientConn
+	snapshots           chan []byte
+	control             chan writerCommand
+	terminalHandoff     chan terminalWriterCommand
+	done                chan struct{}
+	closeDone           chan struct{}
+	writerDone          chan struct{}
+	heartbeatDone       chan struct{}
+	writerCtx           context.Context
+	cancelWriter        context.CancelFunc
+	enqueueMu           sync.Mutex
+	heartbeatMu         sync.Mutex
+	ioErrorMu           sync.Mutex
+	publicationMu       sync.Mutex
+	closeOnce           sync.Once
+	heartbeatDoneOnce   sync.Once
+	onClose             func(*clientSession)
+	publications        []*clientLifecyclePublication
+	ioErrorCategory     string
+	ioErrorStatus       string
+	publicationDraining bool
+	heartbeatStarted    bool
+	terminal            bool
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
 	writerCtx, cancelWriter := context.WithCancel(context.Background())
-	connectedPublished := make(chan struct{})
-	close(connectedPublished)
 	session := &clientSession{
-		conn:               conn,
-		snapshots:          make(chan []byte, 1),
-		control:            make(chan writerCommand, 8),
-		terminalHandoff:    make(chan terminalWriterCommand, 1),
-		done:               make(chan struct{}),
-		closeDone:          make(chan struct{}),
-		writerDone:         make(chan struct{}),
-		heartbeatDone:      make(chan struct{}),
-		writerCtx:          writerCtx,
-		cancelWriter:       cancelWriter,
-		onClose:            onClose,
-		connectedPublished: connectedPublished,
+		conn:            conn,
+		snapshots:       make(chan []byte, 1),
+		control:         make(chan writerCommand, 8),
+		terminalHandoff: make(chan terminalWriterCommand, 1),
+		done:            make(chan struct{}),
+		closeDone:       make(chan struct{}),
+		writerDone:      make(chan struct{}),
+		heartbeatDone:   make(chan struct{}),
+		writerCtx:       writerCtx,
+		cancelWriter:    cancelWriter,
+		onClose:         onClose,
 	}
 	go session.writeLoop()
 	return session
 }
 
-func (s *clientSession) prepareConnectedPublication() {
-	s.connectedPublished = make(chan struct{})
+func (s *clientSession) enqueueLifecyclePublication(ready bool, publish func()) *clientLifecyclePublication {
+	publication := &clientLifecyclePublication{ready: ready, publish: publish}
+	s.publicationMu.Lock()
+	s.publications = append(s.publications, publication)
+	shouldDrain := s.startPublicationDrainLocked()
+	s.publicationMu.Unlock()
+	if shouldDrain {
+		s.drainLifecyclePublications()
+	}
+	return publication
 }
 
-func (s *clientSession) completeConnectedPublication() {
-	close(s.connectedPublished)
+func (s *clientSession) readyLifecyclePublication(publication *clientLifecyclePublication) {
+	if publication == nil {
+		return
+	}
+	s.publicationMu.Lock()
+	publication.ready = true
+	shouldDrain := s.startPublicationDrainLocked()
+	s.publicationMu.Unlock()
+	if shouldDrain {
+		s.drainLifecyclePublications()
+	}
 }
 
-func (s *clientSession) waitConnectedPublication() {
-	<-s.connectedPublished
+func (s *clientSession) startPublicationDrainLocked() bool {
+	if s.publicationDraining || len(s.publications) == 0 || !s.publications[0].ready {
+		return false
+	}
+	s.publicationDraining = true
+	return true
 }
 
-func (s *clientSession) recordIOError(category string, status string) {
-	s.ioErrorOnce.Do(func() {
-		s.ioErrorMu.Lock()
-		s.ioErrorCategory = category
-		s.ioErrorStatus = status
-		s.ioErrorMu.Unlock()
-	})
+func (s *clientSession) drainLifecyclePublications() {
+	for {
+		s.publicationMu.Lock()
+		if len(s.publications) == 0 || !s.publications[0].ready {
+			s.publicationDraining = false
+			s.publicationMu.Unlock()
+			return
+		}
+		publication := s.publications[0]
+		if len(s.publications) == 1 {
+			s.publications = nil
+		} else {
+			s.publications = s.publications[1:]
+		}
+		s.publicationMu.Unlock()
+		publication.publish()
+	}
 }
 
 func (s *clientSession) ioError() (string, string) {
@@ -137,8 +171,7 @@ func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, time
 					if timedOut {
 						category = "ping_timeout"
 					}
-					s.recordIOError(category, "")
-					s.close(websocket.StatusGoingAway, "heartbeat failed")
+					s.closeWithIOError(websocket.StatusGoingAway, "heartbeat failed", category, "")
 					return
 				}
 			case <-s.done:
@@ -302,8 +335,7 @@ func (s *clientSession) writeCommand(command writerCommand) bool {
 	err := s.conn.Write(ctx, websocket.MessageText, command.payload)
 	cancel()
 	if err != nil {
-		s.recordIOError("write_failed", "")
-		s.close(websocket.StatusGoingAway, "write failed")
+		s.closeWithIOError(websocket.StatusGoingAway, "write failed", "write_failed", "")
 		return false
 	}
 	return true
@@ -319,8 +351,22 @@ func (s *clientSession) isDone() bool {
 }
 
 func (s *clientSession) close(code websocket.StatusCode, reason string) {
+	s.closeWithCause(code, reason, "", "")
+}
+
+func (s *clientSession) closeWithIOError(code websocket.StatusCode, reason string, category string, status string) {
+	s.closeWithCause(code, reason, category, status)
+}
+
+func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string, category string, status string) {
 	s.closeOnce.Do(func() {
 		defer close(s.closeDone)
+		if category != "" {
+			s.ioErrorMu.Lock()
+			s.ioErrorCategory = category
+			s.ioErrorStatus = status
+			s.ioErrorMu.Unlock()
+		}
 		close(s.done)
 		s.cancelWriter()
 		s.heartbeatMu.Lock()
@@ -444,10 +490,10 @@ func recordWebSocketReadError(session *clientSession, err error) {
 		return
 	}
 	if status == -1 {
-		session.recordIOError("read_failed", "")
+		session.closeWithIOError(websocket.StatusNormalClosure, "", "read_failed", "")
 		return
 	}
-	session.recordIOError("read_close", normalizedWebSocketStatus(status))
+	session.closeWithIOError(websocket.StatusNormalClosure, "", "read_close", normalizedWebSocketStatus(status))
 }
 
 func normalizedWebSocketStatus(status websocket.StatusCode) string {
@@ -542,11 +588,11 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	session := newClientSession(conn, func(expected *clientSession) {
 		s.releaseClient(reservation, expected)
 	})
-	session.prepareConnectedPublication()
-	delete(room.reservations, reservation.playerID)
-	room.clients[reservation.playerID] = session
 	connectedClient := clientObservation{roomID: room.ID, playerID: reservation.playerID, session: session}
 	connectedTransition := s.observation.connectedClientsDelta(1)
+	connectedPublication := s.prepareConnectedClientPublication(connectedClient, connectedTransition)
+	delete(room.reservations, reservation.playerID)
+	room.clients[reservation.playerID] = session
 	lifecycleDone := make(chan struct{})
 	s.activeSessions[session] = lifecycleDone
 	s.monitorClientSession(session, lifecycleDone)
@@ -565,7 +611,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
-	s.publishConnectedClient(connectedClient, connectedTransition)
+	session.readyLifecyclePublication(connectedPublication)
 	closeClientSessions(failedSessions, "control delivery failed")
 	return session, true
 }
