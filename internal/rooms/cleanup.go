@@ -88,9 +88,9 @@ func (r *room) isExpired(now time.Time) bool {
 }
 
 type roomResources struct {
-	tickers []ticker
-	stops   []chan struct{}
-	conns   []*websocket.Conn
+	tickers  []ticker
+	stops    []chan struct{}
+	sessions []*clientSession
 }
 
 // removeRoomLocked marks a room unavailable and detaches resources for closing.
@@ -120,9 +120,9 @@ func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 		r.stops = append(r.stops, room.stop)
 		room.stop = nil
 	}
-	for _, conn := range room.clients {
-		if conn != nil {
-			r.conns = append(r.conns, conn)
+	for _, session := range room.clients {
+		if session != nil {
+			r.sessions = append(r.sessions, session)
 		}
 	}
 	room.clients = nil
@@ -137,7 +137,7 @@ func (r roomResources) close(reason string) {
 	for _, stop := range r.stops {
 		close(stop)
 	}
-	for _, conn := range r.conns {
-		_ = conn.Close(websocket.StatusNormalClosure, reason)
+	for _, session := range r.sessions {
+		session.close(websocket.StatusNormalClosure, reason)
 	}
 }

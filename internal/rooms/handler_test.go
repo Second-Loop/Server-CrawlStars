@@ -1572,7 +1572,7 @@ func TestStoreRemovedRoomRejectsNewStateAccess(t *testing.T) {
 	if _, err := store.addPlayer(created.ID); !errors.Is(err, ErrRoomNotFound) {
 		t.Fatalf("expected removed room add to fail with ErrRoomNotFound, got %v", err)
 	}
-	store.setInput(created.ID, issued.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}})
+	store.setInput(created.ID, issued.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}}, nil)
 	removed.mu.Lock()
 	_, hasPendingInput := removed.pendingInputs[issued.Player.ID]
 	removed.mu.Unlock()

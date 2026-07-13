@@ -28,6 +28,657 @@ type issuedPlayer struct {
 	WebSocketPath string
 }
 
+type countingJSONMessage struct {
+	calls *atomic.Int32
+}
+
+func (m countingJSONMessage) MarshalJSON() ([]byte, error) {
+	m.calls.Add(1)
+	return []byte(`{"Type":"snapshot"}`), nil
+}
+
+type fakeClientConn struct {
+	writeStarted chan struct{}
+	allowWrite   chan struct{}
+	closed       chan struct{}
+	writes       chan []byte
+	events       chan string
+	writeFn      func(context.Context, []byte) error
+	closeBlock   <-chan struct{}
+	closeStarted chan struct{}
+	writeOnce    sync.Once
+	closeOnce    sync.Once
+	closeCount   atomic.Int32
+}
+
+func newFakeClientConn(blockWrites bool) *fakeClientConn {
+	conn := &fakeClientConn{
+		writeStarted: make(chan struct{}),
+		allowWrite:   make(chan struct{}),
+		closed:       make(chan struct{}),
+		writes:       make(chan []byte, 16),
+	}
+	if !blockWrites {
+		close(conn.allowWrite)
+	}
+	return conn
+}
+
+func (c *fakeClientConn) Read(context.Context) (websocket.MessageType, []byte, error) {
+	return 0, nil, errors.New("read not configured")
+}
+
+func (c *fakeClientConn) Write(ctx context.Context, _ websocket.MessageType, payload []byte) error {
+	c.writeOnce.Do(func() { close(c.writeStarted) })
+	if c.writeFn != nil {
+		return c.writeFn(ctx, payload)
+	}
+	select {
+	case <-c.allowWrite:
+		copied := append([]byte(nil), payload...)
+		c.writes <- copied
+		if c.events != nil {
+			c.events <- string(copied)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return errors.New("connection closed")
+	}
+}
+
+func (c *fakeClientConn) Ping(context.Context) error {
+	return nil
+}
+
+func (c *fakeClientConn) Close(websocket.StatusCode, string) error {
+	c.closeCount.Add(1)
+	c.closeOnce.Do(func() { close(c.closed) })
+	if c.closeStarted != nil {
+		close(c.closeStarted)
+	}
+	if c.closeBlock != nil {
+		<-c.closeBlock
+	}
+	if c.events != nil {
+		c.events <- "close"
+	}
+	return nil
+}
+
+func TestClientOutboxSlowWriterDoesNotDelayFastClient(t *testing.T) {
+	slowConn := newFakeClientConn(true)
+	fastConn := newFakeClientConn(false)
+	slowSession := newClientSession(slowConn, nil)
+	fastSession := newClientSession(fastConn, nil)
+	t.Cleanup(func() {
+		slowSession.close(websocket.StatusNormalClosure, "test complete")
+		fastSession.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	slowSession.enqueueSnapshot([]byte(`{"Tick":1}`))
+	select {
+	case <-slowConn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected slow client writer to start")
+	}
+
+	fastSession.enqueueSnapshot([]byte(`{"Tick":1}`))
+	select {
+	case payload := <-fastConn.writes:
+		if string(payload) != `{"Tick":1}` {
+			t.Fatalf("expected fast client snapshot, got %s", payload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected blocked client writer not to delay fast client")
+	}
+}
+
+func TestSlowClientWriterDoesNotDelayRoomTickOrFastClient(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	started := createStartedRoomInStore(t, store)
+	room := store.lookupRoom(started.ID)
+	slowConn := newFakeClientConn(true)
+	fastConn := newFakeClientConn(false)
+	slowSession := newClientSession(slowConn, nil)
+	fastSession := newClientSession(fastConn, nil)
+
+	room.mu.Lock()
+	room.clients["slow"] = slowSession
+	room.clients["fast"] = fastSession
+	room.mu.Unlock()
+
+	tickDone := make(chan struct{})
+	go func() {
+		store.tickRoom(started.ID)
+		close(tickDone)
+	}()
+	select {
+	case <-tickDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected room tick not to wait for a blocked client writer")
+	}
+	select {
+	case <-fastConn.writes:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected fast client to receive tick snapshot")
+	}
+}
+
+func TestClientOutboxSnapshotSlotKeepsNewestPayload(t *testing.T) {
+	conn := newFakeClientConn(true)
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	session.enqueueSnapshot([]byte("first"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take the first snapshot")
+	}
+
+	session.enqueueSnapshot([]byte("second"))
+	session.enqueueSnapshot([]byte("newest"))
+	close(conn.allowWrite)
+
+	select {
+	case payload := <-conn.writes:
+		if string(payload) != "first" {
+			t.Fatalf("expected in-flight first snapshot, got %q", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected first snapshot write")
+	}
+	select {
+	case payload := <-conn.writes:
+		if string(payload) != "newest" {
+			t.Fatalf("expected newest queued snapshot, got %q", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected replacement snapshot write")
+	}
+}
+
+func TestClientOutboxPreservesOrderedControlBeforeSnapshot(t *testing.T) {
+	conn := newFakeClientConn(true)
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	session.enqueueSnapshot([]byte("in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take the first snapshot")
+	}
+
+	for _, payload := range []string{"Ready", "starting", "error"} {
+		if !session.enqueueControl([]byte(payload)) {
+			t.Fatalf("expected %s control payload to enqueue", payload)
+		}
+	}
+	session.enqueueSnapshot([]byte("gameplay"))
+	close(conn.allowWrite)
+
+	for _, want := range []string{"in-flight", "Ready", "starting", "error", "gameplay"} {
+		select {
+		case payload := <-conn.writes:
+			if string(payload) != want {
+				t.Fatalf("expected payload %q, got %q", want, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected payload %q", want)
+		}
+	}
+}
+
+func TestClientOutboxControlOverflowClosesAndReleasesCurrentSessionOnce(t *testing.T) {
+	conn := newFakeClientConn(true)
+	var released atomic.Int32
+	var session *clientSession
+	session = newClientSession(conn, func(expected *clientSession) {
+		if expected != session {
+			t.Errorf("expected release callback for current session")
+		}
+		released.Add(1)
+	})
+
+	session.enqueueSnapshot([]byte("in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take the first snapshot")
+	}
+
+	for index := 0; index < 8; index++ {
+		if !session.enqueueControl([]byte{byte(index)}) {
+			t.Fatalf("expected control payload %d to fit size-8 queue", index)
+		}
+	}
+	if session.enqueueControl([]byte("overflow")) {
+		t.Fatal("expected ninth control payload to overflow")
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected overflow to close connection once, got %d", got)
+	}
+	if got := released.Load(); got != 1 {
+		t.Fatalf("expected overflow to release session once, got %d", got)
+	}
+
+	session.close(websocket.StatusGoingAway, "second close")
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected repeated close to preserve one connection close, got %d", got)
+	}
+	if got := released.Load(); got != 1 {
+		t.Fatalf("expected repeated close to preserve one release, got %d", got)
+	}
+}
+
+func TestClientOutboxWriteErrorOrTimeoutClosesAndReleasesCurrentSessionOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{name: "write error", err: errors.New("write failed")},
+		{name: "write timeout", err: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := newFakeClientConn(false)
+			conn.writeFn = func(context.Context, []byte) error {
+				return tt.err
+			}
+			released := make(chan *clientSession, 2)
+			var session *clientSession
+			session = newClientSession(conn, func(expected *clientSession) {
+				released <- expected
+			})
+
+			if !session.enqueueControl([]byte("control")) {
+				t.Fatal("expected control payload to enqueue")
+			}
+			select {
+			case expected := <-released:
+				if expected != session {
+					t.Fatal("expected writer failure to release the same current session")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("expected writer failure to release session")
+			}
+			deadline := time.Now().Add(time.Second)
+			for conn.closeCount.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if got := conn.closeCount.Load(); got != 1 {
+				t.Fatalf("expected writer failure to close connection once, got %d", got)
+			}
+
+			session.close(websocket.StatusGoingAway, "repeated close")
+			if got := conn.closeCount.Load(); got != 1 {
+				t.Fatalf("expected repeated close to preserve one connection close, got %d", got)
+			}
+			select {
+			case <-released:
+				t.Fatal("expected repeated close not to release session again")
+			case <-time.After(20 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestClientOutboxWriteErrorReleasesBeforeBlockingConnectionClose(t *testing.T) {
+	conn := newFakeClientConn(false)
+	conn.writeFn = func(context.Context, []byte) error {
+		return errors.New("write failed")
+	}
+	allowClose := make(chan struct{})
+	defer close(allowClose)
+	conn.closeBlock = allowClose
+	conn.closeStarted = make(chan struct{})
+	released := make(chan struct{})
+	session := newClientSession(conn, func(*clientSession) {
+		close(released)
+	})
+
+	if !session.enqueueControl([]byte("control")) {
+		t.Fatal("expected control payload to enqueue")
+	}
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected write error to start connection close")
+	}
+	select {
+	case <-released:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected session release not to wait for blocking connection close")
+	}
+}
+
+func TestClientOutboxUsesFreshFiveSecondContextForEveryWrite(t *testing.T) {
+	conn := newFakeClientConn(false)
+	contexts := make(chan context.Context, 2)
+	conn.writeFn = func(ctx context.Context, _ []byte) error {
+		contexts <- ctx
+		return nil
+	}
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	if !session.enqueueControl([]byte("first")) {
+		t.Fatal("expected first control payload to enqueue")
+	}
+	first := <-contexts
+	if !session.enqueueControl([]byte("second")) {
+		t.Fatal("expected second control payload to enqueue")
+	}
+	second := <-contexts
+	if first == second {
+		t.Fatal("expected every write to receive a fresh context")
+	}
+	for index, ctx := range []context.Context{first, second} {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("expected write context %d to have a deadline", index+1)
+		}
+		remaining := time.Until(deadline)
+		if remaining < 4900*time.Millisecond || remaining > 5*time.Second {
+			t.Fatalf("expected write context %d deadline near 5s, got %s", index+1, remaining)
+		}
+	}
+}
+
+func TestClientOutboxMarshalsNormalSnapshotOnce(t *testing.T) {
+	firstConn := newFakeClientConn(false)
+	secondConn := newFakeClientConn(false)
+	first := newClientSession(firstConn, nil)
+	second := newClientSession(secondConn, nil)
+	t.Cleanup(func() {
+		first.close(websocket.StatusNormalClosure, "test complete")
+		second.close(websocket.StatusNormalClosure, "test complete")
+	})
+	var calls atomic.Int32
+
+	if !enqueueSnapshotMessage([]*clientSession{first, second}, countingJSONMessage{calls: &calls}) {
+		t.Fatal("expected snapshot message to enqueue")
+	}
+	for index, conn := range []*fakeClientConn{firstConn, secondConn} {
+		select {
+		case payload := <-conn.writes:
+			if string(payload) != `{"Type":"snapshot"}` {
+				t.Fatalf("expected client %d snapshot payload, got %s", index+1, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected client %d snapshot payload", index+1)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected one normal snapshot marshal for fanout, got %d", got)
+	}
+}
+
+func TestClientOutboxTerminalDiscardsSnapshotAndWritesPayloadsBeforeClose(t *testing.T) {
+	conn := newFakeClientConn(true)
+	conn.events = make(chan string, 8)
+	session := newClientSession(conn, nil)
+
+	if !session.enqueueControl([]byte("existing-control")) {
+		t.Fatal("expected existing control payload to enqueue")
+	}
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take existing control")
+	}
+	session.enqueueSnapshot([]byte("stale-gameplay"))
+	if !session.enqueueTerminal([]byte("terminal-snapshot"), []byte("GameEnd"), "game ended") {
+		t.Fatal("expected terminal command sequence to enqueue")
+	}
+	if session.enqueueControl([]byte("after-terminal")) {
+		t.Fatal("expected control payload after terminal to be rejected")
+	}
+	session.enqueueSnapshot([]byte("after-terminal"))
+	close(conn.allowWrite)
+
+	for _, want := range []string{"existing-control", "terminal-snapshot", "GameEnd", "close"} {
+		select {
+		case event := <-conn.events:
+			if event != want {
+				t.Fatalf("expected terminal event %q, got %q", want, event)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected terminal event %q", want)
+		}
+	}
+	select {
+	case event := <-conn.events:
+		t.Fatalf("expected no payload after terminal close, got %q", event)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestTerminalDeliveryDoesNotLetRoomResourcesCloseRaceWriter(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	conn := newFakeClientConn(true)
+	conn.events = make(chan string, 4)
+	session := newClientSession(conn, nil)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.clients[issued.Player.ID] = session
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{
+			Tick: 1,
+			Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(issued.Player.ID),
+				HP:     0,
+				IsDead: true,
+			}},
+		}
+	})
+	room.mu.Unlock()
+
+	store.tickRoom(created.ID)
+	if got := conn.closeCount.Load(); got != 0 {
+		t.Fatalf("expected room resource cleanup not to close terminal writer early, got %d closes", got)
+	}
+	close(conn.allowWrite)
+
+	var types []string
+	for range 2 {
+		select {
+		case event := <-conn.events:
+			var envelope struct {
+				Type string `json:"Type"`
+			}
+			if err := json.Unmarshal([]byte(event), &envelope); err != nil {
+				t.Fatalf("decode terminal payload %q: %v", event, err)
+			}
+			types = append(types, envelope.Type)
+		case <-time.After(time.Second):
+			t.Fatal("expected terminal payload")
+		}
+	}
+	if got, want := strings.Join(types, ","), "snapshot,GameEnd"; got != want {
+		t.Fatalf("expected terminal payload order %s, got %s", want, got)
+	}
+	select {
+	case event := <-conn.events:
+		if event != "close" {
+			t.Fatalf("expected close after terminal payloads, got %q", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal close")
+	}
+}
+
+func TestWebSocketControlOrderStartingBeforeCountdownCompletes(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	first, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add first player: %v", err)
+	}
+	second, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add second player: %v", err)
+	}
+
+	conn := newFakeClientConn(false)
+	session := newClientSession(conn, nil)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.matchStatus = MatchStatusLoading
+	room.readyPlayers = make(map[string]bool)
+	room.readyPlayers[first.Player.ID] = true
+	room.clients[second.Player.ID] = session
+	room.mu.Unlock()
+
+	session.enqueueMu.Lock()
+	barrierLocked := true
+	defer func() {
+		if barrierLocked {
+			session.enqueueMu.Unlock()
+		}
+	}()
+	readyDone := make(chan struct{})
+	go func() {
+		store.markClientReady(created.ID, second.Player.ID, session)
+		close(readyDone)
+	}()
+	if !waitForFakeTickerCount(fakeClock, time.Second, 1, time.Second) {
+		t.Fatal("expected ready transition to create countdown ticker")
+	}
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+
+	gameplayInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+	prematureStart := waitForFakeTickerCount(fakeClock, gameplayInterval, 1, 100*time.Millisecond)
+	session.enqueueMu.Unlock()
+	barrierLocked = false
+	select {
+	case <-readyDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected ready transition to finish after enqueue barrier release")
+	}
+	if prematureStart {
+		t.Fatal("expected countdown not to complete before starting control enqueue")
+	}
+	if !waitForFakeTickerCount(fakeClock, gameplayInterval, 1, time.Second) {
+		t.Fatal("expected countdown to complete after starting control enqueue")
+	}
+
+	starting := readFakeMatchSnapshot(t, conn)
+	started := readFakeMatchSnapshot(t, conn)
+	if starting.Snapshot.Status != string(MatchStatusStarting) || starting.Snapshot.Tick != 0 {
+		t.Fatalf("expected starting control first, got %+v", starting.Snapshot)
+	}
+	if started.Snapshot.Status != string(MatchStatusStarted) || started.Snapshot.Tick != 0 {
+		t.Fatalf("expected started control second, got %+v", started.Snapshot)
+	}
+}
+
+func TestWebSocketControlOrderStartedBeforeGameplayTick(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+
+	conn := newFakeClientConn(false)
+	session := newClientSession(conn, nil)
+	countdownTicker := newCountingTicker()
+	stepped := make(chan struct{})
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.matchStatus = MatchStatusStarting
+	room.countdown = 1
+	room.countdownTicker = countdownTicker
+	room.countdownStop = make(chan struct{})
+	room.clients[issued.Player.ID] = session
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		close(stepped)
+		return simulation.Snapshot{Tick: 1}
+	})
+	room.mu.Unlock()
+
+	session.enqueueMu.Lock()
+	barrierLocked := true
+	defer func() {
+		if barrierLocked {
+			session.enqueueMu.Unlock()
+		}
+	}()
+	countdownDone := make(chan struct{})
+	go func() {
+		store.tickMatchCountdownRoom(room, countdownTicker)
+		close(countdownDone)
+	}()
+	gameplayInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+	if !waitForFakeTickerCount(fakeClock, gameplayInterval, 1, time.Second) {
+		t.Fatal("expected final countdown transition to create gameplay ticker")
+	}
+	fakeClock.TickTicker(gameplayInterval, 0)
+	select {
+	case <-stepped:
+		session.enqueueMu.Unlock()
+		barrierLocked = false
+		t.Fatal("expected gameplay tick not to run before started control enqueue")
+	case <-time.After(100 * time.Millisecond):
+	}
+	session.enqueueMu.Unlock()
+	barrierLocked = false
+	select {
+	case <-countdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected final countdown transition to finish")
+	}
+	select {
+	case <-stepped:
+	case <-time.After(time.Second):
+		t.Fatal("expected gameplay tick after started control enqueue")
+	}
+
+	started := readFakeMatchSnapshot(t, conn)
+	gameplay := readFakeMatchSnapshot(t, conn)
+	if started.Snapshot.Status != string(MatchStatusStarted) || started.Snapshot.Tick != 0 {
+		t.Fatalf("expected started control first, got %+v", started.Snapshot)
+	}
+	if gameplay.Snapshot.Status != string(MatchStatusStarted) || gameplay.Snapshot.Tick != 1 {
+		t.Fatalf("expected gameplay snapshot second, got %+v", gameplay.Snapshot)
+	}
+}
+
 func TestWebSocketTokenRejectsInvalidCredentials(t *testing.T) {
 	tests := []struct {
 		name string
@@ -216,7 +867,7 @@ func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 	store.rollbackClientReservation(reservation)
 }
 
-func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T) {
+func TestStaleSessionReaderReleasePreservesReplacementRoomSession(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
 	created, err := store.createRoom()
@@ -231,8 +882,9 @@ func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T)
 	if err != nil {
 		t.Fatalf("reserve client: %v", err)
 	}
-	staleConn := new(websocket.Conn)
-	if !store.attachClient(reservation, staleConn) {
+	staleConn := newFakeClientConn(false)
+	staleSession, attached := store.attachClientSession(reservation, staleConn)
+	if !attached {
 		t.Fatal("expected stale connection to attach before replacement")
 	}
 
@@ -245,30 +897,34 @@ func TestStoreStaleClientReleasePreservesReplacementRoomConnection(t *testing.T)
 		t.Fatal("expected original room to be marked removed")
 	}
 
-	currentConn := new(websocket.Conn)
+	currentSession := newClientSession(newFakeClientConn(false), nil)
+	t.Cleanup(func() {
+		staleSession.close(websocket.StatusNormalClosure, "test complete")
+		currentSession.close(websocket.StatusNormalClosure, "test complete")
+	})
 	store.mu.Lock()
 	replacement := store.newRoomLocked(created.ID)
 	replacement.Players = append(replacement.Players, issued.Player)
-	replacement.clients[issued.Player.ID] = currentConn
+	replacement.clients[issued.Player.ID] = currentSession
 	store.rooms[created.ID] = replacement
 	store.mu.Unlock()
 
-	store.releaseClient(reservation, staleConn)
+	staleSession.close(websocket.StatusNormalClosure, "stale reader closed")
 
 	if got := store.lookupRoom(created.ID); got != replacement {
 		t.Fatal("expected stale release not to delete the replacement room")
 	}
 	replacement.mu.Lock()
-	gotConn, connected := replacement.clients[issued.Player.ID]
+	gotSession, connected := replacement.clients[issued.Player.ID]
 	delete(replacement.clients, issued.Player.ID)
 	replacement.mu.Unlock()
 	store.Close()
-	if !connected || gotConn != currentConn {
+	if !connected || gotSession != currentSession {
 		t.Fatal("expected stale release not to detach the replacement room connection")
 	}
 }
 
-func TestStoreStaleClientReleasePreservesCurrentConnection(t *testing.T) {
+func TestStaleSessionReaderReleaseDoesNotRemoveReconnect(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
 	created, err := store.createRoom()
@@ -283,26 +939,173 @@ func TestStoreStaleClientReleasePreservesCurrentConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve client: %v", err)
 	}
-	staleConn := new(websocket.Conn)
-	if !store.attachClient(reservation, staleConn) {
+	staleSession, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+	if !attached {
 		t.Fatal("expected stale connection to attach")
 	}
 
-	currentConn := new(websocket.Conn)
+	currentSession := newClientSession(newFakeClientConn(false), nil)
+	t.Cleanup(func() {
+		staleSession.close(websocket.StatusNormalClosure, "test complete")
+		currentSession.close(websocket.StatusNormalClosure, "test complete")
+	})
 	room := reservation.room
 	room.mu.Lock()
-	room.clients[issued.Player.ID] = currentConn
+	room.clients[issued.Player.ID] = currentSession
 	room.mu.Unlock()
 
-	store.releaseClient(reservation, staleConn)
+	staleSession.close(websocket.StatusNormalClosure, "stale reader closed")
 
 	room.mu.Lock()
-	gotConn, connected := room.clients[issued.Player.ID]
+	gotSession, connected := room.clients[issued.Player.ID]
 	delete(room.clients, issued.Player.ID)
 	room.mu.Unlock()
 	store.Close()
-	if !connected || gotConn != currentConn {
+	if !connected || gotSession != currentSession {
 		t.Fatal("expected stale release not to detach the current connection")
+	}
+}
+
+func TestStaleSessionWriterFailureDoesNotRemoveReconnect(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+
+	releaseWrite := make(chan struct{})
+	staleConn := newFakeClientConn(false)
+	staleConn.writeFn = func(context.Context, []byte) error {
+		<-releaseWrite
+		return errors.New("stale writer failed")
+	}
+	staleSession, attached := store.attachClientSession(reservation, staleConn)
+	if !attached {
+		t.Fatal("expected stale session to attach")
+	}
+	if !staleSession.enqueueControl([]byte("control")) {
+		t.Fatal("expected stale writer control to enqueue")
+	}
+	select {
+	case <-staleConn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected stale writer to start")
+	}
+
+	currentSession := newClientSession(newFakeClientConn(false), nil)
+	room := reservation.room
+	room.mu.Lock()
+	room.clients[issued.Player.ID] = currentSession
+	room.mu.Unlock()
+	close(releaseWrite)
+
+	deadline := time.Now().Add(time.Second)
+	for staleConn.closeCount.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := staleConn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected stale writer failure to close old connection once, got %d", got)
+	}
+	room.mu.Lock()
+	gotSession, connected := room.clients[issued.Player.ID]
+	room.mu.Unlock()
+	if !connected || gotSession != currentSession {
+		t.Fatal("expected stale writer failure not to remove reconnected current session")
+	}
+}
+
+func TestStaleSessionPayloadCannotMutateReconnectWhileOldCloseBlocks(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve old session: %v", err)
+	}
+
+	allowOldClose := make(chan struct{})
+	oldConn := newFakeClientConn(false)
+	oldConn.closeBlock = allowOldClose
+	oldConn.closeStarted = make(chan struct{})
+	oldSession, attached := store.attachClientSession(reservation, oldConn)
+	if !attached {
+		t.Fatal("expected old session to attach")
+	}
+	oldCloseDone := make(chan struct{})
+	go func() {
+		oldSession.close(websocket.StatusNormalClosure, "old reader closed")
+		close(oldCloseDone)
+	}()
+	select {
+	case <-oldConn.closeStarted:
+	case <-time.After(time.Second):
+		close(allowOldClose)
+		t.Fatal("expected old connection close to block after release")
+	}
+
+	reconnectReservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		close(allowOldClose)
+		t.Fatalf("reserve reconnect: %v", err)
+	}
+	currentSession, attached := store.attachClientSession(reconnectReservation, newFakeClientConn(false))
+	if !attached {
+		close(allowOldClose)
+		t.Fatal("expected reconnect session to attach")
+	}
+
+	store.setInput(created.ID, issued.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}}, oldSession)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	_, staleInputApplied := room.pendingInputs[issued.Player.ID]
+	room.Status = RoomStatusWaiting
+	room.matchStatus = MatchStatusLoading
+	room.readyPlayers = make(map[string]bool)
+	room.mu.Unlock()
+	store.markClientReady(created.ID, issued.Player.ID, oldSession)
+
+	room.mu.Lock()
+	current := room.clients[issued.Player.ID]
+	staleReadyApplied := room.readyPlayers[issued.Player.ID]
+	status := room.matchStatus
+	room.mu.Unlock()
+	close(allowOldClose)
+	select {
+	case <-oldCloseDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected old connection close to finish")
+	}
+
+	if staleInputApplied {
+		t.Fatal("expected stale session input not to mutate reconnected room")
+	}
+	if staleReadyApplied || status != MatchStatusLoading {
+		t.Fatalf("expected stale ready payload not to advance reconnect, ready=%t status=%q", staleReadyApplied, status)
+	}
+	if current != currentSession {
+		t.Fatal("expected stale payloads not to replace current session")
 	}
 }
 
@@ -499,13 +1302,9 @@ func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T
 	}
 }
 
-func TestWebSocketWriteTimeoutStaysWithinRealtimeBudget(t *testing.T) {
-	tickBudget := time.Second / time.Duration(simulation.TickRate)
-	if webSocketWriteTimeout > tickBudget {
-		t.Fatalf("expected websocket write timeout %s to stay within tick budget %s", webSocketWriteTimeout, tickBudget)
-	}
-	if webSocketWriteTimeout > 10*time.Millisecond {
-		t.Fatalf("expected websocket write timeout to stay in 10ms latency budget, got %s", webSocketWriteTimeout)
+func TestWebSocketWriterUsesFiveSecondWriteTimeout(t *testing.T) {
+	if webSocketWriteTimeout != 5*time.Second {
+		t.Fatalf("expected websocket writer timeout 5s, got %s", webSocketWriteTimeout)
 	}
 }
 
@@ -1185,13 +1984,18 @@ func TestStoreConcurrentInputListDeleteAndTick(t *testing.T) {
 	for range 32 {
 		started := createStartedRoomInStore(t, store)
 		playerID := started.Players[0].ID
+		session := newClientSession(newFakeClientConn(false), nil)
+		room := store.lookupRoom(started.ID)
+		room.mu.Lock()
+		room.clients[playerID] = session
+		room.mu.Unlock()
 		begin := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(4)
 		go func() {
 			defer wg.Done()
 			<-begin
-			store.setInput(started.ID, playerID, inputMessage{MoveDir: simulation.Vector2{X: 1}})
+			store.setInput(started.ID, playerID, inputMessage{MoveDir: simulation.Vector2{X: 1}}, session)
 		}()
 		go func() {
 			defer wg.Done()
@@ -1565,6 +2369,32 @@ func (c *fakeClock) StopCount() int {
 	return c.stopCount
 }
 
+func waitForFakeTickerCount(clock *fakeClock, duration time.Duration, count int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if clock.TickerCount(duration) >= count {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return clock.TickerCount(duration) >= count
+}
+
+func readFakeMatchSnapshot(t *testing.T, conn *fakeClientConn) matchSnapshotMessage {
+	t.Helper()
+	select {
+	case payload := <-conn.writes:
+		var message matchSnapshotMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode fake match snapshot: %v", err)
+		}
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("expected fake match snapshot")
+		return matchSnapshotMessage{}
+	}
+}
+
 func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID string) {
 	t.Helper()
 
@@ -1592,13 +2422,13 @@ func waitForAttachedClient(t *testing.T, store *Store, roomID string, playerID s
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		room := store.lookupRoom(roomID)
-		var conn *websocket.Conn
+		var session *clientSession
 		if room != nil {
 			room.mu.Lock()
-			conn = room.clients[playerID]
+			session = room.clients[playerID]
 			room.mu.Unlock()
 		}
-		if conn != nil {
+		if session != nil {
 			return
 		}
 		time.Sleep(time.Millisecond)

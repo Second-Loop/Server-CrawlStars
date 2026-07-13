@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
-	"nhooyr.io/websocket"
 )
 
 // Store owns registry and store-lifecycle synchronization only.
@@ -55,7 +54,7 @@ type room struct {
 	countdown       int
 	state           simulationStepper
 	pendingInputs   map[string]simulation.InputCommand
-	clients         map[string]*websocket.Conn
+	clients         map[string]*clientSession
 	reservations    map[string]*clientReservation
 	latestSnapshot  snapshotSummary
 	createdAt       time.Time
@@ -409,7 +408,7 @@ func (s *Store) newRoomLocked(roomID string) *room {
 		Status:         RoomStatusWaiting,
 		sessions:       make(map[string]playerSession),
 		pendingInputs:  make(map[string]simulation.InputCommand),
-		clients:        make(map[string]*websocket.Conn),
+		clients:        make(map[string]*clientSession),
 		reservations:   make(map[string]*clientReservation),
 		createdAt:      now,
 		lastActivityAt: now,

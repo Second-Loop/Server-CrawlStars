@@ -26,7 +26,7 @@ const (
 	defaultRoomDebugDeleteMsg    = "room deleted"
 	defaultMatchCancelMsg        = "match canceled"
 	defaultGameEndCloseMsg       = "game ended"
-	webSocketWriteTimeout        = 10 * time.Millisecond
+	webSocketWriteTimeout        = 5 * time.Second
 	matchCountdownSeconds        = 5
 )
 
