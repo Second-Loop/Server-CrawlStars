@@ -20,6 +20,7 @@ internal/rooms
   websocket.go     connection, input, 30Hz tick/delivery
   messages.go      REST/WebSocket DTO와 변환
   cleanup.go       TTL과 room resource 종료
+  rate_limit.go    matchmaking client IP와 token bucket
   rooms.go         status, timeout, clock/ticker adapter
   errors.go        lifecycle sentinel error
   game_end.go      GameEnd 결과 계산
@@ -52,7 +53,7 @@ Cloudflare Tunnel
   -> tolerblanc.com                -> 127.0.0.1:8081 Caddy hello
 ```
 
-Go server는 production에서도 `127.0.0.1:8080`에 bind합니다. Public HTTPS edge는 Cloudflare Tunnel입니다. Caddy는 apex hello page용 local service입니다.
+Go server는 production에서도 `127.0.0.1:8080`에 bind합니다. Public HTTPS edge는 Cloudflare Tunnel입니다. Caddy는 apex hello page용 local service입니다. Rate limiter가 public client IP를 쓰려면 loopback cloudflared peer를 `TRUSTED_PROXY_CIDRS`로 명시해야 하며, `X-Forwarded-For`는 신뢰하지 않습니다.
 
 ## Simulation core
 
@@ -117,7 +118,11 @@ REST debug API:
 - `POST /rooms/{roomID}/players`
 - `POST /rooms/{roomID}/start`
 
+이 일곱 operation과 관련 method fallback은 기본 비활성화되어 JSON `404 not_found`를 반환합니다. `ENABLE_DEBUG_API=true`일 때는 정확히 하나의 `Authorization: Bearer <DEBUG_API_TOKEN>`을 먼저 검사합니다. Missing/wrong/multiple credential은 존재하지 않는 room이나 원래 405인 method보다 먼저 `401 unauthorized`입니다. 올바른 credential 뒤에야 route별 2xx/404/405/409/500을 평가합니다. WebSocket GET은 이 debug guard를 거치지 않습니다.
+
 Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
+
+Room/player ID는 16 random bytes를 Raw URL Base64로 바꾼 22자 payload와 prefix를 사용합니다. Player session token은 32 random bytes 기반 43자이며, 발급 응답의 `sessionToken`과 tokenized `webSocketPath`에 같은 raw secret으로 나타납니다. Room private state는 SHA-256 digest만 저장합니다. Public Room/Player/Ready/Snapshot/GameEnd DTO에는 raw token이나 digest가 없습니다.
 
 `cmd/server`는 시작할 때 embed된 `server-config/game-config.json`을 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. config를 읽지 못하거나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map fallback을 사용합니다.
 
@@ -130,7 +135,9 @@ Simple matchmaking:
 - active mode의 `playersPerMatch = 2`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
 - 두 WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
 - 두 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
-- response는 `room`, `player`, `webSocketPath`를 포함합니다.
+- response는 `room`, `player`, `sessionToken`, tokenized `webSocketPath`를 포함합니다.
+- Join 전에 process-local per-IP token bucket을 평가합니다. 기본은 10 requests/minute, burst 4이며 quota가 없으면 429가 store의 409/500보다 먼저 나갑니다. 허용된 409/500 요청도 quota를 소비합니다.
+- Immediate peer가 trusted CIDR이고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 client IP로 씁니다. 그 외에는 peer로 fallback하고 `X-Forwarded-For`는 무시합니다.
 
 `map.maxPlayers = 6`은 map/debug room capacity입니다. 현재 active matchmaking size는 mode config의 `playersPerMatch = 2`이고, 6인 solo나 3v3 team mode는 활성화하지 않습니다.
 
@@ -143,8 +150,10 @@ Mode/team rule:
 
 WebSocket:
 
-- `WS /rooms/{roomID}/players/{playerID}`
-- 발급된 room/player만 연결할 수 있습니다.
+- `WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>`
+- 발급된 room/player와 정확히 한 개의 non-empty session token만 연결할 수 있습니다.
+- 정상 extra query key는 허용하지만 malformed query pair는 401입니다.
+- 검증 순서는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409입니다.
 - waiting room은 input을 받을 수 있지만 snapshot을 보내지 않습니다.
 - matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown: 5`를 1번 보냅니다.
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
@@ -154,6 +163,8 @@ WebSocket:
 - 현재 active GameEnd mode는 `duel_1v1`입니다. N-player solo, team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 아직 활성 규칙이 아니며 후속 issue에서 mode별 helper로 확장합니다.
 - WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
+
+Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
 ## Cleanup
 
@@ -169,7 +180,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 ## 의도적으로 없는 것
 
 - production matchmaking queue/rating
-- persistence/database/auth
+- persistence/database/account auth
 - generic scheduler/runner/orchestration
 - dashboard
 - Kubernetes
