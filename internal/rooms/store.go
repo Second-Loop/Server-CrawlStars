@@ -28,6 +28,7 @@ type Store struct {
 	clock             clock
 	gameMap           simulation.MapData
 	gameConfig        simulation.GameConfig
+	observation       *observationState
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
 	janitorStop       chan struct{}
@@ -127,6 +128,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		clock:             clock,
 		gameMap:           resolvedConfig.Map,
 		gameConfig:        resolvedConfig,
+		observation:       newObservationState(nil),
 		heartbeatInterval: heartbeatInterval,
 		heartbeatTimeout:  heartbeatTimeout,
 		janitorStop:       make(chan struct{}),
