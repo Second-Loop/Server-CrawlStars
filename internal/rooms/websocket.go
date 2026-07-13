@@ -33,24 +33,39 @@ type writerCommand struct {
 	reason  string
 }
 
+type terminalWriterCommand struct {
+	snapshot []byte
+	gameEnd  []byte
+	reason   string
+}
+
 type clientSession struct {
-	conn      clientConn
-	snapshots chan []byte
-	control   chan writerCommand
-	done      chan struct{}
-	enqueueMu sync.Mutex
-	closeOnce sync.Once
-	onClose   func(*clientSession)
-	terminal  bool
+	conn            clientConn
+	snapshots       chan []byte
+	control         chan writerCommand
+	terminalHandoff chan terminalWriterCommand
+	done            chan struct{}
+	writerDone      chan struct{}
+	writerCtx       context.Context
+	cancelWriter    context.CancelFunc
+	enqueueMu       sync.Mutex
+	closeOnce       sync.Once
+	onClose         func(*clientSession)
+	terminal        bool
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
+	writerCtx, cancelWriter := context.WithCancel(context.Background())
 	session := &clientSession{
-		conn:      conn,
-		snapshots: make(chan []byte, 1),
-		control:   make(chan writerCommand, 8),
-		done:      make(chan struct{}),
-		onClose:   onClose,
+		conn:            conn,
+		snapshots:       make(chan []byte, 1),
+		control:         make(chan writerCommand, 8),
+		terminalHandoff: make(chan terminalWriterCommand, 1),
+		done:            make(chan struct{}),
+		writerDone:      make(chan struct{}),
+		writerCtx:       writerCtx,
+		cancelWriter:    cancelWriter,
+		onClose:         onClose,
 	}
 	go session.writeLoop()
 	return session
@@ -131,25 +146,17 @@ func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason 
 	case <-s.snapshots:
 	default:
 	}
-	commands := [...]writerCommand{
-		{kind: writerCommandPayload, payload: snapshot},
-		{kind: writerCommandPayload, payload: gameEnd},
-		{kind: writerCommandClose, reason: reason},
-	}
-	if cap(s.control)-len(s.control) < len(commands) {
-		s.enqueueMu.Unlock()
-		s.close(websocket.StatusGoingAway, "control queue overflow")
-		return false
-	}
-	for _, command := range commands {
-		s.control <- command
-	}
+	s.terminalHandoff <- terminalWriterCommand{snapshot: snapshot, gameEnd: gameEnd, reason: reason}
 	s.enqueueMu.Unlock()
 	return true
 }
 
 func (s *clientSession) writeLoop() {
+	defer close(s.writerDone)
 	for {
+		if s.isDone() {
+			return
+		}
 		select {
 		case command := <-s.control:
 			if !s.writeCommand(command) {
@@ -158,12 +165,21 @@ func (s *clientSession) writeLoop() {
 			continue
 		default:
 		}
+		select {
+		case terminal := <-s.terminalHandoff:
+			s.writeTerminal(terminal)
+			return
+		default:
+		}
 
 		select {
 		case command := <-s.control:
 			if !s.writeCommand(command) {
 				return
 			}
+		case terminal := <-s.terminalHandoff:
+			s.writeTerminal(terminal)
+			return
 		case payload := <-s.snapshots:
 			if !s.writeCommand(writerCommand{kind: writerCommandPayload, payload: payload}) {
 				return
@@ -174,12 +190,37 @@ func (s *clientSession) writeLoop() {
 	}
 }
 
+func (s *clientSession) writeTerminal(terminal terminalWriterCommand) {
+	for {
+		select {
+		case command := <-s.control:
+			if !s.writeCommand(command) {
+				return
+			}
+		default:
+			for _, command := range [...]writerCommand{
+				{kind: writerCommandPayload, payload: terminal.snapshot},
+				{kind: writerCommandPayload, payload: terminal.gameEnd},
+				{kind: writerCommandClose, reason: terminal.reason},
+			} {
+				if !s.writeCommand(command) {
+					return
+				}
+			}
+			return
+		}
+	}
+}
+
 func (s *clientSession) writeCommand(command writerCommand) bool {
+	if s.isDone() {
+		return false
+	}
 	if command.kind == writerCommandClose {
 		s.close(websocket.StatusNormalClosure, command.reason)
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), webSocketWriteTimeout)
+	ctx, cancel := context.WithTimeout(s.writerCtx, webSocketWriteTimeout)
 	err := s.conn.Write(ctx, websocket.MessageText, command.payload)
 	cancel()
 	if err != nil {
@@ -189,9 +230,19 @@ func (s *clientSession) writeCommand(command writerCommand) bool {
 	return true
 }
 
+func (s *clientSession) isDone() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *clientSession) close(code websocket.StatusCode, reason string) {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.cancelWriter()
 		if s.onClose != nil {
 			s.onClose(s)
 		}
@@ -560,6 +611,7 @@ func (s *Store) tickRoomState(room *room) {
 	var deliveries []webSocketDelivery
 	var snapshotSessions []*clientSession
 	var snapshotPayload []byte
+	var snapshotMarshalErr error
 	gameEnded := false
 
 	room.mu.Lock()
@@ -585,8 +637,10 @@ func (s *Store) tickRoomState(room *room) {
 	results := calculateGameEndResults(s.gameConfig, snapshot)
 	var playerIDs []string
 	if len(results) > 0 {
-		snapshotPayload, _ = marshalMessage(message)
-		deliveries = append(deliveries, room.gameEndDeliveries(results)...)
+		snapshotPayload, snapshotMarshalErr = marshalMessage(message)
+		if snapshotMarshalErr == nil {
+			deliveries = append(deliveries, room.gameEndDeliveries(results)...)
+		}
 		room.clients = nil
 		playerIDs, gameEnded = resources.removeRoomLocked(room)
 	} else {
@@ -600,6 +654,11 @@ func (s *Store) tickRoomState(room *room) {
 		}
 	}
 	if gameEnded {
+		if snapshotMarshalErr != nil {
+			closeClientSessions(snapshotSessions, "message marshal failed")
+			resources.close(defaultGameEndCloseMsg)
+			return
+		}
 		for _, delivery := range deliveries {
 			gameEndPayload, err := marshalMessage(delivery.message)
 			if err != nil {

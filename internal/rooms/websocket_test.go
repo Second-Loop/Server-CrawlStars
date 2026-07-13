@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -394,6 +396,60 @@ func TestClientOutboxUsesFreshFiveSecondContextForEveryWrite(t *testing.T) {
 	}
 }
 
+func TestClientOutboxCloseCancelsInFlightWriteAndSkipsQueuedControl(t *testing.T) {
+	conn := newFakeClientConn(false)
+	firstWriteStarted := make(chan struct{})
+	firstWriteReturned := make(chan struct{})
+	secondWriteStarted := make(chan struct{}, 1)
+	var writeCalls atomic.Int32
+	conn.writeFn = func(ctx context.Context, _ []byte) error {
+		if writeCalls.Add(1) == 1 {
+			close(firstWriteStarted)
+			<-ctx.Done()
+			close(firstWriteReturned)
+			// Model a writer that notices context cancellation but reports a
+			// successful write. The session done gate must still prevent the
+			// already queued control from reaching Conn.Write.
+			return nil
+		}
+		secondWriteStarted <- struct{}{}
+		return nil
+	}
+	session := newClientSession(conn, nil)
+
+	if !session.enqueueControl([]byte("in-flight")) {
+		t.Fatal("expected first control payload to enqueue")
+	}
+	select {
+	case <-firstWriteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected first write to start")
+	}
+	if !session.enqueueControl([]byte("must-not-write")) {
+		t.Fatal("expected second control payload to enqueue before close")
+	}
+
+	session.close(websocket.StatusNormalClosure, "normal close")
+	select {
+	case <-firstWriteReturned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected session close to cancel an in-flight write that ignores Conn.Close")
+	}
+	select {
+	case <-session.writerDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected writer to exit promptly after session close")
+	}
+	select {
+	case <-secondWriteStarted:
+		t.Fatal("expected no Conn.Write after session close")
+	default:
+	}
+	if got := writeCalls.Load(); got != 1 {
+		t.Fatalf("expected writer to exit after one write, got %d calls", got)
+	}
+}
+
 func TestClientOutboxMarshalsNormalSnapshotOnce(t *testing.T) {
 	firstConn := newFakeClientConn(false)
 	secondConn := newFakeClientConn(false)
@@ -463,6 +519,58 @@ func TestClientOutboxTerminalDiscardsSnapshotAndWritesPayloadsBeforeClose(t *tes
 	}
 }
 
+func TestClientOutboxTerminalWaitsForEveryAcceptedControlWhenQueueIsNearlyOrCompletelyFull(t *testing.T) {
+	for _, queuedControls := range []int{6, 8} {
+		t.Run(fmt.Sprintf("%d of 8 controls queued", queuedControls), func(t *testing.T) {
+			conn := newFakeClientConn(true)
+			conn.events = make(chan string, 16)
+			session := newClientSession(conn, nil)
+			releasedWriter := false
+			t.Cleanup(func() {
+				if !releasedWriter {
+					close(conn.allowWrite)
+				}
+				session.close(websocket.StatusNormalClosure, "test complete")
+			})
+
+			session.enqueueSnapshot([]byte("in-flight"))
+			select {
+			case <-conn.writeStarted:
+			case <-time.After(time.Second):
+				t.Fatal("expected writer to take the first snapshot")
+			}
+
+			for index := 0; index < queuedControls; index++ {
+				payload := fmt.Sprintf("control-%d", index)
+				if !session.enqueueControl([]byte(payload)) {
+					t.Fatalf("expected %s to fit the regular control queue", payload)
+				}
+			}
+			if !session.enqueueTerminal([]byte("terminal-snapshot"), []byte("GameEnd"), "game ended") {
+				t.Fatal("expected terminal handoff not to depend on regular control queue capacity")
+			}
+
+			close(conn.allowWrite)
+			releasedWriter = true
+			want := []string{"in-flight"}
+			for index := 0; index < queuedControls; index++ {
+				want = append(want, fmt.Sprintf("control-%d", index))
+			}
+			want = append(want, "terminal-snapshot", "GameEnd", "close")
+			for _, expected := range want {
+				select {
+				case event := <-conn.events:
+					if event != expected {
+						t.Fatalf("expected terminal event %q, got %q", expected, event)
+					}
+				case <-time.After(time.Second):
+					t.Fatalf("expected terminal event %q", expected)
+				}
+			}
+		})
+	}
+}
+
 func TestTerminalDeliveryDoesNotLetRoomResourcesCloseRaceWriter(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
@@ -527,6 +635,54 @@ func TestTerminalDeliveryDoesNotLetRoomResourcesCloseRaceWriter(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected terminal close")
+	}
+}
+
+func TestTerminalSnapshotMarshalFailureClosesWithoutWritingSnapshotOrGameEnd(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	conn := newFakeClientConn(false)
+	session := newClientSession(conn, nil)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.clients[issued.Player.ID] = session
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		return simulation.Snapshot{
+			Tick: 1,
+			Players: []simulation.PlayerData{{
+				ID:     simulation.PlayerID(issued.Player.ID),
+				HP:     math.NaN(),
+				IsDead: true,
+			}},
+		}
+	})
+	room.mu.Unlock()
+
+	store.tickRoom(created.ID)
+	select {
+	case <-session.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected marshal failure to close the terminal session")
+	}
+	select {
+	case payload := <-conn.writes:
+		t.Fatalf("expected no snapshot or GameEnd write after terminal marshal failure, got %q", payload)
+	default:
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected marshal failure to close connection once, got %d", got)
 	}
 }
 
