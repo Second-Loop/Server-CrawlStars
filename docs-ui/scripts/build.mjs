@@ -61,7 +61,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, ready ACK, starting signal, gameplay snapshot 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -96,6 +96,27 @@ function renderAsyncAPI(specText) {
           <article>
             <h3>5. started</h3>
             <p>Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 <code>Snapshot.status: started</code>와 gameplay snapshot을 보냅니다.</p>
+          </article>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>전달과 heartbeat</h2>
+        <div class="grid">
+          <article>
+            <h3>30초 / 90초</h3>
+            <p>Server는 연결마다 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once 경로로 정리합니다.</p>
+          </article>
+          <article>
+            <h3>Snapshot coalescing</h3>
+            <p>일반 gameplay snapshot만 client별 latest-only slot에서 합칩니다. 느린 client가 room tick이나 다른 client를 막지 않습니다.</p>
+          </article>
+          <article>
+            <h3>Reliable control</h3>
+            <p>Ready, starting, started, error는 순서를 보존하며 버리지 않습니다. Queue overflow와 write failure는 해당 session을 닫습니다.</p>
+          </article>
+          <article>
+            <h3>Terminal order</h3>
+            <p>종료 시에는 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서를 socket 종료 전에 보장합니다.</p>
           </article>
         </div>
       </section>

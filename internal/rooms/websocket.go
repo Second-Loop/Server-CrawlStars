@@ -46,6 +46,7 @@ type clientSession struct {
 	terminalHandoff chan terminalWriterCommand
 	done            chan struct{}
 	writerDone      chan struct{}
+	heartbeatDone   chan struct{}
 	writerCtx       context.Context
 	cancelWriter    context.CancelFunc
 	enqueueMu       sync.Mutex
@@ -69,6 +70,32 @@ func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSess
 	}
 	go session.writeLoop()
 	return session
+}
+
+func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, timeout time.Duration) {
+	if s.conn == nil {
+		return
+	}
+	ticker := clock.NewTicker(interval)
+	s.heartbeatDone = make(chan struct{})
+	go func() {
+		defer close(s.heartbeatDone)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C():
+				ctx, cancel := context.WithTimeout(s.writerCtx, timeout)
+				err := s.conn.Ping(ctx)
+				cancel()
+				if err != nil {
+					s.close(websocket.StatusGoingAway, "heartbeat failed")
+					return
+				}
+			case <-s.done:
+				return
+			}
+		}
+	}()
 }
 
 func (s *clientSession) enqueueSnapshot(payload []byte) {
@@ -420,6 +447,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	})
 	delete(room.reservations, reservation.playerID)
 	room.clients[reservation.playerID] = session
+	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
 	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {

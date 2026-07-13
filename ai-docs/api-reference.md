@@ -229,6 +229,10 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking의 matched/loading/starting 단계에서 실제 연결이 끊기면 pre-start cancel로 room이 삭제되어 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. HTTP-to-WebSocket upgrade 자체가 실패하면 reservation만 rollback하고 room을 취소하지 않으므로 같은 발급 path로 재시도할 수 있습니다.
 
+Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Pre-start match에서는 기존 cancel 정책을 적용하고, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement나 별도 reconnect grace는 없습니다.
+
+일반 gameplay snapshot은 client별 크기 1 latest-only slot에서 합쳐 느린 client가 room tick이나 다른 client를 막지 않게 합니다. `Ready`, `starting`, `started`, `error`는 reliable control queue에서 순서를 보존합니다. 종료 시에는 남은 일반 snapshot을 버리고 `terminal snapshot -> GameEnd -> close` 순서를 socket close 전에 보장합니다. 각 payload write는 새 5초 context를 사용합니다.
+
 Client input:
 
 ```json
@@ -334,7 +338,7 @@ GameEnd event:
 
 Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
 단, match lifecycle field인 `Snapshot.status`와 `Snapshot.countdown`은 REST `room.status`와 맞춰 lowercase입니다. `starting`의 `countdown`은 client fake timer 기준값이며, server는 중간 countdown 값을 broadcast하지 않습니다.
-HP가 0인 player가 생기면 server는 같은 tick의 snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다.
+HP가 0인 player가 생기면 server는 같은 tick의 snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다. Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking이 active room cap에 닿았을 때만 즉시 cleanup을 한 번 수행하고 생성도 한 번만 재시도합니다.
 
 ## 현재 gameplay 값
 
@@ -375,4 +379,4 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 
 ## 제약
 
-이 API는 development surface입니다. Player session 인증, debug Bearer guard, matchmaking rate limit은 구현되어 있습니다. Account auth, production matchmaking, persistence, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.
+이 API는 development surface입니다. Player session 인증, debug Bearer guard, matchmaking rate limit, WebSocket heartbeat는 구현되어 있습니다. Account auth, production matchmaking, persistence, bot replacement, reconnect grace, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.

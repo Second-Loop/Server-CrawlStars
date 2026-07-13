@@ -81,6 +81,8 @@
 
 ## P1-2. Store 전역 락 분리 + cleanup janitor 분리
 
+- 상태: SL-81 Stack 4에서 구현됨
+
 - 문제:
   - `Store.mu` 하나가 모든 room의 30Hz tick, HTTP 요청, WebSocket input을 직렬화한다. `state.Step`도 락 안에서 실행되어 room들이 순차로 시뮬레이션된다.
   - `tickRoom`이 매 tick `cleanupExpired()`를 호출해 30Hz × room 수만큼 전체 room map을 순회한다.
@@ -90,8 +92,13 @@
 - 수용 기준:
   - `-race` 포함 기존 테스트 전부 통과.
   - tick 경로에서 store 전역 락을 잡지 않는 구조 확인.
+- 반영 결과:
+  - `Store.mu`는 registry/lifecycle, `room.mu`는 room별 mutable state를 보호하고 `State.Step` 동안 Store lock을 잡지 않는다.
+  - Store당 30초 janitor 하나가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup과 retry를 한 번 수행한다.
 
 ## P1-3. 스냅샷 브로드캐스트 구조 개선
+
+- 상태: SL-81 Stack 4에서 구현됨
 
 - 문제:
   - tick goroutine이 클라이언트별로 순차 write하며, write timeout이 10ms로 너무 짧아 정상 클라이언트도 스냅샷이 조용히 유실된다.
@@ -102,6 +109,10 @@
   - marshal은 tick당 1회로 줄이고, write timeout을 현실적인 값으로 조정한다.
 - 수용 기준:
   - 느린 클라이언트 1명이 다른 클라이언트의 스냅샷 수신을 지연시키지 않는 테스트.
+- 반영 결과:
+  - Client별 writer와 크기 1 latest-only snapshot slot을 사용하고 payload는 tick당 한 번 marshal한다.
+  - Ready/lifecycle/error는 reliable control queue, 종료는 `terminal snapshot -> GameEnd -> close` 순서를 사용한다.
+  - Payload write마다 새 5초 context를 사용하며 overflow/write failure는 해당 session만 close/release한다.
 
 ## P2-1. graceful shutdown + HTTP 서버 하드닝
 
@@ -147,7 +158,7 @@
 
 ## P3-1. 배포/기타 하드닝 묶음
 
-- 상태: IP rate-limit 항목만 SL-81 Stack 3에서 구현됨. Release checksum 검증과 WebSocket heartbeat는 미완료.
+- 상태: IP rate-limit은 SL-81 Stack 3, WebSocket heartbeat는 Stack 4에서 구현됨. Release checksum 검증만 미완료.
 
 - 문제와 권장 (개별 소형 이슈로 쪼개도 됨):
   - `scripts/deploy/pull-latest.sh`가 `SHA256SUMS`를 다운로드 후 검증하지 않는다 → `sha256sum -c` 추가.
@@ -159,7 +170,9 @@
   - `/matchmaking/join` 앞에 기본 10 requests/minute, burst 4의 process-local per-IP token bucket을 둔다.
   - 거부 시 `429 rate_limited`와 최소 1초 정수 `Retry-After`를 반환한다.
   - `CF-Connecting-IP`는 immediate peer가 `TRUSTED_PROXY_CIDRS` 안에 있을 때만 사용하고 `X-Forwarded-For`는 무시한다.
-  - `SHA256SUMS` 검증과 WebSocket ping/pong은 이 완료 표시에 포함하지 않는다.
+  - 각 WebSocket connection은 30초 heartbeat와 Ping별 90초 deadline을 사용하고, 실패는 read/write와 같은 close-once session release 경로로 정리한다.
+  - Stale heartbeat는 expected-session identity 비교로 reconnect를 제거하지 않으며, pre-start cancel과 started disconnected TTL 정책을 그대로 재사용한다.
+  - `SHA256SUMS` 검증은 이 완료 표시에 포함하지 않는다.
 
 ---
 

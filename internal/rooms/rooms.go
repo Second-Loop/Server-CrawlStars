@@ -27,6 +27,8 @@ const (
 	defaultMatchCancelMsg        = "match canceled"
 	defaultGameEndCloseMsg       = "game ended"
 	webSocketWriteTimeout        = 5 * time.Second
+	defaultHeartbeatInterval     = 30 * time.Second
+	defaultHeartbeatTimeout      = 90 * time.Second
 	matchCountdownSeconds        = 5
 )
 

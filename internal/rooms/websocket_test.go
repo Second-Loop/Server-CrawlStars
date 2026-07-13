@@ -19,6 +19,8 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const gameplayInterval = time.Second / time.Duration(simulation.TickRate)
+
 type snapshotMessage struct {
 	Type     string              `json:"Type"`
 	Snapshot simulation.Snapshot `json:"Snapshot"`
@@ -46,11 +48,13 @@ type fakeClientConn struct {
 	writes       chan []byte
 	events       chan string
 	writeFn      func(context.Context, []byte) error
+	pingFn       func(context.Context) error
 	closeBlock   <-chan struct{}
 	closeStarted chan struct{}
 	writeOnce    sync.Once
 	closeOnce    sync.Once
 	closeCount   atomic.Int32
+	pingCount    atomic.Int32
 }
 
 func newFakeClientConn(blockWrites bool) *fakeClientConn {
@@ -90,7 +94,11 @@ func (c *fakeClientConn) Write(ctx context.Context, _ websocket.MessageType, pay
 	}
 }
 
-func (c *fakeClientConn) Ping(context.Context) error {
+func (c *fakeClientConn) Ping(ctx context.Context) error {
+	c.pingCount.Add(1)
+	if c.pingFn != nil {
+		return c.pingFn(ctx)
+	}
 	return nil
 }
 
@@ -107,6 +115,385 @@ func (c *fakeClientConn) Close(websocket.StatusCode, string) error {
 		c.events <- "close"
 	}
 	return nil
+}
+
+func TestHeartbeatResponsivePeerSurvivesRepeatedConfiguredTicks(t *testing.T) {
+	fakeClock := newFakeClock()
+	conn := newFakeClientConn(false)
+	contexts := make(chan context.Context, 2)
+	conn.pingFn = func(ctx context.Context) error {
+		contexts <- ctx
+		return nil
+	}
+	var released atomic.Int32
+	session := newClientSession(conn, func(*clientSession) {
+		released.Add(1)
+	})
+	session.startHeartbeat(fakeClock, 7*time.Second, 90*time.Second)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	for range 2 {
+		fakeClock.TickTicker(7*time.Second, 0)
+		select {
+		case ctx := <-contexts:
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("expected Ping context to have a deadline")
+			}
+			remaining := time.Until(deadline)
+			if remaining < 89*time.Second || remaining > 90*time.Second {
+				t.Fatalf("expected Ping deadline near 90s, got %s", remaining)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("expected heartbeat Ping")
+		}
+	}
+
+	if got := conn.pingCount.Load(); got != 2 {
+		t.Fatalf("expected two responsive Pings, got %d", got)
+	}
+	if session.isDone() {
+		t.Fatal("expected responsive peer to remain connected")
+	}
+	if got := released.Load(); got != 0 {
+		t.Fatalf("expected responsive peer not to release, got %d", got)
+	}
+}
+
+func TestHeartbeatErrorAndBlockedTimeoutCloseReleaseExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name   string
+		pingFn func(context.Context) error
+	}{
+		{
+			name: "ping error",
+			pingFn: func(context.Context) error {
+				return errors.New("ping failed")
+			},
+		},
+		{
+			name: "blocked ping timeout",
+			pingFn: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			conn := newFakeClientConn(false)
+			conn.pingFn = tt.pingFn
+			var released atomic.Int32
+			var session *clientSession
+			session = newClientSession(conn, func(expected *clientSession) {
+				if expected != session {
+					t.Error("expected heartbeat to release the current session")
+				}
+				released.Add(1)
+			})
+			session.startHeartbeat(fakeClock, time.Second, 20*time.Millisecond)
+
+			fakeClock.TickTicker(time.Second, 0)
+			select {
+			case <-session.heartbeatDone:
+			case <-time.After(time.Second):
+				t.Fatal("expected failed heartbeat to exit")
+			}
+
+			if got := conn.closeCount.Load(); got != 1 {
+				t.Fatalf("expected connection close once, got %d", got)
+			}
+			if got := released.Load(); got != 1 {
+				t.Fatalf("expected release once, got %d", got)
+			}
+			session.close(websocket.StatusGoingAway, "repeated close")
+			if got := conn.closeCount.Load(); got != 1 {
+				t.Fatalf("expected repeated close to remain once, got %d", got)
+			}
+			if got := released.Load(); got != 1 {
+				t.Fatalf("expected repeated release to remain once, got %d", got)
+			}
+		})
+	}
+}
+
+func TestHeartbeatStoreConfigDefaultsAndOverrides(t *testing.T) {
+	defaultStore := newStore(5, newFakeClock(), StoreConfig{})
+	if defaultStore.heartbeatInterval != 30*time.Second || defaultStore.heartbeatTimeout != 90*time.Second {
+		t.Fatalf("expected 30s/90s heartbeat defaults, got %s/%s", defaultStore.heartbeatInterval, defaultStore.heartbeatTimeout)
+	}
+	defaultStore.Close()
+
+	overrideStore := newStore(5, newFakeClock(), StoreConfig{
+		HeartbeatInterval: 7 * time.Second,
+		HeartbeatTimeout:  20 * time.Millisecond,
+	})
+	if overrideStore.heartbeatInterval != 7*time.Second || overrideStore.heartbeatTimeout != 20*time.Millisecond {
+		t.Fatalf("expected configured heartbeat, got %s/%s", overrideStore.heartbeatInterval, overrideStore.heartbeatTimeout)
+	}
+	overrideStore.Close()
+}
+
+func TestHeartbeatFailureCancelsPreStartMatchOnce(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{HeartbeatInterval: 7 * time.Second})
+	t.Cleanup(store.Close)
+	first, err := store.joinMatchmaking()
+	if err != nil {
+		t.Fatalf("join first player: %v", err)
+	}
+	second, err := store.joinMatchmaking()
+	if err != nil {
+		t.Fatalf("join second player: %v", err)
+	}
+	if first.Room.ID != second.Room.ID {
+		t.Fatal("expected players to share pre-start match")
+	}
+
+	conn := newFakeClientConn(false)
+	conn.pingFn = func(context.Context) error { return errors.New("silent peer") }
+	session := attachHeartbeatTestSession(t, store, first.Room.ID, first.Player.ID, first.SessionToken, conn)
+	fakeClock.TickTicker(7*time.Second, 0)
+	select {
+	case <-session.heartbeatDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected failed heartbeat to exit")
+	}
+
+	if got := store.lookupRoom(first.Room.ID); got != nil {
+		t.Fatal("expected heartbeat failure to cancel pre-start match")
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected failed pre-start session to close once, got %d", got)
+	}
+}
+
+func TestHeartbeatTimeoutStartsStartedRoomDisconnectedTTL(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{
+		HeartbeatInterval: 7 * time.Second,
+		HeartbeatTimeout:  20 * time.Millisecond,
+	})
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	started, err := store.startRoom(created.ID)
+	if err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	conn := newFakeClientConn(false)
+	conn.pingFn = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	session := attachHeartbeatTestSession(t, store, started.ID, issued.Player.ID, issued.SessionToken, conn)
+	fakeClock.TickTicker(7*time.Second, 0)
+	select {
+	case <-session.heartbeatDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected blocked heartbeat to time out")
+	}
+
+	room := store.lookupRoom(started.ID)
+	if room == nil {
+		t.Fatal("expected started room to remain during disconnected TTL")
+	}
+	room.mu.Lock()
+	disconnectedAt := room.disconnectedAt
+	connectedClients := len(room.clients)
+	room.mu.Unlock()
+	if !disconnectedAt.Equal(fakeClock.Now()) || connectedClients != 0 {
+		t.Fatalf("expected disconnected TTL to start once, at=%s clients=%d", disconnectedAt, connectedClients)
+	}
+
+	fakeClock.Advance(defaultDisconnectedRoomTTL - time.Nanosecond)
+	if deleted := store.cleanupExpired(fakeClock.Now()); deleted != 0 {
+		t.Fatalf("expected room before disconnected TTL to remain, deleted=%d", deleted)
+	}
+	fakeClock.Advance(time.Nanosecond)
+	if deleted := store.cleanupExpired(fakeClock.Now()); deleted != 1 {
+		t.Fatalf("expected room at disconnected TTL to be removed, deleted=%d", deleted)
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected timeout and cleanup to close session once, got %d", got)
+	}
+}
+
+func TestHeartbeatStaleFailureDoesNotRemoveReconnect(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{HeartbeatInterval: 7 * time.Second})
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	if _, err := store.startRoom(created.ID); err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+
+	pingStarted := make(chan struct{})
+	allowPingFailure := make(chan struct{})
+	staleConn := newFakeClientConn(false)
+	staleConn.pingFn = func(context.Context) error {
+		close(pingStarted)
+		<-allowPingFailure
+		return errors.New("stale heartbeat failed")
+	}
+	staleSession := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, staleConn)
+	fakeClock.TickTicker(7*time.Second, 0)
+	select {
+	case <-pingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected stale heartbeat Ping to start")
+	}
+
+	currentSession := newClientSession(newFakeClientConn(false), nil)
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.clients[issued.Player.ID] = currentSession
+	room.mu.Unlock()
+	close(allowPingFailure)
+	select {
+	case <-staleSession.heartbeatDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected stale heartbeat to exit")
+	}
+
+	room.mu.Lock()
+	gotSession := room.clients[issued.Player.ID]
+	disconnectedAt := room.disconnectedAt
+	room.mu.Unlock()
+	if gotSession != currentSession || !disconnectedAt.IsZero() {
+		t.Fatal("expected stale heartbeat not to remove reconnect or start disconnected TTL")
+	}
+}
+
+func TestHeartbeatFailureRacesManualReadAndWriteCloseExactlyOnce(t *testing.T) {
+	fakeClock := newFakeClock()
+	conn := newFakeClientConn(false)
+	beginFailures := make(chan struct{})
+	pingStarted := make(chan struct{})
+	conn.pingFn = func(context.Context) error {
+		close(pingStarted)
+		<-beginFailures
+		return errors.New("ping failed")
+	}
+	conn.writeFn = func(context.Context, []byte) error {
+		<-beginFailures
+		return errors.New("write failed")
+	}
+	var released atomic.Int32
+	session := newClientSession(conn, func(*clientSession) { released.Add(1) })
+	session.startHeartbeat(fakeClock, time.Second, time.Second)
+	if !session.enqueueControl([]byte("control")) {
+		t.Fatal("expected control write to enqueue")
+	}
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to start")
+	}
+	fakeClock.TickTicker(time.Second, 0)
+	select {
+	case <-pingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected heartbeat to start")
+	}
+
+	var closes sync.WaitGroup
+	closes.Add(2)
+	go func() {
+		defer closes.Done()
+		<-beginFailures
+		session.close(websocket.StatusNormalClosure, "manual close")
+	}()
+	go func() {
+		defer closes.Done()
+		<-beginFailures
+		session.close(websocket.StatusNormalClosure, "read failed")
+	}()
+	close(beginFailures)
+	closes.Wait()
+	select {
+	case <-session.heartbeatDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected heartbeat goroutine to exit")
+	}
+	select {
+	case <-session.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer goroutine to exit")
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected all close paths to close connection once, got %d", got)
+	}
+	if got := released.Load(); got != 1 {
+		t.Fatalf("expected all close paths to release once, got %d", got)
+	}
+	if got := fakeClock.StopCount(); got != 1 {
+		t.Fatalf("expected heartbeat ticker to stop once, got %d", got)
+	}
+}
+
+func TestHeartbeatGoroutineAndTickerExitOnStoreClose(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := newStore(5, fakeClock, StoreConfig{HeartbeatInterval: 7 * time.Second})
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	conn := newFakeClientConn(false)
+	session := attachHeartbeatTestSession(t, store, created.ID, issued.Player.ID, issued.SessionToken, conn)
+
+	store.Close()
+	select {
+	case <-session.heartbeatDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected Store.Close to stop heartbeat goroutine")
+	}
+	select {
+	case <-session.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected Store.Close to stop writer goroutine")
+	}
+	if got := fakeClock.StopCount(); got != 2 {
+		t.Fatalf("expected janitor and heartbeat tickers to stop once, got %d", got)
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected Store.Close to close session once, got %d", got)
+	}
+}
+
+func attachHeartbeatTestSession(t *testing.T, store *Store, roomID string, playerID string, token string, conn clientConn) *clientSession {
+	t.Helper()
+	reservation, err := store.reserveClient(roomID, playerID, []string{token})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	session, attached := store.attachClientSession(reservation, conn)
+	if !attached {
+		t.Fatal("expected client session to attach")
+	}
+	return session
 }
 
 func TestClientOutboxSlowWriterDoesNotDelayFastClient(t *testing.T) {
@@ -1436,7 +1823,7 @@ func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	first := readSnapshotMessage(t, conn)
 	if first.Type != "snapshot" {
 		t.Fatalf("expected snapshot message, got %q", first.Type)
@@ -1448,13 +1835,13 @@ func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T
 		t.Fatalf("expected one player in snapshot, got %+v", first.Snapshot.Players)
 	}
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	second := readSnapshotMessage(t, conn)
 	if second.Snapshot.Tick != 2 {
 		t.Fatalf("expected second snapshot tick 2, got %d", second.Snapshot.Tick)
 	}
-	if fakeClock.RequestedDuration() != time.Second/time.Duration(simulation.TickRate) {
-		t.Fatalf("expected 30Hz ticker duration, got %s", fakeClock.RequestedDuration())
+	if got := fakeClock.TickerCount(gameplayInterval); got != 1 {
+		t.Fatalf("expected one 30Hz gameplay ticker, got %d", got)
 	}
 }
 
@@ -1620,15 +2007,15 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 	}
 
 	for i := 0; i < 4; i++ {
-		fakeClock.Tick()
+		fakeClock.TickTicker(time.Second, 0)
 	}
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(time.Second, 0)
 	redStarted := readUntilSnapshotStatus(t, redConn, "started")
 	blueStarted := readUntilSnapshotStatus(t, blueConn, "started")
 	assertMatchingMatchSnapshots(t, redStarted, blueStarted)
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	gameplay := readSnapshotMessage(t, redConn)
 	if gameplay.Snapshot.Tick != 1 {
 		t.Fatalf("expected first gameplay snapshot tick 1 after countdown, got %d", gameplay.Snapshot.Tick)
@@ -1685,7 +2072,7 @@ func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 		t.Fatalf("expected invalid_input error, got %+v", invalidInput.Error)
 	}
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	message := readSnapshotMessage(t, conn)
 	if message.Snapshot.Tick != 1 {
 		t.Fatalf("expected stream to continue with tick 1, got %d", message.Snapshot.Tick)
@@ -1717,7 +2104,7 @@ func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *te
 		t.Fatalf("expected invalid_input error, got %+v", errorMessage.Error)
 	}
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	snapshot := readSnapshotMessage(t, conn)
 	if snapshot.Snapshot.Tick != 1 {
 		t.Fatalf("expected stream to continue with tick 1, got %d", snapshot.Snapshot.Tick)
@@ -1834,7 +2221,7 @@ func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 
 	writeWSJSON(t, conn, inputMessage{MoveDir: simulation.Vector2{X: 1, Y: 0}})
 	waitForPendingInput(t, store, room.ID, player.ID)
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	message := readSnapshotMessage(t, conn)
 	if message.Snapshot.Players[0].Pos.X == 0 {
 		t.Fatalf("expected valid input to move player, got %+v", message.Snapshot.Players[0].Pos)
@@ -1859,7 +2246,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 
 	writeText(t, conn, `{"MoveDir":{"x":1,"y":0},"AttackDir":{"x":0,"y":1},"PressedAttack":true}`)
 	waitForPendingInput(t, store, room.ID, player.ID)
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 
 	payload := readWebSocketPayload(t, conn)
 	text := string(payload)
@@ -2631,7 +3018,7 @@ func waitForRoomDeleted(t *testing.T, store *Store, roomID string) {
 func tickAndReadMatchingSnapshots(t *testing.T, fakeClock *fakeClock, first *websocket.Conn, second *websocket.Conn) snapshotMessage {
 	t.Helper()
 
-	fakeClock.Tick()
+	fakeClock.TickTicker(gameplayInterval, 0)
 	firstMessage := readSnapshotMessage(t, first)
 	secondMessage := readSnapshotMessage(t, second)
 	assertMatchingSnapshots(t, firstMessage, secondMessage)

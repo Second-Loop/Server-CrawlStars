@@ -239,9 +239,11 @@
 - WebSocket lifecycle field는 lowercase `status/countdown`, gameplay field는 기존 client-compatible PascalCase `Tick/Players/Projectiles`를 유지합니다.
 - `internal/simulation`은 match lifecycle을 모르는 transport-independent gameplay core로 남습니다.
 - AsyncAPI는 Ready event, ready ACK, starting signal, gameplay snapshot 예시를 OpenAPI 수준으로 자세히 기록해야 합니다.
-- Start 이후 disconnect policy, bot replacement, ping/pong timeout은 여전히 별도 issue 범위입니다.
+- SL-58 당시에는 start 이후 disconnect policy, bot replacement, ping/pong timeout을 별도 issue로 남겼습니다.
 
 후속 반영 (SL-81 Stack 3): 당시 REST response shape 유지 문구는 SL-58 변경 범위를 뜻합니다. 현재는 `sessionToken`이 추가됐고 Ready/Snapshot/GameEnd payload 자체는 계속 secret-free입니다. Pre-start 실제 disconnect가 room을 취소하는 기존 규칙 때문에 그 이후 같은 token으로 reconnect할 수는 없습니다.
+
+후속 반영 (SL-81 Stack 4): Connection별 30초 heartbeat와 Ping별 90초 deadline을 추가했고, 실패는 pre-start cancel 또는 started all-disconnected TTL 경로를 재사용합니다. Bot replacement와 별도 reconnect grace는 계속 범위 밖입니다.
 
 ## ADR-0017: SL-30 Gameplay Config는 client 공유용과 server runtime용을 분리
 
@@ -359,4 +361,26 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Public Room/Player/list/detail/Ready/Snapshot/GameEnd payload에는 raw token이나 digest가 없습니다.
 - Debug route는 운영에서 명시적으로 켜고 secret을 설정하기 전까지 노출되지 않습니다.
 - Cloudflare Tunnel peer trust를 빠뜨리거나 CF header가 invalid하면 public client가 loopback peer bucket을 공유합니다. 이는 spoofing을 막는 fallback이지만 가용성 영향을 주므로 deployment 설정과 검증이 필요합니다.
-- Account auth, persistence, multi-process/distributed rate limit, WebSocket heartbeat는 후속 issue입니다.
+- Account auth, persistence, multi-process/distributed rate limit은 후속 issue입니다. WebSocket heartbeat는 SL-81 Stack 4에서 후속 반영했습니다.
+
+## ADR-0024: SL-81 Room/Session 동시성과 WebSocket 전달 경계
+
+상태: 승인됨
+
+맥락: 하나의 Store lock 아래에서 모든 room tick과 WebSocket write를 직렬화하면 느린 client 하나가 다른 room과 client까지 막습니다. 일반 snapshot을 모두 reliable하게 쌓으면 지연된 과거 state가 backlog가 되고, 반대로 Ready/GameEnd 같은 lifecycle message까지 버리면 client state가 깨집니다. Ping/pong이 없으면 silent peer가 connected 상태로 남아 TTL cleanup도 막습니다.
+
+결정:
+
+- `Store.mu`는 registry/lifecycle, `room.mu`는 한 room의 mutable gameplay/client 상태, `clientSession`은 outbox와 writer/heartbeat lifecycle을 소유합니다. `State.Step`, fanout, network I/O 동안 Store lock을 잡지 않습니다.
+- 일반 gameplay snapshot만 client별 크기 1 latest-only slot에서 coalescing합니다. `Ready`, `starting`, `started`, `error`는 reliable control queue를 사용합니다.
+- Terminal delivery는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 writer 안에서 순서대로 실행합니다. Payload write마다 새 5초 context를 사용합니다.
+- Connection마다 writer와 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once와 expected-session release를 공유합니다.
+- Heartbeat failure는 기존 lifecycle을 재사용합니다. Pre-start match는 cancel하고, started room의 마지막 client가 사라지면 disconnected TTL을 시작합니다. Bot replacement와 reconnect grace는 추가하지 않습니다.
+- Store당 30초 janitor 하나가 TTL을 검사합니다. Create/matchmaking이 cap에 닿았을 때만 즉시 cleanup과 생성 retry를 각각 한 번 수행합니다.
+
+결과:
+
+- 서로 다른 room은 병렬로 tick하고 느린 client는 room tick이나 다른 client를 막지 않습니다.
+- Stale reader/writer/heartbeat는 reconnect된 최신 session이나 같은 ID의 replacement room을 제거하지 않습니다.
+- Snapshot freshness와 lifecycle reliability를 분리하면서 GameEnd 직전 terminal order를 보장합니다.
+- REST payload schema는 바뀌지 않았고 OpenAPI는 변경하지 않습니다. AsyncAPI와 human docs에는 heartbeat와 delivery lifecycle을 명시합니다.

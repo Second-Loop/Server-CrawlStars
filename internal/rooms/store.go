@@ -18,24 +18,28 @@ import (
 // locks are ever needed, Store.mu must be acquired before room.mu; acquiring
 // Store.mu while holding room.mu is forbidden.
 type Store struct {
-	mu             sync.RWMutex
-	closeOnce      sync.Once
-	maxActiveRooms int
-	rooms          map[string]*room
-	playerIDs      map[string]struct{}
-	random         io.Reader
-	clock          clock
-	gameMap        simulation.MapData
-	gameConfig     simulation.GameConfig
-	janitorStop    chan struct{}
-	janitorDone    chan struct{}
-	closed         bool
+	mu                sync.RWMutex
+	closeOnce         sync.Once
+	maxActiveRooms    int
+	rooms             map[string]*room
+	playerIDs         map[string]struct{}
+	random            io.Reader
+	clock             clock
+	gameMap           simulation.MapData
+	gameConfig        simulation.GameConfig
+	heartbeatInterval time.Duration
+	heartbeatTimeout  time.Duration
+	janitorStop       chan struct{}
+	janitorDone       chan struct{}
+	closed            bool
 }
 
 type StoreConfig struct {
-	Map        simulation.MapData
-	GameConfig simulation.GameConfig
-	Random     io.Reader
+	Map               simulation.MapData
+	GameConfig        simulation.GameConfig
+	Random            io.Reader
+	HeartbeatInterval time.Duration
+	HeartbeatTimeout  time.Duration
 }
 
 // room owns synchronization for one room independently of the Store registry.
@@ -104,17 +108,27 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	if err != nil {
 		resolvedConfig = simulation.StaticGameConfig()
 	}
+	heartbeatInterval := config.HeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = defaultHeartbeatInterval
+	}
+	heartbeatTimeout := config.HeartbeatTimeout
+	if heartbeatTimeout <= 0 {
+		heartbeatTimeout = defaultHeartbeatTimeout
+	}
 
 	store := &Store{
-		maxActiveRooms: maxActiveRooms,
-		rooms:          make(map[string]*room),
-		playerIDs:      make(map[string]struct{}),
-		random:         random,
-		clock:          clock,
-		gameMap:        resolvedConfig.Map,
-		gameConfig:     resolvedConfig,
-		janitorStop:    make(chan struct{}),
-		janitorDone:    make(chan struct{}),
+		maxActiveRooms:    maxActiveRooms,
+		rooms:             make(map[string]*room),
+		playerIDs:         make(map[string]struct{}),
+		random:            random,
+		clock:             clock,
+		gameMap:           resolvedConfig.Map,
+		gameConfig:        resolvedConfig,
+		heartbeatInterval: heartbeatInterval,
+		heartbeatTimeout:  heartbeatTimeout,
+		janitorStop:       make(chan struct{}),
+		janitorDone:       make(chan struct{}),
 	}
 	store.startJanitor()
 	return store

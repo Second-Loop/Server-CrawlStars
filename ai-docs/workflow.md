@@ -34,7 +34,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 
 - production matchmaking
 - ready timeout
-- start 후 disconnect, bot replacement, ping/pong timeout
+- bot replacement, reconnect grace
 - respawn, score
 - persistence, database, account auth
 - Kubernetes, dashboard, scheduler, runner
