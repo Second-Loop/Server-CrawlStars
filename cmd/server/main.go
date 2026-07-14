@@ -1,46 +1,295 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/docs"
 	"github.com/Second-Loop/Server-CrawlStars/internal/health"
+	"github.com/Second-Loop/Server-CrawlStars/internal/observability"
 	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	serverconfig "github.com/Second-Loop/Server-CrawlStars/server-config"
 )
 
-const serviceName = "server-crawlstars"
+const (
+	serviceName        = "server-crawlstars"
+	defaultServerAddr  = "127.0.0.1:8080"
+	defaultMetricsAddr = "127.0.0.1:9090"
+	shutdownGrace      = 10 * time.Second
+)
 
-func main() {
-	addr := os.Getenv("SERVER_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:8080"
-	}
-
-	roomHandlerConfig, err := loadRoomHandlerConfig(os.Getenv)
-	if err != nil {
-		log.Fatal(err)
-	}
-	mux, err := newMux(roomHandlerConfig)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("%s listening on %s", serviceName, addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal(err)
-	}
+type runtimeConfig struct {
+	serverAddr        string
+	metricsAddr       string
+	roomHandlerConfig rooms.HandlerConfig
 }
 
-func newMux(roomHandlerConfig rooms.HandlerConfig) (http.Handler, error) {
+type application struct {
+	store         *rooms.Store
+	metrics       *observability.Metrics
+	publicServer  *http.Server
+	metricsServer *http.Server
+	logger        *slog.Logger
+	listen        func(network string, address string) (net.Listener, error)
+	shutdownGrace time.Duration
+}
+
+type serveResult struct {
+	index int
+	err   error
+}
+
+type shutdownResult struct {
+	index int
+	err   error
+}
+
+func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
+	serverAddr := strings.TrimSpace(getenv("SERVER_ADDR"))
+	if serverAddr == "" {
+		serverAddr = defaultServerAddr
+	}
+
+	metricsAddr, err := parseMetricsAddress(getenv("METRICS_ADDR"))
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	roomHandlerConfig, err := loadRoomHandlerConfig(getenv)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	return runtimeConfig{
+		serverAddr:        serverAddr,
+		metricsAddr:       metricsAddr,
+		roomHandlerConfig: roomHandlerConfig,
+	}, nil
+}
+
+func parseMetricsAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = defaultMetricsAddr
+	}
+	address, err := netip.ParseAddrPort(value)
+	if err != nil || !address.Addr().IsLoopback() || address.Addr().Is4In6() || address.Addr().Zone() != "" {
+		return "", fmt.Errorf("METRICS_ADDR must be a loopback IP literal with a numeric port")
+	}
+	return address.String(), nil
+}
+
+func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runMain(ctx, os.Getenv, os.Stdout)
+}
+
+func runMain(ctx context.Context, getenv func(string) string, output io.Writer) int {
+	if output == nil {
+		output = io.Discard
+	}
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	config, err := loadRuntimeConfig(getenv)
+	if err != nil {
+		logger.Error("configuration_failed", "error", err.Error())
+		return 1
+	}
+	app, err := newApplicationWithLogger(config, logger)
+	if err != nil {
+		logger.Error("application_failed", "error", err.Error())
+		return 1
+	}
+
+	if err := app.Run(ctx); err != nil {
+		logger.Error("server_failed", "error", err.Error())
+		return 1
+	}
+	logger.Info("server_stopped")
+	return 0
+}
+
+func newApplication(config runtimeConfig) (*application, error) {
+	return newApplicationWithLogger(config, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+}
+
+func newApplicationWithLogger(config runtimeConfig, logger *slog.Logger) (*application, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
+	metrics := observability.NewMetrics()
+	store := rooms.NewStoreWithConfig(5, rooms.StoreConfig{
+		GameConfig: loadGameConfig(logger),
+		Logger:     logger,
+		Observer:   metrics,
+	})
+	roomHandler, err := rooms.HandlerWithConfig(store, config.roomHandlerConfig)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("configure rooms handler: %w", err)
+	}
+	errorLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
+
+	return &application{
+		store:   store,
+		metrics: metrics,
+		publicServer: &http.Server{
+			Addr:              config.serverAddr,
+			Handler:           newMux(roomHandler),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			ErrorLog:          errorLog,
+		},
+		metricsServer: &http.Server{
+			Addr:     config.metricsAddr,
+			Handler:  newMetricsMux(metrics.Handler()),
+			ErrorLog: errorLog,
+		},
+		logger:        logger,
+		listen:        net.Listen,
+		shutdownGrace: shutdownGrace,
+	}, nil
+}
+
+// Run owns both listeners and tears the whole application down when its
+// context ends or either HTTP server returns.
+func (a *application) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return prioritizeApplicationError(nil, a.shutdown())
+	}
+
+	publicListener, err := a.listen("tcp", a.publicServer.Addr)
+	if err != nil {
+		shutdownErrors := a.shutdown()
+		return prioritizeApplicationError([]error{fmt.Errorf("bind public server: %w", err)}, shutdownErrors)
+	}
+	metricsListener, err := a.listen("tcp", a.metricsServer.Addr)
+	if err != nil {
+		_ = publicListener.Close()
+		shutdownErrors := a.shutdown()
+		return prioritizeApplicationError([]error{fmt.Errorf("bind metrics server: %w", err)}, shutdownErrors)
+	}
+	a.logger.Info(
+		"server_listening",
+		"public_address", publicListener.Addr().String(),
+		"metrics_address", metricsListener.Addr().String(),
+	)
+
+	serveResults := make(chan serveResult, 2)
+	go func() {
+		serveResults <- serveResult{index: 0, err: a.publicServer.Serve(publicListener)}
+	}()
+	go func() {
+		serveResults <- serveResult{index: 1, err: a.metricsServer.Serve(metricsListener)}
+	}()
+
+	serveErrors := make([]error, 2)
+	completedServe := 0
+	select {
+	case result := <-serveResults:
+		serveErrors[result.index] = result.err
+		completedServe++
+	case <-ctx.Done():
+	}
+
+	shutdownErrors := a.shutdown()
+	_ = publicListener.Close()
+	_ = metricsListener.Close()
+	for completedServe < 2 {
+		result := <-serveResults
+		serveErrors[result.index] = result.err
+		completedServe++
+	}
+	return prioritizeApplicationError(serveErrors, shutdownErrors)
+}
+
+func (a *application) shutdown() []error {
+	grace := a.shutdownGrace
+	if grace <= 0 {
+		grace = shutdownGrace
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+
+	results := make(chan shutdownResult, 3)
+	go func() { results <- shutdownResult{index: 0, err: a.store.Shutdown(ctx)} }()
+	go func() { results <- shutdownResult{index: 1, err: a.publicServer.Shutdown(ctx)} }()
+	go func() { results <- shutdownResult{index: 2, err: a.metricsServer.Shutdown(ctx)} }()
+	forceCloseHTTP := func() {
+		_ = a.publicServer.Close()
+		_ = a.metricsServer.Close()
+	}
+
+	return collectShutdownResults(results, ctx.Done(), ctx.Err, forceCloseHTTP)
+}
+
+func collectShutdownResults(
+	results <-chan shutdownResult,
+	deadline <-chan struct{},
+	contextError func() error,
+	forceCloseHTTP func(),
+) []error {
+	errorsByOwner := make([]error, 3)
+	for remaining := 3; remaining > 0; {
+		select {
+		case result := <-results:
+			errorsByOwner[result.index] = result.err
+			remaining--
+		case <-deadline:
+			forceCloseHTTP()
+			deadline = nil
+		}
+	}
+	// Shutdown can return its context error in the same scheduler turn that the
+	// deadline channel becomes ready. Force-close again based on final context
+	// state so select ordering cannot leave active HTTP transports behind.
+	if contextError() != nil {
+		forceCloseHTTP()
+	}
+	return errorsByOwner
+}
+
+func prioritizeApplicationError(serveErrors []error, shutdownErrors []error) error {
+	var serving []error
+	for _, err := range serveErrors {
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			continue
+		}
+		serving = append(serving, err)
+	}
+	if len(serving) > 0 {
+		return errors.Join(serving...)
+	}
+
+	var shutdown []error
+	for _, err := range shutdownErrors {
+		if err != nil {
+			shutdown = append(shutdown, err)
+		}
+	}
+	return errors.Join(shutdown...)
+}
+
+func newMux(roomHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/health", health.Handler(serviceName))
 	docsHandler := docs.Handler()
@@ -48,19 +297,23 @@ func newMux(roomHandlerConfig rooms.HandlerConfig) (http.Handler, error) {
 	mux.Handle("/asyncapi", docsHandler)
 	mux.Handle("/openapi.yaml", docsHandler)
 	mux.Handle("/asyncapi.yaml", docsHandler)
-	store := rooms.NewStoreWithConfig(5, rooms.StoreConfig{GameConfig: loadGameConfig()})
-	roomHandler, err := rooms.HandlerWithConfig(store, roomHandlerConfig)
-	if err != nil {
-		store.Close()
-		return nil, fmt.Errorf("configure rooms handler: %w", err)
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isRoomHandlerPath(r.URL.Path) {
 			roomHandler.ServeHTTP(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}), nil
+	})
+}
+
+func newMetricsMux(metricsHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		metricsHandler.ServeHTTP(w, r)
+	})
 }
 
 func isRoomHandlerPath(path string) bool {
@@ -152,10 +405,10 @@ func parseTrustedProxyPrefixes(value string) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
-func loadGameConfig() simulation.GameConfig {
+func loadGameConfig(logger *slog.Logger) simulation.GameConfig {
 	gameConfig, err := simulation.LoadGameConfig(serverconfig.Reader())
 	if err != nil {
-		log.Printf("failed to load server game config: %v; using static fallback", err)
+		logger.Warn("game_config_fallback", "error", err.Error())
 		return simulation.StaticGameConfig()
 	}
 	return gameConfig
