@@ -104,6 +104,13 @@ set -euo pipefail
 output=""
 url=""
 header_file=""
+if [ -n "$EXPECTED_TOKEN" ]; then
+  for argument in "$@"; do
+    case "$argument" in
+      *"$EXPECTED_TOKEN"*) echo "token_argv=set" >> "$EVENTS" ;;
+    esac
+  done
+fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o|--output)
@@ -385,6 +392,7 @@ run_case
 assert_success "token auth deploy"
 assert_contains "header_mode=600" "$EVENTS"
 assert_not_contains "token_env=set" "$EVENTS"
+assert_not_contains "token_argv=set" "$EVENTS"
 assert_not_contains "$CASE_TOKEN" "$EVENTS"
 assert_not_contains "$CASE_TOKEN" "$CASE_OUTPUT"
 ok "token uses a private header file without argv, env, or output leakage"
