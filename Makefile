@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check docs-install docs-validate docs-build vet test build deploy-check ci
+.PHONY: fmt fmt-check docs-install docs-validate docs-build vet test build deploy-test deploy-check ci
 
 GO ?= go
 GOFMT ?= gofmt
@@ -40,7 +40,10 @@ test:
 build:
 	$(GO_ENV) $(GO_CMD) build ./cmd/server
 
-deploy-check:
+deploy-test:
+	bash scripts/deploy/pull-latest_test.sh
+
+deploy-check: deploy-test
 	bash -n scripts/deploy/*.sh
 
 ci: docs-install docs-build fmt-check vet test build deploy-check
