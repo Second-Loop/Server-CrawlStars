@@ -18,6 +18,7 @@ type clientConn interface {
 	Write(context.Context, websocket.MessageType, []byte) error
 	Ping(context.Context) error
 	Close(websocket.StatusCode, string) error
+	CloseNow() error
 }
 
 type writerCommandKind uint8
@@ -52,6 +53,7 @@ type clientSession struct {
 	terminalHandoff     chan terminalWriterCommand
 	done                chan struct{}
 	closeDone           chan struct{}
+	transportCloseStart chan struct{}
 	writerDone          chan struct{}
 	heartbeatDone       chan struct{}
 	writerCtx           context.Context
@@ -61,6 +63,7 @@ type clientSession struct {
 	ioErrorMu           sync.Mutex
 	publicationMu       sync.Mutex
 	closeOnce           sync.Once
+	forceOnce           sync.Once
 	heartbeatDoneOnce   sync.Once
 	onClose             func(*clientSession)
 	publications        []*clientLifecyclePublication
@@ -74,17 +77,18 @@ type clientSession struct {
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
 	writerCtx, cancelWriter := context.WithCancel(context.Background())
 	session := &clientSession{
-		conn:            conn,
-		snapshots:       make(chan []byte, 1),
-		control:         make(chan writerCommand, 8),
-		terminalHandoff: make(chan terminalWriterCommand, 1),
-		done:            make(chan struct{}),
-		closeDone:       make(chan struct{}),
-		writerDone:      make(chan struct{}),
-		heartbeatDone:   make(chan struct{}),
-		writerCtx:       writerCtx,
-		cancelWriter:    cancelWriter,
-		onClose:         onClose,
+		conn:                conn,
+		snapshots:           make(chan []byte, 1),
+		control:             make(chan writerCommand, 8),
+		terminalHandoff:     make(chan terminalWriterCommand, 1),
+		done:                make(chan struct{}),
+		closeDone:           make(chan struct{}),
+		transportCloseStart: make(chan struct{}),
+		writerDone:          make(chan struct{}),
+		heartbeatDone:       make(chan struct{}),
+		writerCtx:           writerCtx,
+		cancelWriter:        cancelWriter,
+		onClose:             onClose,
 	}
 	go session.writeLoop()
 	return session
@@ -405,8 +409,24 @@ func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string,
 		if s.onClose != nil {
 			s.onClose(s)
 		}
+		close(s.transportCloseStart)
 		if s.conn != nil {
 			_ = s.conn.Close(code, reason)
+		}
+	})
+}
+
+// forceClose starts the logical close if necessary, then interrupts a transport
+// that may already be blocked inside another closeOnce owner.
+func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
+	go s.close(code, reason)
+	select {
+	case <-s.transportCloseStart:
+	case <-s.closeDone:
+	}
+	s.forceOnce.Do(func() {
+		if s.conn != nil {
+			_ = s.conn.CloseNow()
 		}
 	})
 }
@@ -544,9 +564,11 @@ func normalizedWebSocketStatus(status websocket.StatusCode) string {
 }
 
 func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
-	if s.isClosed() {
+	if !s.beginMutation() {
 		return nil, ErrRoomNotFound
 	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return nil, ErrRoomNotFound
@@ -597,6 +619,11 @@ func (s *Store) attachClient(reservation *clientReservation, conn clientConn) bo
 
 func (s *Store) attachClientSession(reservation *clientReservation, conn clientConn) (*clientSession, bool) {
 	var deliveries []webSocketDelivery
+
+	if !s.beginMutation() {
+		return nil, false
+	}
+	defer s.endMutation()
 
 	if reservation == nil || reservation.room == nil {
 		return nil, false
@@ -708,6 +735,11 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 }
 
 func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) {
+	if !s.beginMutation() {
+		return
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return
@@ -728,6 +760,11 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 
 func (s *Store) markClientReady(roomID string, playerID string, expectedSession *clientSession) {
 	var deliveries []webSocketDelivery
+
+	if !s.beginMutation() {
+		return
+	}
+	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
 	if room == nil {

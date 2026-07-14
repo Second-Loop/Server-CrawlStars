@@ -14,13 +14,16 @@ import (
 
 // Store owns registry and store-lifecycle synchronization only.
 //
+// mutationMu is the outer quiescing gate for externally initiated mutations.
 // mu protects rooms, activeSessions, playerIDs, random, and closed. Room
 // gameplay, connection, countdown, and resource fields are protected by room.mu
-// instead. When both locks are ever needed, Store.mu must be acquired before
-// room.mu; acquiring Store.mu while holding room.mu is forbidden.
+// instead. The lock order is mutationMu -> Store.mu -> room.mu; acquiring an
+// outer lock while holding an inner lock is forbidden.
 type Store struct {
+	mutationMu        sync.RWMutex
 	mu                sync.RWMutex
-	closeOnce         sync.Once
+	shutdownOnce      sync.Once
+	shutdownErrMu     sync.Mutex
 	maxActiveRooms    int
 	rooms             map[string]*room
 	activeSessions    map[*clientSession]chan struct{}
@@ -36,6 +39,10 @@ type Store struct {
 	heartbeatTimeout  time.Duration
 	janitorStop       chan struct{}
 	janitorDone       chan struct{}
+	shutdownDone      chan struct{}
+	shutdownErr       error
+	shutdownPanic     any
+	shutdownPanicked  bool
 	closed            bool
 }
 
@@ -143,9 +150,28 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		heartbeatTimeout:  heartbeatTimeout,
 		janitorStop:       make(chan struct{}),
 		janitorDone:       make(chan struct{}),
+		shutdownDone:      make(chan struct{}),
 	}
 	store.startJanitor()
 	return store
+}
+
+// beginMutation holds the shared quiescing gate for the entire externally
+// initiated mutation, including synchronous log and metrics publication.
+func (s *Store) beginMutation() bool {
+	s.mutationMu.RLock()
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		s.mutationMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (s *Store) endMutation() {
+	s.mutationMu.RUnlock()
 }
 
 func normalizeLogger(logger *slog.Logger) *slog.Logger {
@@ -169,6 +195,11 @@ func (s *Store) listRooms() roomListResponse {
 }
 
 func (s *Store) createRoom() (roomResponse, error) {
+	if !s.beginMutation() {
+		return roomResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	response, err := s.createRoomOnce()
 	if !errors.Is(err, ErrActiveRoomCapReached) {
 		return response, err
@@ -206,6 +237,11 @@ func (s *Store) createRoomOnce() (roomResponse, error) {
 }
 
 func (s *Store) clearRooms() clearRoomsResponse {
+	if !s.beginMutation() {
+		return clearRoomsResponse{}
+	}
+	defer s.endMutation()
+
 	registered := s.registeredRooms()
 	deleted := 0
 	var resources roomResources
@@ -227,6 +263,11 @@ func (s *Store) clearRooms() clearRoomsResponse {
 }
 
 func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
+	if !s.beginMutation() {
+		return clearRoomsResponse{}, false
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return clearRoomsResponse{}, false
@@ -272,17 +313,24 @@ func (s *Store) registeredRooms() []*room {
 }
 
 func (s *Store) deleteRoomIfSame(roomID string, expected *room) bool {
+	transition, deleted := s.removeRegisteredRoomIfSame(roomID, expected)
+	if !deleted {
+		return false
+	}
+	s.observation.publish(transition)
+	return true
+}
+
+func (s *Store) removeRegisteredRoomIfSame(roomID string, expected *room) (observationTransition, bool) {
 	s.mu.Lock()
 	if expected == nil || s.rooms[roomID] != expected {
 		s.mu.Unlock()
-		return false
+		return observationTransition{}, false
 	}
 	delete(s.rooms, roomID)
 	transition := s.observation.activeRoomsDelta(-1)
 	s.mu.Unlock()
-
-	s.observation.publish(transition)
-	return true
+	return transition, true
 }
 
 type clientObservationTransition struct {
@@ -342,6 +390,11 @@ func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
 }
 
 func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
+	if !s.beginMutation() {
+		return playerSessionResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return playerSessionResponse{}, ErrRoomNotFound
@@ -369,6 +422,11 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 }
 
 func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
+	if !s.beginMutation() {
+		return matchmakingJoinResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	var credentials *playerCredentials
 	for _, room := range s.registeredRooms() {
 		room.mu.Lock()
@@ -484,6 +542,11 @@ func (s *Store) matchCapacity() int {
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
+	if !s.beginMutation() {
+		return roomResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return roomResponse{}, ErrRoomNotFound

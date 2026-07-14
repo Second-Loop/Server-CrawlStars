@@ -212,6 +212,10 @@ func newRouterWithDebugGuard(
 		roomID := r.PathValue("roomID")
 		started, err := store.startRoom(roomID)
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			status := http.StatusConflict
 			code := "room_has_no_players"
 			if errors.Is(err, ErrRoomNotFound) {
