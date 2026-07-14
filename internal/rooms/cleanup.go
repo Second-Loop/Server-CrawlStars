@@ -44,6 +44,7 @@ func (s *Store) runShutdown(ctx context.Context, ownerDone <-chan struct{}) {
 	s.closed = true
 	activeSessions, activeSessionDone := activeSessionSnapshotLocked(s.activeSessions)
 	s.mu.Unlock()
+	s.stopLaunchingRoomWorkers()
 	s.mutationMu.Unlock()
 
 	var resources roomResources
@@ -77,6 +78,7 @@ func (s *Store) runShutdown(ctx context.Context, ownerDone <-chan struct{}) {
 
 	allSessions := uniqueClientSessions(activeSessions, resources.sessions)
 	closeClientSessionsInParallel(allSessions, websocket.StatusNormalClosure, shutdownWebSocketCloseReason)
+	s.workerWG.Wait()
 	waitClientSessions(allSessions)
 	for _, lifecycleDone := range activeSessionDone {
 		<-lifecycleDone

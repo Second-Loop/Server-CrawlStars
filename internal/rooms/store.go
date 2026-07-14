@@ -18,12 +18,16 @@ import (
 // mu protects rooms, activeSessions, playerIDs, random, and closed. Room
 // gameplay, connection, countdown, and resource fields are protected by room.mu
 // instead. The lock order is mutationMu -> Store.mu -> room.mu; acquiring an
-// outer lock while holding an inner lock is forbidden.
+// outer lock while holding an inner lock is forbidden. workerMu is a leaf lock
+// that closes the gameplay/countdown launch gate before shutdown waits on
+// workerWG; no core lock is acquired while workerMu is held.
 type Store struct {
 	mutationMu        sync.RWMutex
 	mu                sync.RWMutex
 	shutdownOnce      sync.Once
 	shutdownErrMu     sync.Mutex
+	workerMu          sync.Mutex
+	workerWG          sync.WaitGroup
 	maxActiveRooms    int
 	rooms             map[string]*room
 	activeSessions    map[*clientSession]chan struct{}
@@ -43,6 +47,7 @@ type Store struct {
 	shutdownErr       error
 	shutdownPanic     any
 	shutdownPanicked  bool
+	workersClosing    bool
 	closed            bool
 }
 
@@ -172,6 +177,26 @@ func (s *Store) beginMutation() bool {
 
 func (s *Store) endMutation() {
 	s.mutationMu.RUnlock()
+}
+
+func (s *Store) launchRoomWorker(worker func()) bool {
+	s.workerMu.Lock()
+	defer s.workerMu.Unlock()
+	if s.workersClosing {
+		return false
+	}
+	s.workerWG.Add(1)
+	go func() {
+		defer s.workerWG.Done()
+		worker()
+	}()
+	return true
+}
+
+func (s *Store) stopLaunchingRoomWorkers() {
+	s.workerMu.Lock()
+	s.workersClosing = true
+	s.workerMu.Unlock()
 }
 
 func normalizeLogger(logger *slog.Logger) *slog.Logger {
@@ -749,9 +774,16 @@ func (s *Store) startRoomLocked(room *room) bool {
 		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameConfig), simulation.Config{Game: s.gameConfig})
 	}
 	if room.ticker == nil {
-		room.ticker = s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
-		room.stop = make(chan struct{})
-		go s.runRoom(room, room.ticker, room.stop)
+		roomTicker := s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
+		roomStop := make(chan struct{})
+		room.ticker = roomTicker
+		room.stop = roomStop
+		if !s.launchRoomWorker(func() { s.runRoom(room, roomTicker, roomStop) }) {
+			roomTicker.Stop()
+			close(roomStop)
+			room.ticker = nil
+			room.stop = nil
+		}
 	}
 	return started
 }

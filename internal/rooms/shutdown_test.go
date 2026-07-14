@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"sync"
@@ -791,6 +792,115 @@ func TestStoreShutdownJoinsJanitorWriterHeartbeatAndLifecycleMonitor(t *testing.
 	if activeAfterShutdown != 0 {
 		t.Fatalf("expected joined lifecycle registry to drain, got %d", activeAfterShutdown)
 	}
+}
+
+func TestStoreShutdownJoinsRoomOwnedWorkers(t *testing.T) {
+	t.Run("gameplay worker after room lock release", func(t *testing.T) {
+		clock := newFakeClock()
+		observer := newBlockingTickObserver()
+		store := newStore(5, clock, StoreConfig{Observer: observer})
+		defer store.Close()
+		defer observer.release()
+
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if _, err := store.addPlayer(created.ID); err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if _, err := store.startRoom(created.ID); err != nil {
+			t.Fatalf("start room: %v", err)
+		}
+
+		clock.TickTicker(time.Second/time.Duration(store.gameConfig.TickRate), 0)
+		waitShutdownSignal(t, observer.entered, "gameplay worker tick publication")
+
+		shutdownResult := startStoreShutdown(store, context.Background())
+		assertShutdownStillWaiting(t, shutdownResult, "gameplay worker")
+		observer.release()
+		if err := waitStoreShutdown(t, shutdownResult); err != nil {
+			t.Fatalf("shutdown after gameplay worker release: %v", err)
+		}
+	})
+
+	t.Run("countdown worker after ticker handoff", func(t *testing.T) {
+		clock := newFakeClock()
+		logEntered := make(chan struct{})
+		logRelease := make(chan struct{})
+		var enterOnce sync.Once
+		var releaseOnce sync.Once
+		releaseLog := func() { releaseOnce.Do(func() { close(logRelease) }) }
+		logger := slog.New(&callbackLogHandler{handle: func(record slog.Record) {
+			if record.Message != "room_started" {
+				return
+			}
+			enterOnce.Do(func() { close(logEntered) })
+			<-logRelease
+		}})
+		store := newStore(5, clock, StoreConfig{Logger: logger})
+		defer store.Close()
+		defer releaseLog()
+
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if _, err := store.addPlayer(created.ID); err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		room := store.lookupRoom(created.ID)
+		room.mu.Lock()
+		store.startMatchCountdownLocked(room)
+		room.countdown = 1
+		room.mu.Unlock()
+
+		clock.TickTicker(time.Second, 0)
+		waitShutdownSignal(t, logEntered, "countdown worker room_started publication")
+
+		shutdownResult := startStoreShutdown(store, context.Background())
+		assertShutdownStillWaiting(t, shutdownResult, "countdown worker")
+		releaseLog()
+		if err := waitStoreShutdown(t, shutdownResult); err != nil {
+			t.Fatalf("shutdown after countdown worker release: %v", err)
+		}
+	})
+}
+
+func assertShutdownStillWaiting(t *testing.T, result <-chan error, worker string) {
+	t.Helper()
+	select {
+	case err := <-result:
+		t.Fatalf("shutdown returned before %s exited: %v", worker, err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type blockingTickObserver struct {
+	entered     chan struct{}
+	releaseTick chan struct{}
+	enterOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingTickObserver() *blockingTickObserver {
+	return &blockingTickObserver{
+		entered:     make(chan struct{}),
+		releaseTick: make(chan struct{}),
+	}
+}
+
+func (*blockingTickObserver) SetActiveRooms(int) {}
+
+func (*blockingTickObserver) SetConnectedClients(int) {}
+
+func (o *blockingTickObserver) ObserveTick(time.Duration) {
+	o.enterOnce.Do(func() { close(o.entered) })
+	<-o.releaseTick
+}
+
+func (o *blockingTickObserver) release() {
+	o.releaseOnce.Do(func() { close(o.releaseTick) })
 }
 
 func TestStoreShutdownIsIdempotentForConcurrentCallers(t *testing.T) {

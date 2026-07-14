@@ -793,9 +793,16 @@ func (s *Store) markClientReady(roomID string, playerID string, expectedSession 
 func (s *Store) startMatchCountdownLocked(room *room) {
 	room.matchStatus = MatchStatusStarting
 	room.countdown = matchCountdownSeconds
-	room.countdownTicker = s.clock.NewTicker(time.Second)
-	room.countdownStop = make(chan struct{})
-	go s.runMatchCountdown(room, room.countdownTicker, room.countdownStop)
+	countdownTicker := s.clock.NewTicker(time.Second)
+	countdownStop := make(chan struct{})
+	room.countdownTicker = countdownTicker
+	room.countdownStop = countdownStop
+	if !s.launchRoomWorker(func() { s.runMatchCountdown(room, countdownTicker, countdownStop) }) {
+		countdownTicker.Stop()
+		close(countdownStop)
+		room.countdownTicker = nil
+		room.countdownStop = nil
+	}
 }
 
 func (s *Store) stopMatchCountdownLocked(room *room) {
