@@ -45,8 +45,11 @@ type StoreConfig struct {
 	Random            io.Reader
 	HeartbeatInterval time.Duration
 	HeartbeatTimeout  time.Duration
-	Logger            *slog.Logger
-	Observer          Observer
+	// Logger and Observer handlers run synchronously as bounded pure sinks after
+	// core locks are released. They must not call Store methods. Lifecycle
+	// mutators wait for their log and Observer publication before returning.
+	Logger   *slog.Logger
+	Observer Observer
 }
 
 // room owns synchronization for one room independently of the Store registry.

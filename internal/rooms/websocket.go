@@ -42,6 +42,7 @@ type terminalWriterCommand struct {
 type clientLifecyclePublication struct {
 	ready   bool
 	publish func()
+	done    chan struct{}
 }
 
 type clientSession struct {
@@ -89,14 +90,29 @@ func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSess
 	return session
 }
 
+// Ready lifecycle publications are synchronous: the mutator returns only after
+// its log and Observer callbacks complete, including when another goroutine owns
+// the FIFO drainer. Those callbacks are bounded pure sinks and must not call
+// Store methods or reenter client lifecycle publication.
 func (s *clientSession) enqueueLifecyclePublication(ready bool, publish func()) *clientLifecyclePublication {
-	publication := &clientLifecyclePublication{ready: ready, publish: publish}
+	publication := &clientLifecyclePublication{
+		ready:   ready,
+		publish: publish,
+		done:    make(chan struct{}),
+	}
 	s.publicationMu.Lock()
 	s.publications = append(s.publications, publication)
-	shouldDrain := s.startPublicationDrainLocked()
+	shouldDrain := ready && s.startPublicationDrainLocked()
 	s.publicationMu.Unlock()
+	// A not-ready connected publication is prepared while room.mu is held. It
+	// must return without running callbacks or waiting for publication.
+	if !ready {
+		return publication
+	}
 	if shouldDrain {
 		s.drainLifecyclePublications()
+	} else {
+		<-publication.done
 	}
 	return publication
 }
@@ -111,6 +127,8 @@ func (s *clientSession) readyLifecyclePublication(publication *clientLifecyclePu
 	s.publicationMu.Unlock()
 	if shouldDrain {
 		s.drainLifecyclePublications()
+	} else {
+		<-publication.done
 	}
 }
 
@@ -143,6 +161,7 @@ func (s *clientSession) drainLifecyclePublications() {
 		}
 		s.publicationMu.Unlock()
 		panicValue, panicked := captureCallbackPanic(publication.publish)
+		close(publication.done)
 		if panicked && !hasPanic {
 			firstPanic = panicValue
 			hasPanic = true

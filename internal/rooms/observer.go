@@ -32,6 +32,11 @@ type observationTransition struct {
 	sequence uint64
 }
 
+type observationPublication struct {
+	transition observationTransition
+	done       chan struct{}
+}
+
 type observationState struct {
 	mu                sync.Mutex
 	publishMu         sync.Mutex
@@ -40,7 +45,7 @@ type observationState struct {
 	activeRooms       int
 	connectedClients  int
 	publishedSequence [2]uint64
-	pending           []observationTransition
+	pending           []observationPublication
 	draining          bool
 }
 
@@ -82,13 +87,22 @@ func (s *observationState) transition(kind observationKind, delta int) observati
 }
 
 // publish invokes the external Observer and must be called after releasing any
-// Store or room core lock. Sequences keep a delayed transition from overwriting
-// a newer value.
+// Store or room core lock. It returns only after this transition's callback or
+// stale drop completes, even when another goroutine owns the queue drainer.
+//
+// Observer callbacks are bounded pure sinks. They must not call Store methods
+// or reenter observation publication. Sequences keep a delayed transition from
+// overwriting a newer value.
 func (s *observationState) publish(transition observationTransition) {
+	publication := observationPublication{
+		transition: transition,
+		done:       make(chan struct{}),
+	}
 	s.publishMu.Lock()
-	s.pending = append(s.pending, transition)
+	s.pending = append(s.pending, publication)
 	if s.draining {
 		s.publishMu.Unlock()
+		<-publication.done
 		return
 	}
 	s.draining = true
@@ -106,30 +120,33 @@ func (s *observationState) publish(transition observationTransition) {
 			}
 			return
 		}
-		pending := s.pending[0]
+		publication := s.pending[0]
 		if len(s.pending) == 1 {
 			s.pending = nil
 		} else {
 			s.pending = s.pending[1:]
 		}
-		if pending.sequence <= s.publishedSequence[pending.kind] {
-			s.publishMu.Unlock()
-			continue
+		transition := publication.transition
+		stale := transition.sequence <= s.publishedSequence[transition.kind]
+		if !stale {
+			s.publishedSequence[transition.kind] = transition.sequence
 		}
-		s.publishedSequence[pending.kind] = pending.sequence
 		s.publishMu.Unlock()
 
-		panicValue, panicked := captureCallbackPanic(func() {
-			if pending.kind == activeRoomsObservation {
-				s.observer.SetActiveRooms(pending.value)
-				return
+		if !stale {
+			panicValue, panicked := captureCallbackPanic(func() {
+				if transition.kind == activeRoomsObservation {
+					s.observer.SetActiveRooms(transition.value)
+					return
+				}
+				s.observer.SetConnectedClients(transition.value)
+			})
+			if panicked && !hasPanic {
+				firstPanic = panicValue
+				hasPanic = true
 			}
-			s.observer.SetConnectedClients(pending.value)
-		})
-		if panicked && !hasPanic {
-			firstPanic = panicValue
-			hasPanic = true
 		}
+		close(publication.done)
 	}
 }
 

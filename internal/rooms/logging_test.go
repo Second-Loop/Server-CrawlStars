@@ -296,9 +296,13 @@ func TestRoomEndedAndExpiredLogOnlySuccessfulDelete(t *testing.T) {
 }
 
 func TestWebSocketLifecycleLogsOnceAcrossReadWritePingAndCloseRace(t *testing.T) {
-	t.Run("connected publication precedes immediate disconnect", func(t *testing.T) {
+	t.Run("lifecycle mutator waits for its log and observer publication", func(t *testing.T) {
 		handler := newOrderedLifecycleLogHandler()
-		store := newStore(5, newFakeClock(), StoreConfig{Logger: slog.New(handler)})
+		observer := &recordingObserver{}
+		store := newStore(5, newFakeClock(), StoreConfig{
+			Logger:   slog.New(handler),
+			Observer: observer,
+		})
 		t.Cleanup(store.Close)
 		created, err := store.createRoom()
 		if err != nil {
@@ -346,6 +350,17 @@ func TestWebSocketLifecycleLogsOnceAcrossReadWritePingAndCloseRace(t *testing.T)
 			close(closeDone)
 		}()
 		waitForDetachedClient(t, store, created.ID, issued.Player.ID)
+		// Lifecycle callbacks are pure sinks and must not reenter Store lifecycle
+		// methods. In return, the lifecycle mutator does not return until both its
+		// Observer and log publication have completed.
+		assertObserverValues(t, observer.connectedClientValues(), []int{1})
+		select {
+		case <-closeDone:
+			close(handler.allowConnected)
+			<-attachDone
+			t.Fatal("lifecycle mutator returned before its log and observer publication completed")
+		default:
+		}
 		select {
 		case <-handler.disconnectedPublished:
 			close(handler.allowConnected)
@@ -363,6 +378,7 @@ func TestWebSocketLifecycleLogsOnceAcrossReadWritePingAndCloseRace(t *testing.T)
 		if got := handler.eventsSnapshot(); !slices.Equal(got, []string{"websocket_connected", "websocket_disconnected"}) {
 			t.Fatalf("expected ordered lifecycle logs, got %v", got)
 		}
+		assertObserverValues(t, observer.connectedClientValues(), []int{1, 0})
 	})
 
 	t.Run("write ping and close race", func(t *testing.T) {
@@ -437,35 +453,19 @@ func TestWebSocketLifecycleLogsOnceAcrossReadWritePingAndCloseRace(t *testing.T)
 	})
 }
 
-func TestWebSocketConnectedCallbacksCanReenterLifecycleWithoutDeadlock(t *testing.T) {
-	for _, callbackKind := range []string{"logger", "observer"} {
-		t.Run(callbackKind, func(t *testing.T) {
-			for _, action := range []string{"session_close", "delete_room", "store_close"} {
-				t.Run(action, func(t *testing.T) {
-					testWebSocketConnectedCallbackReentry(t, callbackKind, action)
-				})
-			}
-		})
-	}
-}
-
 func TestLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T) {
 	for _, callbackKind := range []string{"logger", "observer"} {
 		t.Run(callbackKind, func(t *testing.T) {
-			for _, panicPath := range []string{"enqueue_then_panic", "panic_then_close"} {
-				t.Run(panicPath, func(t *testing.T) {
-					testLifecyclePublicationPanicDoesNotWedgeQueue(t, callbackKind, panicPath)
-				})
-			}
+			testLifecyclePublicationPanicDoesNotWedgeQueue(t, callbackKind)
 		})
 	}
 }
 
-func testLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T, callbackKind string, panicPath string) {
+func testLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T, callbackKind string) {
 	t.Helper()
 	panicValue := errors.New("lifecycle callback panic sentinel")
-	logHandler := &reentrantLifecycleLogHandler{}
-	observer := &reentrantLifecycleObserver{}
+	logHandler := &panicLifecycleLogHandler{}
+	observer := &panicLifecycleObserver{}
 	store := newStore(5, newFakeClock(), StoreConfig{
 		Logger:   slog.New(logHandler),
 		Observer: observer,
@@ -481,29 +481,16 @@ func testLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T, callbackKind s
 		t.Fatalf("add panic player: %v", err)
 	}
 
-	panicCallback := func() {
-		if panicPath == "enqueue_then_panic" {
-			switch callbackKind {
-			case "logger":
-				session := lifecycleTestSession(store, created.ID, issued.Player.ID)
-				if session == nil {
-					panic("connected logger callback could not find attached session")
-				}
-				session.close(websocket.StatusNormalClosure, "panic callback close")
-			case "observer":
-				if _, deleted := store.deleteRoom(created.ID); !deleted {
-					panic("connected observer callback could not delete room")
-				}
-			default:
-				panic("unknown callback kind")
-			}
-		}
-		panic(panicValue)
-	}
-	if callbackKind == "logger" {
-		logHandler.onConnected = panicCallback
-	} else {
-		observer.onConnected = panicCallback
+	// Logger and Observer callbacks are pure sinks: they may record or panic,
+	// but they must not call Store lifecycle methods from inside publication.
+	panicCallback := func() { panic(panicValue) }
+	switch callbackKind {
+	case "logger":
+		logHandler.panicConnected = panicCallback
+	case "observer":
+		observer.panicConnected = panicCallback
+	default:
+		t.Fatalf("unknown callback kind %q", callbackKind)
 	}
 
 	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
@@ -523,13 +510,11 @@ func testLifecyclePublicationPanicDoesNotWedgeQueue(t *testing.T, callbackKind s
 		t.Fatalf("expected original callback panic %v, recovered %v", panicValue, recovered)
 	}
 
-	if panicPath == "panic_then_close" {
-		session := lifecycleTestSession(store, created.ID, issued.Player.ID)
-		if session == nil {
-			t.Fatal("expected attached session after recovered callback panic")
-		}
-		session.close(websocket.StatusNormalClosure, "post-panic close")
+	session := lifecycleTestSession(store, created.ID, issued.Player.ID)
+	if session == nil {
+		t.Fatal("expected attached session after recovered callback panic")
 	}
+	session.close(websocket.StatusNormalClosure, "post-panic close")
 
 	wantFirstEvents := []string{"websocket_connected", "websocket_disconnected"}
 	if callbackKind == "observer" {
@@ -691,101 +676,6 @@ func delayClientReleaseUntilTransportErrorSettles(session *clientSession, errorR
 			}
 		}
 		originalOnClose(expected)
-	}
-}
-
-func testWebSocketConnectedCallbackReentry(t *testing.T, callbackKind string, action string) {
-	t.Helper()
-	logHandler := &reentrantLifecycleLogHandler{}
-	observer := &reentrantLifecycleObserver{}
-	config := StoreConfig{Logger: slog.New(logHandler)}
-	if callbackKind == "observer" {
-		config.Observer = observer
-	}
-	store := newStore(5, newFakeClock(), config)
-	created, err := store.createRoom()
-	if err != nil {
-		t.Fatalf("create room: %v", err)
-	}
-	issued, err := store.addPlayer(created.ID)
-	if err != nil {
-		t.Fatalf("add player: %v", err)
-	}
-	if _, err := store.startRoom(created.ID); err != nil {
-		t.Fatalf("start room: %v", err)
-	}
-
-	deleteRoomID := created.ID
-	if callbackKind == "observer" && action == "delete_room" {
-		extra, createErr := store.createRoom()
-		if createErr != nil {
-			t.Fatalf("create reentrant delete target: %v", createErr)
-		}
-		deleteRoomID = extra.ID
-	}
-	reenter := func() {
-		switch action {
-		case "session_close":
-			room := store.lookupRoom(created.ID)
-			if room == nil {
-				return
-			}
-			room.mu.Lock()
-			session := room.clients[issued.Player.ID]
-			room.mu.Unlock()
-			if session != nil {
-				session.close(websocket.StatusNormalClosure, "reentrant close")
-			}
-		case "delete_room":
-			store.deleteRoom(deleteRoomID)
-		case "store_close":
-			store.Close()
-		default:
-			t.Fatalf("unknown reentrant action %q", action)
-		}
-	}
-	if callbackKind == "logger" {
-		logHandler.onConnected = reenter
-	} else {
-		observer.onConnected = reenter
-	}
-
-	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
-	if err != nil {
-		t.Fatalf("reserve client: %v", err)
-	}
-	type attachResult struct {
-		session  *clientSession
-		attached bool
-	}
-	result := make(chan attachResult, 1)
-	go func() {
-		session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
-		result <- attachResult{session: session, attached: attached}
-	}()
-
-	var attached attachResult
-	select {
-	case attached = <-result:
-	case <-time.After(time.Second):
-		t.Fatalf("%s callback action %s deadlocked lifecycle publication", callbackKind, action)
-	}
-	if !attached.attached || attached.session == nil {
-		t.Fatal("expected client attach to commit before reentrant lifecycle action")
-	}
-	attached.session.close(websocket.StatusNormalClosure, "post-callback close")
-	store.Close()
-
-	if got := logHandler.eventsSnapshot(); !slices.Equal(got, []string{"websocket_connected", "websocket_disconnected"}) {
-		t.Fatalf("expected connected then disconnected logs, got %v", got)
-	}
-	if callbackKind == "observer" {
-		assertObserverValues(t, observer.connectedValues(), []int{1, 0})
-		wantActive := []int{1, 0}
-		if action == "delete_room" {
-			wantActive = []int{1, 2, 1, 0}
-		}
-		assertObserverValues(t, observer.activeValues(), wantActive)
 	}
 }
 
@@ -1002,16 +892,16 @@ type orderedLifecycleLogHandler struct {
 	disconnectedOnce      sync.Once
 }
 
-type reentrantLifecycleLogHandler struct {
-	mu          sync.Mutex
-	events      []string
-	onConnected func()
-	once        sync.Once
+type panicLifecycleLogHandler struct {
+	mu             sync.Mutex
+	events         []string
+	panicConnected func()
+	once           sync.Once
 }
 
-func (*reentrantLifecycleLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (*panicLifecycleLogHandler) Enabled(context.Context, slog.Level) bool { return true }
 
-func (h *reentrantLifecycleLogHandler) Handle(_ context.Context, record slog.Record) error {
+func (h *panicLifecycleLogHandler) Handle(_ context.Context, record slog.Record) error {
 	event := logRecordString(record, "event")
 	if event != "websocket_connected" && event != "websocket_disconnected" {
 		return nil
@@ -1019,54 +909,54 @@ func (h *reentrantLifecycleLogHandler) Handle(_ context.Context, record slog.Rec
 	h.mu.Lock()
 	h.events = append(h.events, event)
 	h.mu.Unlock()
-	if event == "websocket_connected" && h.onConnected != nil {
-		h.once.Do(h.onConnected)
+	if event == "websocket_connected" && h.panicConnected != nil {
+		h.once.Do(h.panicConnected)
 	}
 	return nil
 }
 
-func (h *reentrantLifecycleLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *panicLifecycleLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 
-func (h *reentrantLifecycleLogHandler) WithGroup(string) slog.Handler { return h }
+func (h *panicLifecycleLogHandler) WithGroup(string) slog.Handler { return h }
 
-func (h *reentrantLifecycleLogHandler) eventsSnapshot() []string {
+func (h *panicLifecycleLogHandler) eventsSnapshot() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.events)
 }
 
-type reentrantLifecycleObserver struct {
+type panicLifecycleObserver struct {
 	mu               sync.Mutex
 	activeRooms      []int
 	connectedClients []int
-	onConnected      func()
+	panicConnected   func()
 	once             sync.Once
 }
 
-func (o *reentrantLifecycleObserver) SetActiveRooms(count int) {
+func (o *panicLifecycleObserver) SetActiveRooms(count int) {
 	o.mu.Lock()
 	o.activeRooms = append(o.activeRooms, count)
 	o.mu.Unlock()
 }
 
-func (o *reentrantLifecycleObserver) SetConnectedClients(count int) {
+func (o *panicLifecycleObserver) SetConnectedClients(count int) {
 	o.mu.Lock()
 	o.connectedClients = append(o.connectedClients, count)
 	o.mu.Unlock()
-	if count == 1 && o.onConnected != nil {
-		o.once.Do(o.onConnected)
+	if count == 1 && o.panicConnected != nil {
+		o.once.Do(o.panicConnected)
 	}
 }
 
-func (*reentrantLifecycleObserver) ObserveTick(time.Duration) {}
+func (*panicLifecycleObserver) ObserveTick(time.Duration) {}
 
-func (o *reentrantLifecycleObserver) connectedValues() []int {
+func (o *panicLifecycleObserver) connectedValues() []int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return slices.Clone(o.connectedClients)
 }
 
-func (o *reentrantLifecycleObserver) activeValues() []int {
+func (o *panicLifecycleObserver) activeValues() []int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return slices.Clone(o.activeRooms)

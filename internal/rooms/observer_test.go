@@ -28,6 +28,76 @@ func TestObservationTransitionsDropLateStalePublish(t *testing.T) {
 	}
 }
 
+func TestObservationPublicationWaitsForItsObserverCallback(t *testing.T) {
+	observer := newBlockingActiveRoomsObserver()
+	state := newObservationState(observer)
+	first := state.activeRoomsDelta(1)
+	second := state.activeRoomsDelta(-1)
+
+	firstDone := make(chan struct{})
+	go func() {
+		state.publish(first)
+		close(firstDone)
+	}()
+	select {
+	case <-observer.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first observer callback did not start")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		state.publish(second)
+		close(secondDone)
+	}()
+	<-secondStarted
+	defer func() {
+		select {
+		case <-observer.releaseFirst:
+		default:
+			close(observer.releaseFirst)
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		state.publishMu.Lock()
+		queuedBehindDrainer := state.draining && len(state.pending) > 0
+		state.publishMu.Unlock()
+		if queuedBehindDrainer {
+			break
+		}
+		select {
+		case <-secondDone:
+			t.Fatal("publish returned before its queued observer callback completed")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second observer publication was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-secondDone:
+		t.Fatal("publish returned before its queued observer callback completed")
+	default:
+	}
+
+	close(observer.releaseFirst)
+	for name, done := range map[string]<-chan struct{}{
+		"first publish":  firstDone,
+		"second publish": secondDone,
+	} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not complete after observer release", name)
+		}
+	}
+	assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
+}
+
 func TestObservationCountersNeverGoNegativeOnDuplicateRelease(t *testing.T) {
 	observer := &recordingObserver{}
 	state := newObservationState(observer)
@@ -517,6 +587,31 @@ type recordingObserver struct {
 	activeRooms      []int
 	connectedClients []int
 	tickDurations    []time.Duration
+}
+
+type blockingActiveRoomsObserver struct {
+	recordingObserver
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	firstOnce    sync.Once
+}
+
+func newBlockingActiveRoomsObserver() *blockingActiveRoomsObserver {
+	return &blockingActiveRoomsObserver{
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+}
+
+func (o *blockingActiveRoomsObserver) SetActiveRooms(count int) {
+	o.recordingObserver.SetActiveRooms(count)
+	if count != 1 {
+		return
+	}
+	o.firstOnce.Do(func() {
+		close(o.firstEntered)
+		<-o.releaseFirst
+	})
 }
 
 type tickBoundaryObserver struct {
