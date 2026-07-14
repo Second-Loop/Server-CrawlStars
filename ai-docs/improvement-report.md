@@ -116,6 +116,8 @@
 
 ## P2-1. graceful shutdown + HTTP 서버 하드닝
 
+- 상태: SL-81 Stack 5에서 구현됨
+
 - 문제:
   - `cmd/server/main.go`가 `http.ListenAndServe`를 그대로 사용해 SIGTERM 시 모든 연결이 즉시 끊긴다(systemd `TimeoutStopSec=15s` 미활용).
   - `Store.Close()`가 구현돼 있으나 호출되는 곳이 없다.
@@ -125,8 +127,17 @@
   - `http.Server`에 timeout 설정 추가.
 - 수용 기준:
   - SIGTERM 시 진행 중 연결이 close 메시지와 함께 정리되는 테스트 또는 수동 검증 절차 문서화.
+- 반영 결과:
+  - `signal.NotifyContext`와 두 HTTP server 결과를 하나의 application shutdown 경계로 연결했다.
+  - Application/metrics listener를 모두 prebind하고, 종료 시 `rooms.Store`와 두 HTTP server를 최대 10초 동안 병렬로 정리한다.
+  - Store는 새 mutation을 차단하고 WebSocket에 `1000 / server shutting down`을 보낸 뒤 janitor, room ticker, writer, heartbeat를 join한다.
+  - Application HTTP에 `ReadHeaderTimeout=5s`, `IdleTimeout=60s`를 설정했다. WebSocket/streaming을 위해 server-wide `WriteTimeout`은 두지 않는다.
+  - Systemd `TimeoutStopSec=15s` 안에서 process grace를 끝내고, deadline 뒤에는 남은 HTTP transport를 강제로 닫는다.
+  - 실제 listener와 WebSocket을 사용한 shutdown/timeout 회귀 테스트를 추가했다.
 
 ## P2-2. 구조화 로깅 + 메트릭
+
+- 상태: SL-81 Stack 5에서 구현됨
 
 - 문제:
   - room 생성/시작/종료, WebSocket 연결/해제, 에러가 전혀 로그되지 않아 운영 중 관측이 불가능하다.
@@ -135,6 +146,12 @@
   - `/metrics` Prometheus 엔드포인트(active rooms, connected clients, tick duration) 추가.
 - 수용 기준:
   - 주요 lifecycle 이벤트가 roomID/playerID 필드와 함께 로그된다.
+- 반영 결과:
+  - Process와 HTTP server error를 stdout JSON `slog`로 기록하고, room 생성/시작/종료/만료와 WebSocket 연결/해제/거부/I/O 분류 event를 bounded field로 남긴다.
+  - Session token, request query, raw transport error는 log field에서 제외한다.
+  - `crawlstars_active_rooms`, `crawlstars_connected_clients`, `crawlstars_tick_duration_seconds`를 process-local Prometheus registry에 반영한다.
+  - Metrics는 loopback IP literal만 허용하는 별도 listener의 정확한 `GET /metrics`에서만 제공한다. Application HTTP와 OpenAPI/AsyncAPI public contract에는 추가하지 않았다.
+  - Logger/Observer는 Store를 다시 호출하지 않는 bounded pure sink이며, mutation 반환 전에 해당 lifecycle log와 metric publication을 끝낸다.
 
 ## P2-3. rooms.go 코드 정리
 

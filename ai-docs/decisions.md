@@ -385,3 +385,28 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Stale reader/writer/heartbeat는 reconnect된 최신 session이나 같은 ID의 replacement room을 제거하지 않습니다.
 - Snapshot freshness와 lifecycle reliability를 분리하면서 GameEnd 직전 terminal order를 보장합니다.
 - REST payload schema는 바뀌지 않았고 OpenAPI는 변경하지 않습니다. AsyncAPI와 human docs에는 heartbeat와 delivery lifecycle을 명시합니다.
+
+## ADR-0025: SL-81 Application은 Private Metrics와 하나의 Shutdown 경계를 소유
+
+상태: 승인됨
+
+맥락: 기존 process는 `http.ListenAndServe` 하나만 실행해서 SIGTERM 때 Store와 WebSocket worker를 정리하지 못했습니다. Room lifecycle log와 runtime metrics도 없어서 배포 후 상태를 확인하기 어려웠습니다. Metrics를 application HTTP에 그대로 추가하면 Cloudflare Tunnel을 통해 public endpoint가 될 수 있으므로 별도 노출 경계가 필요합니다.
+
+결정:
+
+- `cmd/server`의 application 하나가 `rooms.Store` 하나, process-local Prometheus registry 하나, application HTTP server와 metrics HTTP server를 함께 소유합니다.
+- Application listener 기본값은 `127.0.0.1:8080`입니다. Metrics listener 기본값은 `127.0.0.1:9090`이고 `METRICS_ADDR`는 `127.0.0.0/8` 또는 `::1`의 IP literal과 숫자 port만 허용합니다. Hostname, wildcard, private/Tailscale IP는 거부합니다.
+- 두 listener를 모두 먼저 bind한 뒤 serve를 시작합니다. Context cancel이나 어느 한 server 종료가 전체 shutdown을 시작합니다.
+- SIGINT/SIGTERM shutdown은 `rooms.Store`, application HTTP, metrics HTTP를 병렬로 정리하고 최대 10초 기다립니다. Deadline 뒤에는 남은 HTTP transport를 강제로 닫습니다. Systemd는 `TimeoutStopSec=15s`를 유지합니다.
+- Store shutdown은 외부 mutation을 quiesce하고 janitor, room/countdown ticker, WebSocket connection, writer, heartbeat를 join합니다. Client close는 `1000 / server shutting down`입니다.
+- Application HTTP는 `ReadHeaderTimeout=5s`, `IdleTimeout=60s`를 사용합니다. WebSocket/streaming response를 위해 server-wide `WriteTimeout`은 두지 않습니다.
+- Process와 HTTP server error는 stdout의 JSON `slog`로 기록합니다. Room/WebSocket lifecycle log는 bounded field만 기록하고 secret-bearing query/token과 raw transport error를 제외합니다.
+- Logger와 Observer callback은 Store를 다시 호출하지 않는 bounded pure sink입니다. Core lock 밖에서 동기 publication하며 mutation 함수가 반환될 때 해당 transition의 log와 metric 반영도 끝납니다.
+- Private listener의 정확한 `GET /metrics`만 `crawlstars_active_rooms`, `crawlstars_connected_clients`, `crawlstars_tick_duration_seconds`를 제공합니다. Application HTTP의 `/metrics`와 private listener의 다른 method/path는 노출하지 않습니다.
+
+결과:
+
+- 한 listener만 열린 반쪽짜리 process를 피하고 SIGTERM 때 Store와 HTTP transport를 같은 lifecycle로 정리합니다.
+- Metrics는 loopback 운영 surface로 남고 Cloudflare Tunnel이나 public firewall에 연결하지 않습니다.
+- `GET /metrics`는 REST/WebSocket product contract가 아니므로 OpenAPI, AsyncAPI, 사람이 읽는 API reference를 변경하지 않습니다.
+- 종료가 끝나면 active room/client gauge가 0이고, lifecycle mutation 반환 시점과 log/metric 관측 시점이 일치합니다.

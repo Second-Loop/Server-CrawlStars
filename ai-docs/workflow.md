@@ -29,6 +29,8 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - start 전 match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
+- JSON room/WebSocket lifecycle log와 loopback 전용 Prometheus metrics
+- application HTTP와 private metrics의 coordinated graceful shutdown/HTTP timeout
 
 아직 issue 없이 추가하지 않는 범위:
 
