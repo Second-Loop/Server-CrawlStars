@@ -410,3 +410,24 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Metrics는 loopback 운영 surface로 남고 Cloudflare Tunnel이나 public firewall에 연결하지 않습니다.
 - `GET /metrics`는 REST/WebSocket product contract가 아니므로 OpenAPI, AsyncAPI, 사람이 읽는 API reference를 변경하지 않습니다.
 - 종료가 끝나면 active room/client gauge가 0이고, lifecycle mutation 반환 시점과 log/metric 관측 시점이 일치합니다.
+
+## ADR-0026: SL-81 VM Pull은 한 Release Tag와 Checksum에 고정
+
+상태: 승인됨
+
+맥락: 기존 VM pull script는 `latest` download URL에서 package를 바로 받아 압축을 풀었습니다. 배포 중 `latest`가 바뀌면 package와 manifest가 서로 다른 release에서 올 수 있고, `ASSET_NAME`에 경로 문자를 허용하면 root 실행 시 임시 디렉터리 밖 파일을 덮어쓸 수 있습니다. Release가 제공하는 `SHA256SUMS`도 소비자가 확인하지 않았습니다.
+
+결정:
+
+- `RELEASE_TAG=latest`는 시작 시 GitHub latest release API로 정확히 한 번 조회하고, 응답의 non-`latest` tag를 이번 실행의 고정 tag로 사용합니다. 명시적인 tag는 API 조회 없이 URL encoding합니다.
+- Package와 `SHA256SUMS`는 모두 같은 고정 tag의 direct release download URL에서 받습니다. CD workflow와 GitHub asset ID 기반 다운로드는 이 변경에서 다루지 않습니다.
+- `ASSET_NAME`은 영문자, 숫자, `.`, `_`, `-`만 포함한 최대 255자 basename으로 제한합니다. 빈 값, `.`, `..`, `SHA256SUMS`는 network와 임시 파일 생성 전에 거부합니다.
+- Manifest는 요청 asset의 GNU checksum record 정확히 하나만 허용합니다. `sha256sum --strict -c`가 성공하기 전에는 tar 추출, install, symlink 전환, systemd restart를 실행하지 않습니다.
+- Optional GitHub token은 mode `0600` 임시 header file로 전달하고 caller xtrace와 환경 변수 노출 시간을 줄입니다. 줄바꿈 token은 요청 전에 거부합니다.
+- `make deploy-test`는 fake command PATH로 network 없이 latest 1회 해석, URL 고정, 입력 거부, checksum 순서, token 취급, rollback을 검증하며 `make ci`에 포함합니다.
+
+결과:
+
+- 한 번의 배포는 하나의 release tag와 exact checksum record에 고정되고 검증 실패 시 현재 release를 바꾸지 않습니다.
+- 안전하지 않은 asset 이름은 root 권한의 filesystem/network side effect 전에 차단됩니다.
+- Same-release checksum은 손상과 asset 혼합을 감지하지만 GitHub release 쓰기 권한 탈취로 package와 manifest가 함께 바뀌는 공격은 방어하지 않습니다.

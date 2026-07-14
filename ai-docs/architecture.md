@@ -46,7 +46,9 @@ GitHub Actions
   -> GitHub Release asset
 
 Oracle VM
-  -> latest release pull
+  -> latest를 commit SHA 기반 tag로 1회 해석
+  -> 같은 tag의 package + SHA256SUMS pull
+  -> checksum 검증 뒤에만 package 추출
   -> /opt/crawl-stars-server/releases/<sha>
   -> current symlink 전환
   -> systemd restart
@@ -61,6 +63,8 @@ Go server process
 ```
 
 Go server는 production에서도 application HTTP를 `127.0.0.1:8080`, metrics를 `127.0.0.1:9090`에 bind합니다. Public HTTPS edge는 Cloudflare Tunnel이며 metrics listener는 tunnel이나 public firewall에 연결하지 않습니다. Caddy는 apex hello page용 local service입니다. Rate limiter가 public client IP를 쓰려면 loopback cloudflared peer를 `TRUSTED_PROXY_CIDRS`로 명시해야 하며, `X-Forwarded-For`는 신뢰하지 않습니다.
+
+VM pull deployment는 `latest` redirect를 각 asset마다 따라가지 않습니다. 시작 시 GitHub API 응답의 non-`latest` tag를 한 번 고정하고 package와 `SHA256SUMS`를 같은 tag에서 받은 뒤, 요청 asset과 정확히 일치하는 checksum record를 검증해야만 압축 해제와 systemd restart로 넘어갑니다. `ASSET_NAME`은 안전한 basename 문자만 허용해 root 실행 시 임시 디렉터리 밖 경로를 덮어쓰지 못하게 합니다.
 
 ## Application과 observability 경계
 

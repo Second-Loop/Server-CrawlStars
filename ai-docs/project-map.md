@@ -76,7 +76,7 @@ api
   asyncapi.yaml
 
 docs-ui                   docs validation/build scripts
-scripts/deploy            VM pull deployment scripts
+scripts/deploy            pinned release/checksum VM pull과 no-network 회귀 테스트
 ai-docs                   사람이 읽는 운영/설계 문서
 ```
 
@@ -253,6 +253,7 @@ GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. 한 명만 �
 - `SL-81` Stack 3: opaque ID/session token, debug guard, matchmaking rate limit, trusted proxy 경계
 - `SL-81` Stack 4: room/client 동시성, janitor, snapshot coalescing, reliable terminal delivery, heartbeat
 - `SL-81` Stack 5: JSON lifecycle log, private Prometheus metrics, coordinated graceful shutdown, HTTP timeout
+- `SL-81` Stack 6: latest 1회 tag 고정, 안전한 asset 이름, checksum 선검증, 배포 회귀 테스트
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
@@ -272,6 +273,7 @@ GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. 한 명만 �
 ```sh
 make docs-build
 make ci
+make deploy-test
 go test ./internal/simulation
 go test ./internal/rooms
 go run ./cmd/server

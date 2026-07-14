@@ -175,7 +175,7 @@
 
 ## P3-1. 배포/기타 하드닝 묶음
 
-- 상태: IP rate-limit은 SL-81 Stack 3, WebSocket heartbeat는 Stack 4에서 구현됨. Release checksum 검증만 미완료.
+- 상태: SL-81 Stack 3, Stack 4, Stack 6에서 완료.
 
 - 문제와 권장 (개별 소형 이슈로 쪼개도 됨):
   - `scripts/deploy/pull-latest.sh`가 `SHA256SUMS`를 다운로드 후 검증하지 않는다 → `sha256sum -c` 추가.
@@ -189,7 +189,9 @@
   - `CF-Connecting-IP`는 immediate peer가 `TRUSTED_PROXY_CIDRS` 안에 있을 때만 사용하고 `X-Forwarded-For`는 무시한다.
   - 각 WebSocket connection은 30초 heartbeat와 Ping별 90초 deadline을 사용하고, 실패는 read/write와 같은 close-once session release 경로로 정리한다.
   - Stale heartbeat는 expected-session identity 비교로 reconnect를 제거하지 않으며, pre-start cancel과 started disconnected TTL 정책을 그대로 재사용한다.
-  - `SHA256SUMS` 검증은 이 완료 표시에 포함하지 않는다.
+  - VM pull은 `latest`를 시작 시 non-`latest` tag로 한 번만 해석하고 package와 `SHA256SUMS`를 같은 tag에서 받는다.
+  - `ASSET_NAME`은 안전한 basename 문자로 제한하고 exact checksum record가 성공하기 전에는 package를 추출하거나 systemd를 restart하지 않는다.
+  - No-network deploy 회귀 테스트가 입력 검증, tag 고정, checksum 순서, token 취급, rollback을 확인하며 `make ci`에 포함된다.
 
 ---
 
