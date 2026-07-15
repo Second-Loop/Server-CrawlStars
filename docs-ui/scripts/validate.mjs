@@ -81,6 +81,15 @@ for (const operationID of debugOperationIDs) {
   assert(operation.includes("기본 비활성화"), `${operationID} must say that debug API is disabled by default`);
   assert(operation.includes("not_found"), `${operationID} disabled 404 must name not_found`);
 }
+const startRoomOperation = extractOpenAPIOperation(openAPIText, "startRoom");
+assert(
+  startRoomOperation.includes("선택 mode의 required player"),
+  "startRoom must describe matchmaking start using the selected mode player count",
+);
+assert(
+  !startRoomOperation.includes("두 WebSocket client"),
+  "startRoom must not hard-code the duel Ready client count",
+);
 
 for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"]) {
   const operation = extractOpenAPIOperation(openAPIText, operationID);
@@ -89,9 +98,33 @@ for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"])
 }
 
 const matchmakingJoinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+const matchmakingJoinRequestBody = extractYAMLNamedBlock(matchmakingJoinOperation, "      requestBody:");
+assert(
+  !matchmakingJoinRequestBody.includes("required: true"),
+  "joinMatchmaking request body must remain optional",
+);
+assert(
+  matchmakingJoinRequestBody.includes('$ref: "#/components/schemas/MatchmakingJoinRequest"'),
+  "joinMatchmaking request body must use MatchmakingJoinRequest",
+);
+const matchmakingJoinBadRequest = extractYAMLNamedBlock(matchmakingJoinOperation, '        "400":');
+const invalidGameModeExample = extractYAMLNamedBlock(matchmakingJoinBadRequest, "                invalidGameMode:");
+const invalidRequestExample = extractYAMLNamedBlock(matchmakingJoinBadRequest, "                invalidRequest:");
+for (const [example, errorCode] of [
+  [invalidGameModeExample, "invalid_game_mode"],
+  [invalidRequestExample, "invalid_request"],
+]) {
+  assert(hasTrimmedLine(example, "value:"), `${errorCode} example must include value`);
+  assert(hasTrimmedLine(example, "error:"), `${errorCode} example must include error`);
+  assert(hasTrimmedLine(example, `code: ${errorCode}`), `${errorCode} example must use its exact error code`);
+}
 assert(matchmakingJoinOperation.includes('"429":'), "joinMatchmaking must document 429");
 assert(matchmakingJoinOperation.includes("Retry-After"), "joinMatchmaking 429 must document Retry-After");
 assert(matchmakingJoinOperation.includes("rate_limited"), "joinMatchmaking 429 must name rate_limited");
+assert(
+  matchmakingJoinOperation.includes("request body decode와 store join보다 먼저"),
+  "joinMatchmaking must document quota-before-body-decode ordering",
+);
 assert(matchmakingJoinOperation.includes("store join보다 먼저"), "joinMatchmaking must document quota-before-store ordering");
 assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must document 429 precedence over 409/500");
 
@@ -100,8 +133,38 @@ assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0
 assertSchemaContains(openAPIText, "PlayerSessionToken", ['pattern: "^[A-Za-z0-9_-]{43}$"']);
 assertSchemaContains(openAPIText, "PlayerSessionToken", ["sessionToken", "tokenized `webSocketPath`", "Failed upgrade"]);
 assertSchemaContains(openAPIText, "PlayerSessionResponse", ["required: [player, sessionToken, webSocketPath]"]);
-assertSchemaContains(openAPIText, "MatchmakingJoin", ["required: [room, player, sessionToken, webSocketPath]"]);
-assertSchemaContains(openAPIText, "APIError", ["unauthorized", "rate_limited", "internal_error"]);
+assertSchemaContains(openAPIText, "MatchmakingJoinRequest", [
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+  'const: ""',
+  "default: duel_1v1",
+]);
+assertSchemaContains(openAPIText, "MatchmakingJoin", [
+  "required: [gameMode, room, player, sessionToken, webSocketPath]",
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+]);
+assertSchemaContains(openAPIText, "Room", [
+  "required: [id, gameMode, status, players, maxPlayers, map, latestSnapshot]",
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+]);
+assertSchemaContains(openAPIText, "Player", [
+  "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
+]);
+assertSchemaContains(openAPIText, "APIError", [
+  "invalid_game_mode",
+  "invalid_request",
+  "unauthorized",
+  "rate_limited",
+  "internal_error",
+]);
+for (const errorCode of ["invalid_game_mode", "invalid_request"]) {
+  assert(
+    hasLine(openAPIText, `            - ${errorCode}`),
+    `APIError enum must list ${errorCode} at the schema enum indentation`,
+  );
+}
 assert(
   openAPIText.includes("?token=<player-session-token>"),
   "api/openapi.yaml must show a redacted tokenized webSocketPath",
@@ -145,6 +208,19 @@ for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
 assertSchemaContains(asyncAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
+for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
+  assertSchemaContains(asyncAPIText, schemaName, [
+    "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
+  ]);
+}
+assert(
+  asyncAPIText.includes("선택 mode의 required player"),
+  "api/asyncapi.yaml must describe Ready using the selected mode player count",
+);
+assert(
+  !asyncAPIText.includes("두 matched client") && !asyncAPIText.includes("두 client가 모두 연결"),
+  "api/asyncapi.yaml must not hard-code the duel Ready client count",
+);
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
 for (const schemaName of ["ReadyEventMessage", "SnapshotMessage", "Snapshot", "GameEndMessage", "ReadyPlayer", "PlayerData"]) {
   assertNoSecretFields(extractYAMLSchema(asyncAPIText, schemaName), `AsyncAPI ${schemaName}`);
@@ -190,6 +266,10 @@ assert(serverMapTiles.includes(4), "server-config/game-config.json must include 
 
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);
+}
+
+function hasTrimmedLine(text, want) {
+  return text.split(/\r?\n/).some((line) => line.trim() === want);
 }
 
 function countOccurrences(text, needle) {

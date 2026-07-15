@@ -34,20 +34,61 @@ paths:
       tags: [Matchmaking]
       summary: 매칭에 참가하고 WebSocket 경로 받기
       description: |
-        여유 있는 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
+        요청한 gameMode와 같은 여유 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
+        body가 없거나, 빈 object이거나, gameMode가 빈 문자열이면 기본값 duel_1v1을 선택합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
-        같은 room에 두 번째 참가자가 들어와도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
-        두 client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 두 client가 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
+        선택 mode의 required player 수가 차도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
+        모든 matched client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 모두 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 room config의 tick rate로 snapshot broadcast를 시작합니다.
         1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
+      requestBody:
+        description: |
+          선택할 game mode입니다. Request body 자체는 optional입니다.
+          body 없음, 빈 object, gameMode 빈 문자열은 모두 duel_1v1로 처리합니다.
+          새 client는 enum의 canonical mode ID를 보내거나 field를 생략해야 합니다.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MatchmakingJoinRequest"
+            examples:
+              default:
+                summary: 기본 duel mode
+                value: {}
+              solo:
+                summary: 6인 solo mode
+                value:
+                  gameMode: solo
+              team:
+                summary: 3 대 3 team mode
+                value:
+                  gameMode: team
       responses:
         "201":
-          description: 발급된 room, player, player session token, WebSocket 경로
+          description: 선택된 gameMode, 발급된 room, player, player session token, WebSocket 경로
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MatchmakingJoin"
+        "400":
+          description: 요청 JSON이 잘못됐거나 지원하지 않는 gameMode입니다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidGameMode:
+                  summary: 지원하지 않는 game mode
+                  value:
+                    error:
+                      code: invalid_game_mode
+                      message: invalid game mode
+                invalidRequest:
+                  summary: malformed JSON request
+                  value:
+                    error:
+                      code: invalid_request
+                      message: invalid request
         "409":
           description: Active room cap에 도달했습니다. 테스트 중이면 `DELETE /rooms`로 debug room을 비울 수 있습니다.
           content:
@@ -57,7 +98,7 @@ paths:
         "429":
           description: |
             Process-local per-IP token bucket이 요청을 거부했습니다. 응답 code는 `rate_limited`입니다.
-            Quota는 store join보다 먼저 평가하므로 429가 room cap 409와 발급 실패 500보다 우선합니다. Store에서 409/500으로 끝난 허용 요청도 quota를 이미 소비합니다.
+            Quota는 request body decode와 store join보다 먼저 평가하므로 429가 request 400, room cap 409, 발급 실패 500보다 우선합니다. Store에서 409/500으로 끝난 허용 요청도 quota를 이미 소비합니다.
           headers:
             Retry-After:
               description: 다시 요청하기 전 대기 시간을 올림한 최소 1초의 delta-seconds 정수입니다.
@@ -286,7 +327,7 @@ paths:
       summary: debug room 시뮬레이션 시작
       description: |
         player가 1명 이상 있는 room을 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
-        매칭 flow에서는 required player join 뒤 두 WebSocket client가 Ready ACK를 보내고 server 내부 5초 countdown이 끝나면 자동으로 같은 전이가 일어납니다.
+        매칭 flow에서는 선택 mode의 required player join 뒤 모든 WebSocket client가 Ready ACK를 보내고 server 내부 5초 countdown이 끝나면 자동으로 같은 전이가 일어납니다.
         Debug API는 기본 비활성화이며, 비활성화 상태에서는 route 자체가 없는 것처럼 404를 반환합니다.
       operationId: startRoom
       security:
@@ -373,10 +414,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Room"
+    MatchmakingJoinRequest:
+      type: object
+      description: |
+        Matchmaking mode 선택 요청입니다. Canonical non-empty 값은 duel_1v1, solo, team입니다.
+        Field 생략과 빈 문자열은 기존 client 호환을 위해 server에서 기본 duel_1v1로 처리합니다.
+      properties:
+        gameMode:
+          type: string
+          oneOf:
+            - enum: [duel_1v1, solo, team]
+            - const: ""
+              title: Legacy empty value
+          default: duel_1v1
     MatchmakingJoin:
       type: object
-      required: [room, player, sessionToken, webSocketPath]
+      required: [gameMode, room, player, sessionToken, webSocketPath]
       properties:
+        gameMode:
+          type: string
+          description: 선택되어 room에 고정된 game mode ID입니다. nested room.gameMode와 항상 같습니다.
+          enum: [duel_1v1, solo, team]
         room:
           $ref: "#/components/schemas/Room"
         player:
@@ -402,11 +460,15 @@ components:
           example: "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
     Room:
       type: object
-      required: [id, status, players, maxPlayers, map, latestSnapshot]
-      description: room 상태 확인 응답입니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용하며 row는 Base64 문자열이 아니라 JSON number array로 직렬화됩니다. 기본 source는 server binary가 embed한 `server-config/game-config.json`의 map이고, config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다.
+      required: [id, gameMode, status, players, maxPlayers, map, latestSnapshot]
+      description: room 상태 확인 응답입니다. `gameMode`는 room 생성 시 선택되어 lifecycle 동안 바뀌지 않습니다. `map`은 클라이언트가 같은 tile grid를 그릴 때 사용하며 row는 Base64 문자열이 아니라 JSON number array로 직렬화됩니다. 기본 source는 server binary가 embed한 `server-config/game-config.json`의 map이고, config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다.
       properties:
         id:
           $ref: "#/components/schemas/OpaqueRoomID"
+        gameMode:
+          type: string
+          description: 이 room이 고정해서 소유하는 selected game mode ID입니다.
+          enum: [duel_1v1, solo, team]
         status:
           type: string
           description: >-
@@ -437,8 +499,8 @@ components:
           $ref: "#/components/schemas/OpaquePlayerID"
         team:
           type: string
-          description: 서버 assignment helper가 active mode/team rule 기준으로 발급한 team입니다. 현재 기본 mode에서는 red/blue 1명씩입니다.
-          enum: [red, blue]
+          description: 서버 assignment helper가 room-local mode/team rule 기준으로 발급한 team입니다. duel/team은 red/blue, solo는 solo-1부터 solo-6을 사용합니다.
+          enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]
         slot:
           type: integer
           description: team 안에서의 slot입니다.
@@ -529,6 +591,8 @@ components:
             - room_has_no_players
             - method_not_allowed
             - not_found
+            - invalid_game_mode
+            - invalid_request
             - unauthorized
             - rate_limited
             - internal_error
