@@ -137,6 +137,9 @@ assert(asyncAPIText.includes("failed upgrade"), "api/asyncapi.yaml must document
 assert(asyncAPIText.includes("malformed"), "api/asyncapi.yaml must document malformed query rejection");
 assert(asyncAPIText.includes("in-flight reservation"), "api/asyncapi.yaml must document reservation conflicts");
 assert(asyncAPIText.includes("secret-bearing surface"), "api/asyncapi.yaml must identify every secret-bearing surface");
+for (const marker of ["30초 heartbeat", "90초 deadline", "latest-only", "reliable control", "terminal snapshot -> GameEnd -> close"]) {
+  assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
+}
 for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
@@ -152,7 +155,7 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
-for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface"]) {
+for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
 }
 for (const [text, name] of [[openAPIText, "api/openapi.yaml"], [asyncAPIText, "api/asyncapi.yaml"], [docsBuildText, "docs UI"]]) {

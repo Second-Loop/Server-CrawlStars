@@ -158,7 +158,7 @@ func newRouterWithDebugGuard(
 			return
 		}
 		roomID := r.PathValue("roomID")
-		found, ok := store.getRoom(roomID)
+		found, ok := store.getRoomResponse(roomID)
 		if !ok {
 			writeRoomNotFound(w)
 			return

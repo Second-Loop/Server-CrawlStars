@@ -6,40 +6,92 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const janitorInterval = 30 * time.Second
+
 func (s *Store) Close() {
-	s.mu.Lock()
-	if s.closed {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		activeSessions := make([]*clientSession, 0, len(s.activeSessions))
+		activeSessionDone := make([]<-chan struct{}, 0, len(s.activeSessions))
+		for session, lifecycleDone := range s.activeSessions {
+			activeSessions = append(activeSessions, session)
+			activeSessionDone = append(activeSessionDone, lifecycleDone)
+		}
 		s.mu.Unlock()
-		return
-	}
-	s.closed = true
 
-	var resources roomResources
-	for _, room := range s.rooms {
-		resources.add(room)
-	}
-	s.mu.Unlock()
+		close(s.janitorStop)
+		<-s.janitorDone
 
-	resources.close("store closed")
+		rooms := s.registeredRooms()
+		var resources roomResources
+		for _, room := range rooms {
+			room.mu.Lock()
+			playerIDs, removed := resources.removeRoomLocked(room)
+			room.mu.Unlock()
+			if removed && s.deleteRoomIfSame(room.ID, room) {
+				s.releasePlayerIDs(playerIDs)
+			}
+		}
+		resources.sessions = append(resources.sessions, activeSessions...)
+		resources.close("store closed")
+		waitClientSessions(resources.sessions)
+		for _, lifecycleDone := range activeSessionDone {
+			<-lifecycleDone
+		}
+	})
 }
 
-func (s *Store) cleanupExpired() {
-	now := s.clock.Now()
-
-	s.mu.Lock()
-	var resources roomResources
-	for id, room := range s.rooms {
-		if !room.isExpired(now) {
+func waitClientSessions(sessions []*clientSession) {
+	for _, session := range sessions {
+		if session == nil {
 			continue
 		}
-		delete(s.rooms, id)
-		resources.add(room)
+		<-session.writerDone
+		<-session.heartbeatDone
 	}
-	s.mu.Unlock()
-
-	resources.close(defaultRoomWebSocketCloseMsg)
 }
 
+func (s *Store) startJanitor() {
+	ticker := s.clock.NewTicker(janitorInterval)
+	go func() {
+		defer close(s.janitorDone)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case now := <-ticker.C():
+				s.cleanupExpired(now)
+			case <-s.janitorStop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Store) cleanupExpired(now time.Time) int {
+	rooms := s.registeredRooms()
+	deleted := 0
+	var resources roomResources
+	for _, room := range rooms {
+		room.mu.Lock()
+		if room.removed || !room.isExpired(now) {
+			room.mu.Unlock()
+			continue
+		}
+		playerIDs, removed := resources.removeRoomLocked(room)
+		room.mu.Unlock()
+		if removed && s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+			deleted++
+		}
+	}
+
+	resources.close(defaultRoomWebSocketCloseMsg)
+	return deleted
+}
+
+// isExpired requires r.mu because TTL eligibility depends on room-owned state.
 func (r *room) isExpired(now time.Time) bool {
 	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
 		return true
@@ -57,12 +109,22 @@ func (r *room) isExpired(now time.Time) bool {
 }
 
 type roomResources struct {
-	tickers []ticker
-	stops   []chan struct{}
-	conns   []*websocket.Conn
+	tickers  []ticker
+	stops    []chan struct{}
+	sessions []*clientSession
 }
 
-func (r *roomResources) add(room *room) {
+// removeRoomLocked marks a room unavailable and detaches resources for closing.
+// The caller must hold room.mu and must release it before touching Store.mu.
+func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
+	if room.removed {
+		return nil, false
+	}
+	room.removed = true
+	playerIDs := make([]string, 0, len(room.Players))
+	for _, player := range room.Players {
+		playerIDs = append(playerIDs, player.ID)
+	}
 	if room.countdownTicker != nil {
 		r.tickers = append(r.tickers, room.countdownTicker)
 		room.countdownTicker = nil
@@ -79,13 +141,14 @@ func (r *roomResources) add(room *room) {
 		r.stops = append(r.stops, room.stop)
 		room.stop = nil
 	}
-	for _, conn := range room.clients {
-		if conn != nil {
-			r.conns = append(r.conns, conn)
+	for _, session := range room.clients {
+		if session != nil {
+			r.sessions = append(r.sessions, session)
 		}
 	}
 	room.clients = nil
 	room.reservations = nil
+	return playerIDs, true
 }
 
 func (r roomResources) close(reason string) {
@@ -95,7 +158,7 @@ func (r roomResources) close(reason string) {
 	for _, stop := range r.stops {
 		close(stop)
 	}
-	for _, conn := range r.conns {
-		_ = conn.Close(websocket.StatusNormalClosure, reason)
+	for _, session := range r.sessions {
+		session.close(websocket.StatusNormalClosure, reason)
 	}
 }

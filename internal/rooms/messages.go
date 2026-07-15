@@ -109,6 +109,8 @@ type errorMessage struct {
 	Error apiError `json:"Error"`
 }
 
+// toResponse reads room-owned state; callers must hold r.mu unless the room is
+// not yet visible in the Store registry.
 func (r *room) toResponse(gameMap simulation.MapData) roomResponse {
 	players := make([]playerResponse, len(r.Players))
 	copy(players, r.Players)
@@ -164,13 +166,15 @@ func webSocketPath(roomID string, playerID string, sessionToken string) string {
 	return "/rooms/" + roomID + "/players/" + playerID + "?token=" + sessionToken
 }
 
+// The room delivery helpers below require r.mu so client membership and
+// payload state are captured from one room-consistent point in time.
 func (r *room) matchSnapshotDeliveries(status MatchStatus, countdown int) []webSocketDelivery {
 	message := r.matchSnapshotMessage(status, countdown)
 	deliveries := make([]webSocketDelivery, 0, len(r.clients))
-	for _, conn := range r.clients {
-		if conn != nil {
+	for _, session := range r.clients {
+		if session != nil {
 			deliveries = append(deliveries, webSocketDelivery{
-				conn:    conn,
+				session: session,
 				message: message,
 			})
 		}
@@ -196,10 +200,10 @@ func (r *room) readyEventDeliveries(gameConfig simulation.GameConfig) []webSocke
 		Players: readyEventPlayers(r.Players, gameConfig),
 	}
 	deliveries := make([]webSocketDelivery, 0, len(r.clients))
-	for _, conn := range r.clients {
-		if conn != nil {
+	for _, session := range r.clients {
+		if session != nil {
 			deliveries = append(deliveries, webSocketDelivery{
-				conn:    conn,
+				session: session,
 				message: message,
 			})
 		}
@@ -241,12 +245,12 @@ func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDe
 		if !ok {
 			continue
 		}
-		conn := r.clients[player.ID]
-		if conn == nil {
+		session := r.clients[player.ID]
+		if session == nil {
 			continue
 		}
 		deliveries = append(deliveries, webSocketDelivery{
-			conn: conn,
+			session: session,
 			message: gameEndMessage{
 				Type:     "GameEnd",
 				PlayerID: player.ID,

@@ -7,6 +7,8 @@ info:
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
     Matchmaking room은 두 client가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player spawn을 전달합니다.
     Client는 asset load/render 준비가 끝난 뒤 `Type: ready` ACK를 보내고, server는 countdown 시작 신호를 1번 보낸 뒤 5초를 내부에서 센 다음 started gameplay snapshot을 broadcast합니다.
+    Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
+    일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하고, started room도 TTL과 hard lifetime 이후에는 사라집니다. Failed upgrade는 room을 취소하지 않아 같은 발급 경로로 재시도할 수 있습니다.
     발급 응답의 `sessionToken`, tokenized `webSocketPath`, inbound query는 모두 같은 raw secret을 담으므로 전체 query 문자열과 함께 log에 남기면 안 됩니다.
 x-stability: e1-debug
@@ -32,6 +34,8 @@ channels:
       Matchmaking room에서는 두 player가 모두 연결되면 `Type: Ready` 이벤트를 받고,
       두 player가 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
+      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Bot replacement와 reconnect grace는 제공하지 않습니다.
+      일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
     bindings:
       ws:
         method: GET

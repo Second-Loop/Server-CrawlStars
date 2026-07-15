@@ -161,10 +161,14 @@ WebSocket:
 - 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다.
 - GameEnd 판정 계산은 `internal/rooms`의 순수 helper가 맡고, WebSocket delivery는 player별 `GameEnd` message 변환만 맡습니다.
 - 현재 active GameEnd mode는 `duel_1v1`입니다. N-player solo, team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 아직 활성 규칙이 아니며 후속 issue에서 mode별 helper로 확장합니다.
-- WebSocket write deadline은 10ms입니다. 느린 client write가 tick loop를 초 단위로 밀지 않게 하기 위한 개발 서버 budget입니다.
+- 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다. 일반 gameplay snapshot은 크기 1 latest-only slot에서 coalescing해 느린 client가 room tick이나 다른 client를 막지 않습니다.
+- `Ready`, `starting`, `started`, `error`는 크기 8 reliable control queue에서 순서를 보존합니다. Terminal handoff는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 실행합니다.
+- 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
 Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
+
+동시성 소유권은 세 층으로 나눕니다. `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Attach는 `Store.mu -> room.mu` 순서로 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
 
 ## Cleanup
 
@@ -176,6 +180,8 @@ Room store는 in-memory라 TTL이 중요합니다.
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 - matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
 - GameEnd가 발생한 started room은 결과 event 전송 후 room-local ticker와 WebSocket connection을 정리합니다.
+- Store당 하나의 30초 janitor가 TTL을 검사하며, `Store.Close`는 room에서 이미 분리된 terminal session까지 포함해 connection close, writer, heartbeat 종료를 기다립니다.
+- Active room cap에 닿은 create/matchmaking만 즉시 cleanup을 한 번 수행하고 생성도 한 번 재시도합니다. Non-expired room만 남으면 409를 유지합니다.
 
 ## 의도적으로 없는 것
 
@@ -186,5 +192,6 @@ Room store는 in-memory라 TTL이 중요합니다.
 - Kubernetes
 - respawn, score
 - bot replacement
+- reconnect grace
 
 Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, active mode/team rules, map을 담습니다. Attack charge 상태는 `simulation.State` 내부에만 있고 public snapshot schema는 바뀌지 않습니다.

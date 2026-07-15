@@ -6,11 +6,294 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
+
+type clientConn interface {
+	Read(context.Context) (websocket.MessageType, []byte, error)
+	Write(context.Context, websocket.MessageType, []byte) error
+	Ping(context.Context) error
+	Close(websocket.StatusCode, string) error
+}
+
+type writerCommandKind uint8
+
+const (
+	writerCommandPayload writerCommandKind = iota
+	writerCommandClose
+)
+
+type writerCommand struct {
+	kind    writerCommandKind
+	payload []byte
+	reason  string
+}
+
+type terminalWriterCommand struct {
+	snapshot []byte
+	gameEnd  []byte
+	reason   string
+}
+
+type clientSession struct {
+	conn              clientConn
+	snapshots         chan []byte
+	control           chan writerCommand
+	terminalHandoff   chan terminalWriterCommand
+	done              chan struct{}
+	closeDone         chan struct{}
+	writerDone        chan struct{}
+	heartbeatDone     chan struct{}
+	writerCtx         context.Context
+	cancelWriter      context.CancelFunc
+	enqueueMu         sync.Mutex
+	heartbeatMu       sync.Mutex
+	closeOnce         sync.Once
+	heartbeatDoneOnce sync.Once
+	onClose           func(*clientSession)
+	heartbeatStarted  bool
+	terminal          bool
+}
+
+func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
+	writerCtx, cancelWriter := context.WithCancel(context.Background())
+	session := &clientSession{
+		conn:            conn,
+		snapshots:       make(chan []byte, 1),
+		control:         make(chan writerCommand, 8),
+		terminalHandoff: make(chan terminalWriterCommand, 1),
+		done:            make(chan struct{}),
+		closeDone:       make(chan struct{}),
+		writerDone:      make(chan struct{}),
+		heartbeatDone:   make(chan struct{}),
+		writerCtx:       writerCtx,
+		cancelWriter:    cancelWriter,
+		onClose:         onClose,
+	}
+	go session.writeLoop()
+	return session
+}
+
+func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, timeout time.Duration) {
+	s.heartbeatMu.Lock()
+	if s.conn == nil || s.isDone() {
+		s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
+		s.heartbeatMu.Unlock()
+		return
+	}
+	ticker := clock.NewTicker(interval)
+	s.heartbeatStarted = true
+	go func() {
+		defer s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C():
+				ctx, cancel := context.WithTimeout(s.writerCtx, timeout)
+				err := s.conn.Ping(ctx)
+				cancel()
+				if err != nil {
+					s.close(websocket.StatusGoingAway, "heartbeat failed")
+					return
+				}
+			case <-s.done:
+				return
+			}
+		}
+	}()
+	s.heartbeatMu.Unlock()
+}
+
+func (s *clientSession) enqueueSnapshot(payload []byte) {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.terminal {
+		return
+	}
+
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+
+	select {
+	case s.snapshots <- payload:
+	default:
+		select {
+		case <-s.snapshots:
+		default:
+		}
+		select {
+		case s.snapshots <- payload:
+		case <-s.done:
+		}
+	}
+}
+
+func (s *clientSession) enqueueControl(payload []byte) bool {
+	queued, shouldClose := s.tryEnqueueControl(payload)
+	if shouldClose {
+		s.close(websocket.StatusGoingAway, "control queue overflow")
+	}
+	return queued
+}
+
+// tryEnqueueControl never closes the session, so callers may use it while
+// holding room.mu and defer close/release until after unlocking the room.
+func (s *clientSession) tryEnqueueControl(payload []byte) (queued bool, shouldClose bool) {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.terminal {
+		return false, false
+	}
+	select {
+	case <-s.done:
+		return false, false
+	default:
+	}
+
+	select {
+	case s.control <- writerCommand{kind: writerCommandPayload, payload: payload}:
+		return true, false
+	default:
+		return false, true
+	}
+}
+
+func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason string) bool {
+	s.enqueueMu.Lock()
+	if s.terminal {
+		s.enqueueMu.Unlock()
+		return false
+	}
+	select {
+	case <-s.done:
+		s.enqueueMu.Unlock()
+		return false
+	default:
+	}
+
+	s.terminal = true
+	select {
+	case <-s.snapshots:
+	default:
+	}
+	s.terminalHandoff <- terminalWriterCommand{snapshot: snapshot, gameEnd: gameEnd, reason: reason}
+	s.enqueueMu.Unlock()
+	return true
+}
+
+func (s *clientSession) writeLoop() {
+	defer close(s.writerDone)
+	for {
+		if s.isDone() {
+			return
+		}
+		select {
+		case command := <-s.control:
+			if !s.writeCommand(command) {
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case terminal := <-s.terminalHandoff:
+			s.writeTerminal(terminal)
+			return
+		default:
+		}
+
+		select {
+		case command := <-s.control:
+			if !s.writeCommand(command) {
+				return
+			}
+		case terminal := <-s.terminalHandoff:
+			s.writeTerminal(terminal)
+			return
+		case payload := <-s.snapshots:
+			if !s.writeCommand(writerCommand{kind: writerCommandPayload, payload: payload}) {
+				return
+			}
+		case <-s.done:
+			return
+		}
+	}
+}
+
+func (s *clientSession) writeTerminal(terminal terminalWriterCommand) {
+	for {
+		select {
+		case command := <-s.control:
+			if !s.writeCommand(command) {
+				return
+			}
+		default:
+			for _, command := range [...]writerCommand{
+				{kind: writerCommandPayload, payload: terminal.snapshot},
+				{kind: writerCommandPayload, payload: terminal.gameEnd},
+				{kind: writerCommandClose, reason: terminal.reason},
+			} {
+				if !s.writeCommand(command) {
+					return
+				}
+			}
+			return
+		}
+	}
+}
+
+func (s *clientSession) writeCommand(command writerCommand) bool {
+	if s.isDone() {
+		return false
+	}
+	if command.kind == writerCommandClose {
+		s.close(websocket.StatusNormalClosure, command.reason)
+		return false
+	}
+	ctx, cancel := context.WithTimeout(s.writerCtx, webSocketWriteTimeout)
+	err := s.conn.Write(ctx, websocket.MessageText, command.payload)
+	cancel()
+	if err != nil {
+		s.close(websocket.StatusGoingAway, "write failed")
+		return false
+	}
+	return true
+}
+
+func (s *clientSession) isDone() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *clientSession) close(code websocket.StatusCode, reason string) {
+	s.closeOnce.Do(func() {
+		defer close(s.closeDone)
+		close(s.done)
+		s.cancelWriter()
+		s.heartbeatMu.Lock()
+		if !s.heartbeatStarted {
+			s.heartbeatDoneOnce.Do(func() { close(s.heartbeatDone) })
+		}
+		s.heartbeatMu.Unlock()
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+		if s.conn != nil {
+			_ = s.conn.Close(code, reason)
+		}
+	})
+}
 
 type clientReservation struct {
 	room     *room
@@ -48,74 +331,80 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		s.rollbackClientReservation(reservation)
 		return
 	}
-	if !s.attachClient(reservation, conn) {
+	session, attached := s.attachClientSession(reservation, conn)
+	if !attached {
 		s.rollbackClientReservation(reservation)
 		_ = conn.Close(websocket.StatusGoingAway, "room unavailable")
 		return
 	}
 	defer func() {
-		s.releaseClient(roomID, playerID)
-		_ = conn.Close(websocket.StatusNormalClosure, "")
+		session.close(websocket.StatusNormalClosure, "")
 	}()
 
 	for {
-		_, payload, err := conn.Read(r.Context())
+		_, payload, err := session.conn.Read(r.Context())
 		if err != nil {
 			return
 		}
 
 		var envelope inputEnvelope
 		if err := json.Unmarshal(payload, &envelope); err != nil {
-			writeWebSocketJSON(conn, errorMessage{
+			if !enqueueControlMessage(session, errorMessage{
 				Type: "error",
 				Error: apiError{
 					Code:    "invalid_input",
 					Message: "invalid input",
 				},
-			})
+			}) {
+				return
+			}
 			continue
 		}
 		if envelope.Type == "ready" {
-			s.markClientReady(roomID, playerID)
+			s.markClientReady(roomID, playerID, session)
 			continue
 		}
 		if envelope.Type != "" {
-			writeWebSocketJSON(conn, errorMessage{
+			if !enqueueControlMessage(session, errorMessage{
 				Type: "error",
 				Error: apiError{
 					Code:    "invalid_input",
 					Message: "invalid input",
 				},
-			})
+			}) {
+				return
+			}
 			continue
 		}
 
 		var input inputMessage
 		if err := json.Unmarshal(payload, &input); err != nil {
-			writeWebSocketJSON(conn, errorMessage{
+			if !enqueueControlMessage(session, errorMessage{
 				Type: "error",
 				Error: apiError{
 					Code:    "invalid_input",
 					Message: "invalid input",
 				},
-			})
+			}) {
+				return
+			}
 			continue
 		}
-		s.setInput(roomID, playerID, input)
+		s.setInput(roomID, playerID, input, session)
 	}
 }
 
 func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
-	s.cleanupExpired()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
+	if s.isClosed() {
 		return nil, ErrRoomNotFound
 	}
-	room, ok := s.rooms[roomID]
-	if !ok {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return nil, ErrRoomNotFound
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed {
 		return nil, ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
@@ -143,32 +432,48 @@ func (s *Store) rollbackClientReservation(reservation *clientReservation) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[reservation.room.ID]
-	if !ok || room != reservation.room || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	room := reservation.room
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		return
 	}
 	delete(room.reservations, reservation.playerID)
 }
 
-func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Conn) bool {
+func (s *Store) attachClient(reservation *clientReservation, conn clientConn) bool {
+	_, attached := s.attachClientSession(reservation, conn)
+	return attached
+}
+
+func (s *Store) attachClientSession(reservation *clientReservation, conn clientConn) (*clientSession, bool) {
 	var deliveries []webSocketDelivery
 
+	if reservation == nil || reservation.room == nil {
+		return nil, false
+	}
 	s.mu.Lock()
-
-	if s.closed || reservation == nil {
+	if s.closed {
 		s.mu.Unlock()
-		return false
+		return nil, false
 	}
-	room, ok := s.rooms[reservation.room.ID]
-	if !ok || room != reservation.room || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	room := reservation.room
+	room.mu.Lock()
+	if room.removed || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+		room.mu.Unlock()
 		s.mu.Unlock()
-		return false
+		return nil, false
 	}
+	session := newClientSession(conn, func(expected *clientSession) {
+		s.releaseClient(reservation, expected)
+	})
 	delete(room.reservations, reservation.playerID)
-	room.clients[reservation.playerID] = conn
+	room.clients[reservation.playerID] = session
+	lifecycleDone := make(chan struct{})
+	s.activeSessions[session] = lifecycleDone
+	s.monitorClientSession(session, lifecycleDone)
+	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
+	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
 	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
@@ -179,47 +484,75 @@ func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Con
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
 	}
-	s.mu.Unlock()
+	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
 
-	writeWebSocketDeliveries(deliveries)
-	return true
+	closeClientSessions(failedSessions, "control delivery failed")
+	return session, true
 }
 
-func (s *Store) releaseClient(roomID string, playerID string) {
+func (s *Store) monitorClientSession(session *clientSession, lifecycleDone chan struct{}) {
+	go func() {
+		<-session.closeDone
+		<-session.writerDone
+		<-session.heartbeatDone
+
+		s.mu.Lock()
+		if s.activeSessions[session] == lifecycleDone {
+			delete(s.activeSessions, session)
+		}
+		s.mu.Unlock()
+		close(lifecycleDone)
+	}()
+}
+
+func (s *Store) releaseClient(reservation *clientReservation, expectedSession *clientSession) {
 	var resources roomResources
 	shouldClose := false
 
-	s.mu.Lock()
-
-	room, ok := s.rooms[roomID]
-	if !ok {
-		s.mu.Unlock()
+	if reservation == nil || reservation.room == nil {
+		return
+	}
+	room := reservation.room
+	playerID := reservation.playerID
+	room.mu.Lock()
+	if room.removed {
+		room.mu.Unlock()
+		return
+	}
+	currentSession, connected := room.clients[playerID]
+	if !connected || currentSession != expectedSession {
+		room.mu.Unlock()
 		return
 	}
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
 	delete(room.readyPlayers, playerID)
+	var playerIDs []string
 	if room.hasPreStartMatch() {
-		delete(s.rooms, roomID)
-		resources.add(room)
-		shouldClose = true
+		playerIDs, shouldClose = resources.removeRoomLocked(room)
 	}
 	if room.Status == RoomStatusStarted && len(room.clients) == 0 {
 		room.disconnectedAt = s.clock.Now()
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
 	if shouldClose {
+		if s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
 		resources.close(defaultMatchCancelMsg)
 	}
 }
 
-func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	room, ok := s.rooms[roomID]
-	if !ok || !room.hasPlayer(playerID) {
+func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if room.removed || !room.hasPlayer(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
 		return
 	}
 	room.lastActivityAt = s.clock.Now()
@@ -231,13 +564,16 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage) {
 	}
 }
 
-func (s *Store) markClientReady(roomID string, playerID string) {
+func (s *Store) markClientReady(roomID string, playerID string, expectedSession *clientSession) {
 	var deliveries []webSocketDelivery
 
-	s.mu.Lock()
-	room, ok := s.rooms[roomID]
-	if !ok || !room.hasPlayer(playerID) || !room.hasPreStartMatch() {
-		s.mu.Unlock()
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	if room.removed || !room.hasPlayer(playerID) || !room.hasPreStartMatch() || expectedSession == nil || room.clients[playerID] != expectedSession {
+		room.mu.Unlock()
 		return
 	}
 	if room.readyPlayers == nil {
@@ -249,9 +585,10 @@ func (s *Store) markClientReady(roomID string, playerID string) {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
-	s.mu.Unlock()
+	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
 
-	writeWebSocketDeliveries(deliveries)
+	closeClientSessions(failedSessions, "control delivery failed")
 }
 
 func (s *Store) startMatchCountdownLocked(room *room) {
@@ -259,7 +596,7 @@ func (s *Store) startMatchCountdownLocked(room *room) {
 	room.countdown = matchCountdownSeconds
 	room.countdownTicker = s.clock.NewTicker(time.Second)
 	room.countdownStop = make(chan struct{})
-	go s.runMatchCountdown(room.ID, room.countdownTicker, room.countdownStop)
+	go s.runMatchCountdown(room, room.countdownTicker, room.countdownStop)
 }
 
 func (s *Store) stopMatchCountdownLocked(room *room) {
@@ -273,22 +610,22 @@ func (s *Store) stopMatchCountdownLocked(room *room) {
 	}
 }
 
-func (s *Store) runRoom(roomID string, ticker ticker, stop <-chan struct{}) {
+func (s *Store) runRoom(room *room, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C():
-			s.tickRoom(roomID)
+			s.tickRoomState(room)
 		case <-stop:
 			return
 		}
 	}
 }
 
-func (s *Store) runMatchCountdown(roomID string, ticker ticker, stop <-chan struct{}) {
+func (s *Store) runMatchCountdown(room *room, ticker ticker, stop <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C():
-			if s.tickMatchCountdown(roomID, ticker) {
+			if s.tickMatchCountdownRoom(room, ticker) {
 				return
 			}
 		case <-stop:
@@ -298,43 +635,57 @@ func (s *Store) runMatchCountdown(roomID string, ticker ticker, stop <-chan stru
 }
 
 func (s *Store) tickMatchCountdown(roomID string, countdownTicker ticker) bool {
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return true
+	}
+	return s.tickMatchCountdownRoom(room, countdownTicker)
+}
+
+func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool {
 	var deliveries []webSocketDelivery
 
-	s.mu.Lock()
-	room, ok := s.rooms[roomID]
-	if !ok || room.matchStatus != MatchStatusStarting {
-		s.mu.Unlock()
+	room.mu.Lock()
+	if room.removed || room.countdownTicker != countdownTicker || room.matchStatus != MatchStatusStarting {
+		room.mu.Unlock()
 		return true
 	}
 	if room.countdown > 1 {
 		room.countdown--
 		room.lastActivityAt = s.clock.Now()
-		s.mu.Unlock()
+		room.mu.Unlock()
 		return false
 	}
 
 	room.countdown = 0
 	s.startRoomLocked(room)
 	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
-	s.mu.Unlock()
+	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
 
-	countdownTicker.Stop()
-	writeWebSocketDeliveries(deliveries)
+	closeClientSessions(failedSessions, "control delivery failed")
 	return true
 }
 
 func (s *Store) tickRoom(roomID string) {
-	s.cleanupExpired()
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return
+	}
+	s.tickRoomState(room)
+}
 
+func (s *Store) tickRoomState(room *room) {
 	var resources roomResources
 	var deliveries []webSocketDelivery
+	var snapshotSessions []*clientSession
+	var snapshotPayload []byte
+	var snapshotMarshalErr error
 	gameEnded := false
 
-	s.mu.Lock()
-
-	room, ok := s.rooms[roomID]
-	if !ok || room.Status != RoomStatusStarted || room.state == nil {
-		s.mu.Unlock()
+	room.mu.Lock()
+	if room.removed || room.Status != RoomStatusStarted || room.state == nil {
+		room.mu.Unlock()
 		return
 	}
 
@@ -347,47 +698,105 @@ func (s *Store) tickRoom(roomID string) {
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 
-	for _, conn := range room.clients {
-		if conn != nil {
-			deliveries = append(deliveries, webSocketDelivery{conn: conn, message: message})
+	for _, session := range room.clients {
+		if session != nil {
+			snapshotSessions = append(snapshotSessions, session)
 		}
 	}
 	results := calculateGameEndResults(s.gameConfig, snapshot)
+	var playerIDs []string
 	if len(results) > 0 {
-		deliveries = append(deliveries, room.gameEndDeliveries(results)...)
-		delete(s.rooms, roomID)
-		resources.add(room)
-		gameEnded = true
+		snapshotPayload, snapshotMarshalErr = marshalMessage(message)
+		if snapshotMarshalErr == nil {
+			deliveries = append(deliveries, room.gameEndDeliveries(results)...)
+		}
+		room.clients = nil
+		playerIDs, gameEnded = resources.removeRoomLocked(room)
+	} else {
+		enqueueSnapshotMessage(snapshotSessions, message)
 	}
-	s.mu.Unlock()
+	room.mu.Unlock()
 
-	writeWebSocketDeliveries(deliveries)
 	if gameEnded {
+		if s.deleteRoomIfSame(room.ID, room) {
+			s.releasePlayerIDs(playerIDs)
+		}
+	}
+	if gameEnded {
+		if snapshotMarshalErr != nil {
+			closeClientSessions(snapshotSessions, "message marshal failed")
+			resources.close(defaultGameEndCloseMsg)
+			return
+		}
+		for _, delivery := range deliveries {
+			gameEndPayload, err := marshalMessage(delivery.message)
+			if err != nil {
+				delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
+				continue
+			}
+			delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, defaultGameEndCloseMsg)
+		}
 		resources.close(defaultGameEndCloseMsg)
+		return
 	}
 }
 
 type webSocketDelivery struct {
-	conn    *websocket.Conn
+	session *clientSession
 	message any
 }
 
-func writeWebSocketDeliveries(deliveries []webSocketDelivery) {
+// tryEnqueueWebSocketDeliveries only performs non-blocking channel operations.
+// Callers hold room.mu so lifecycle control ordering is fixed before the next
+// countdown or gameplay transition can acquire the room.
+func tryEnqueueWebSocketDeliveries(deliveries []webSocketDelivery) []*clientSession {
+	var failedSessions []*clientSession
 	for _, delivery := range deliveries {
-		if delivery.conn != nil {
-			writeWebSocketJSON(delivery.conn, delivery.message)
+		if delivery.session == nil {
+			continue
 		}
+		payload, err := marshalMessage(delivery.message)
+		if err != nil {
+			failedSessions = append(failedSessions, delivery.session)
+			continue
+		}
+		_, shouldClose := delivery.session.tryEnqueueControl(payload)
+		if shouldClose {
+			failedSessions = append(failedSessions, delivery.session)
+		}
+	}
+	return failedSessions
+}
+
+func closeClientSessions(sessions []*clientSession, reason string) {
+	for _, session := range sessions {
+		session.close(websocket.StatusGoingAway, reason)
 	}
 }
 
-func writeWebSocketJSON(conn *websocket.Conn, message any) {
-	payload, err := json.Marshal(message)
+func marshalMessage(message any) ([]byte, error) {
+	return json.Marshal(message)
+}
+
+func enqueueSnapshotMessage(sessions []*clientSession, message any) bool {
+	payload, err := marshalMessage(message)
 	if err != nil {
-		return
+		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), webSocketWriteTimeout)
-	defer cancel()
-	_ = conn.Write(ctx, websocket.MessageText, payload)
+	for _, session := range sessions {
+		if session != nil {
+			session.enqueueSnapshot(payload)
+		}
+	}
+	return true
+}
+
+func enqueueControlMessage(session *clientSession, message any) bool {
+	payload, err := marshalMessage(message)
+	if err != nil {
+		return false
+	}
+	return session.enqueueControl(payload)
 }
 
 func (r *room) hasPreStartMatch() bool {
@@ -399,8 +808,8 @@ func (r *room) allMatchClientsAttached(matchPlayerCount int) bool {
 		return false
 	}
 	for _, player := range r.Players {
-		conn, ok := r.clients[player.ID]
-		if !ok || conn == nil {
+		session, ok := r.clients[player.ID]
+		if !ok || session == nil || session.conn == nil {
 			return false
 		}
 	}
