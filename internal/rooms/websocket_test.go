@@ -26,6 +26,11 @@ type snapshotMessage struct {
 	Snapshot simulation.Snapshot `json:"Snapshot"`
 }
 
+type webSocketReadPump struct {
+	payloads chan []byte
+	errors   chan error
+}
+
 type issuedPlayer struct {
 	playerResponse
 	SessionToken  string
@@ -2393,21 +2398,33 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 
 			roomID := joined[0].Room.ID
 			connections := make([]*websocket.Conn, len(joined))
+			readPumps := make([]*webSocketReadPump, len(joined))
 			for index := 0; index < len(joined)-1; index++ {
 				connections[index] = dialIssuedPlayer(t, server.URL, joined[index].WebSocketPath)
 				defer connections[index].Close(websocket.StatusNormalClosure, "")
+				readPumps[index] = startWebSocketReadPump(t, connections[index])
 				waitForAttachedClient(t, store, roomID, joined[index].Player.ID)
 			}
 			waitForMatchLifecycleState(t, store, roomID, MatchStatusMatched, 5, 0)
+			for index := 0; index < len(joined)-1; index++ {
+				writeWSJSON(t, connections[index], inputMessage{})
+			}
+			for index := 0; index < len(joined)-1; index++ {
+				waitForPendingInput(t, store, roomID, joined[index].Player.ID)
+			}
+			for index := 0; index < len(joined)-1; index++ {
+				assertNoWebSocketReadPumpPayload(t, readPumps[index])
+			}
 
 			connections[5] = dialIssuedPlayer(t, server.URL, joined[5].WebSocketPath)
 			defer connections[5].Close(websocket.StatusNormalClosure, "")
+			readPumps[5] = startWebSocketReadPump(t, connections[5])
 			waitForAttachedClient(t, store, roomID, joined[5].Player.ID)
 			waitForMatchLifecycleState(t, store, roomID, MatchStatusLoading, 6, 0)
 
 			readyEvents := make([]readyEventMessage, len(connections))
-			for index, conn := range connections {
-				readyEvents[index] = readReadyEventMessage(t, conn)
+			for index, readPump := range readPumps {
+				readyEvents[index] = readWebSocketReadPumpReadyEvent(t, readPump)
 				if readyEvents[index].Type != "Ready" {
 					t.Fatalf("connection %d expected Ready, got %q", index, readyEvents[index].Type)
 				}
@@ -2417,6 +2434,9 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 			}
 			if len(readyEvents[0].Players) != len(joined) {
 				t.Fatalf("expected Ready event with six players, got %+v", readyEvents[0].Players)
+			}
+			for _, readPump := range readPumps {
+				assertNoWebSocketReadPumpPayload(t, readPump)
 			}
 
 			room := store.lookupRoom(roomID)
@@ -2445,6 +2465,11 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 					t.Fatalf("Ready player %d expected ID=%q team=%q slot=%d spawn=%+v, got %+v", index, issued.Player.ID, tt.teams[index], tt.slots[index], assignment.SpawnPosition, readyPlayer)
 				}
 			}
+			room.mu.Lock()
+			for index := 0; index < len(joined)-1; index++ {
+				delete(room.pendingInputs, joined[index].Player.ID)
+			}
+			room.mu.Unlock()
 
 			for index := 0; index < len(connections)-1; index++ {
 				writeWSJSON(t, connections[index], readyMessage{Type: "ready"})
@@ -2469,8 +2494,8 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 			}
 
 			starting := make([]matchSnapshotMessage, len(connections))
-			for index, conn := range connections {
-				starting[index] = readMatchSnapshotMessage(t, conn)
+			for index, readPump := range readPumps {
+				starting[index] = readWebSocketReadPumpMatchSnapshot(t, readPump)
 				if starting[index].Snapshot.Status != string(MatchStatusStarting) || starting[index].Snapshot.Countdown != matchCountdownSeconds || starting[index].Snapshot.Tick != 0 {
 					t.Fatalf("connection %d expected starting countdown %d, got %+v", index, matchCountdownSeconds, starting[index].Snapshot)
 				}
@@ -2493,8 +2518,8 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 			waitForMatchLifecycleState(t, store, roomID, MatchStatusStarted, 6, 6)
 
 			started := make([]matchSnapshotMessage, len(connections))
-			for index, conn := range connections {
-				started[index] = readMatchSnapshotMessage(t, conn)
+			for index, readPump := range readPumps {
+				started[index] = readWebSocketReadPumpMatchSnapshot(t, readPump)
 				if started[index].Snapshot.Status != string(MatchStatusStarted) || started[index].Snapshot.Tick != 0 {
 					t.Fatalf("connection %d expected next control started, got %+v", index, started[index].Snapshot)
 				}
@@ -2508,8 +2533,8 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 
 			fakeClock.TickTicker(gameplayInterval, 0)
 			gameplay := make([]snapshotMessage, len(connections))
-			for index, conn := range connections {
-				gameplay[index] = readSnapshotMessage(t, conn)
+			for index, readPump := range readPumps {
+				gameplay[index] = readWebSocketReadPumpSnapshot(t, readPump)
 				if gameplay[index].Snapshot.Tick != 1 {
 					t.Fatalf("connection %d expected first gameplay tick 1, got %d", index, gameplay[index].Snapshot.Tick)
 				}
@@ -4003,6 +4028,105 @@ func writeWSJSON(t *testing.T, conn *websocket.Conn, message any) {
 		t.Fatalf("marshal websocket message: %v", err)
 	}
 	writeText(t, conn, string(payload))
+}
+
+func startWebSocketReadPump(t *testing.T, conn *websocket.Conn) *webSocketReadPump {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pump := &webSocketReadPump{
+		payloads: make(chan []byte, 16),
+		errors:   make(chan error, 1),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_, payload, err := conn.Read(ctx)
+			if err != nil {
+				select {
+				case pump.errors <- err:
+				case <-ctx.Done():
+				}
+				return
+			}
+			payload = append([]byte(nil), payload...)
+			select {
+			case pump.payloads <- payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("expected WebSocket read pump to stop")
+		}
+	})
+	return pump
+}
+
+func assertNoWebSocketReadPumpPayload(t *testing.T, pump *webSocketReadPump) {
+	t.Helper()
+
+	select {
+	case payload := <-pump.payloads:
+		t.Fatalf("expected no WebSocket payload, got %s", payload)
+	case err := <-pump.errors:
+		t.Fatalf("WebSocket read pump failed while expecting no payload: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func readWebSocketReadPumpPayload(t *testing.T, pump *webSocketReadPump) []byte {
+	t.Helper()
+
+	select {
+	case payload := <-pump.payloads:
+		return payload
+	case err := <-pump.errors:
+		t.Fatalf("WebSocket read pump failed: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("expected WebSocket read pump payload")
+	}
+	return nil
+}
+
+func readWebSocketReadPumpReadyEvent(t *testing.T, pump *webSocketReadPump) readyEventMessage {
+	t.Helper()
+
+	var message readyEventMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped Ready event: %v", err)
+	}
+	return message
+}
+
+func readWebSocketReadPumpMatchSnapshot(t *testing.T, pump *webSocketReadPump) matchSnapshotMessage {
+	t.Helper()
+
+	var message matchSnapshotMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped match snapshot: %v", err)
+	}
+	if message.Type != "snapshot" {
+		t.Fatalf("expected exact next pumped control snapshot, got type %q", message.Type)
+	}
+	return message
+}
+
+func readWebSocketReadPumpSnapshot(t *testing.T, pump *webSocketReadPump) snapshotMessage {
+	t.Helper()
+
+	var message snapshotMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped gameplay snapshot: %v", err)
+	}
+	return message
 }
 
 func readSnapshotMessage(t *testing.T, conn *websocket.Conn) snapshotMessage {
