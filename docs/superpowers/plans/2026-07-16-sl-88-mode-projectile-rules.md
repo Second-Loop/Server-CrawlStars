@@ -6,7 +6,7 @@
 
 - Solo는 owner와 dead player를 제외한 모든 live player를 적으로 판정해요.
 - Team과 Duel의 `two_teams + friendlyFire=false`는 ally를 피해 없이 통과하고 enemy만 맞혀요.
-- 같은 tick에 여러 target이 겹치면 PlayerID 오름차순의 첫 eligible target 하나만 맞혀요.
+- 같은 tick에 여러 target이 겹칠 때의 tie-break는 구현 전에 사용자 결정을 받아요. 후보는 기존 join/player 순서 유지, PlayerID 오름차순, 이동 경로상 최초 접촉이에요.
 - room의 map 순서가 simulation input과 projectile 결과에 영향을 주지 않도록 input을 복사한 뒤 PlayerID stable sort해요.
 - SL-89의 탈락, 승패, GameEnd, room cleanup은 구현하지 않아요.
 - JSON schema shape, mode catalog, OpenAPI는 바꾸지 않아요.
@@ -45,7 +45,7 @@ GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod mise exec -- go test 
 - `validateGameModeConfig`가 `free_for_all`, `two_teams`만 허용해요.
 - `canProjectileHit`은 owner/dead를 공통 제외하고 selected mode rule로 ally/enemy를 판정해요.
 - ally/dead처럼 제외된 overlap은 projectile을 destroy하지 않아요.
-- `projectileTargetIndex`는 모든 eligible overlap 중 PlayerID가 가장 낮은 player index를 골라요.
+- `projectileTargetIndex`의 tie-break는 사용자 결정값을 적용해요. 결정 전에는 production code를 수정하지 않아요.
 - `orderedInputsByPlayerID`는 caller slice를 복사하고 stable sort해요.
 - reversed input 두 상태를 실제 projectile 접촉 tick까지 진행해 HP, projectile ID/order/destroy가 같은지 검증해요.
 
@@ -73,7 +73,7 @@ GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod mise exec -- go test 
 문서 계약:
 
 - Solo/Team/Duel별 eligibility와 ally pass-through를 설명해요.
-- multi-contact target과 input은 PlayerID 오름차순으로 결정한다고 기록해요.
+- multi-contact target은 사용자에게 승인받은 tie-break를, input은 PlayerID 오름차순을 사용한다고 기록해요.
 - death snapshot 이후의 elimination/GameEnd는 SL-89 범위임을 명시해요.
 - generated `internal/docs/api/asyncapi.yaml`은 stage하지 않고 source와 `cmp`만 해요.
 
