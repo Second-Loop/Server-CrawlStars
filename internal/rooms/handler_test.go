@@ -1765,6 +1765,64 @@ func TestMatchmakingJoinGameModeRateLimitPrecedesBodyDecode(t *testing.T) {
 	assertError(t, malformed, "rate_limited")
 }
 
+func TestMatchmakingJoinRejectsOversizedBody(t *testing.T) {
+	oversizedBody := `{"gameMode":"solo","padding":"` + strings.Repeat("x", 2*1024) + `"}`
+
+	t.Run("accepted request is capped", func(t *testing.T) {
+		store := NewStore(5)
+		handler := debugHandler(t, store)
+
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", oversizedBody)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected oversized body status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		assertError(t, rec, "invalid_request")
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected oversized body not to create room state, got %d rooms", got)
+		}
+		store.mu.RLock()
+		playerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		if playerIDCount != 0 {
+			t.Fatalf("expected oversized body not to create player state, got %d player IDs", playerIDCount)
+		}
+	})
+
+	t.Run("rate limit is evaluated first", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler, err := HandlerWithConfig(store, HandlerConfig{
+			JoinLimiter: NewIPRateLimiter(10, 1, nil),
+		})
+		if err != nil {
+			t.Fatalf("create handler: %v", err)
+		}
+
+		first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", "")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("expected first join status 201, got %d", first.Code)
+		}
+		roomCount := len(store.listRooms().Rooms)
+		store.mu.RLock()
+		playerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", oversizedBody)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected rate limit before oversized body decode, got %d: %s", rec.Code, rec.Body.String())
+		}
+		assertError(t, rec, "rate_limited")
+		if got := len(store.listRooms().Rooms); got != roomCount {
+			t.Fatalf("expected rate-limited oversized request not to mutate rooms, got %d before and %d after", roomCount, got)
+		}
+		store.mu.RLock()
+		gotPlayerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		if gotPlayerIDCount != playerIDCount {
+			t.Fatalf("expected rate-limited oversized request not to mutate player IDs, got %d before and %d after", playerIDCount, gotPlayerIDCount)
+		}
+	})
+}
+
 func TestDebugRoomUsesDefaultMode(t *testing.T) {
 	store := NewStore(5)
 	handler := debugHandler(t, store)

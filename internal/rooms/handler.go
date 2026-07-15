@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+const matchmakingJoinRequestBodyLimit int64 = 1024
+
 type HandlerConfig struct {
 	EnableDebugAPI       bool
 	DebugAPIToken        string
@@ -116,6 +118,7 @@ func newRouterWithDebugGuard(
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, matchmakingJoinRequestBodyLimit)
 		joinRequest, err := decodeMatchmakingJoinRequest(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", ErrInvalidRequest.Error())
