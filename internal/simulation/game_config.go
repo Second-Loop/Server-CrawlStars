@@ -7,13 +7,14 @@ import (
 )
 
 type GameConfig struct {
-	Version    int                     `json:"version"`
-	TickRate   int                     `json:"tickRate"`
-	Tile       TileConfig              `json:"tile"`
-	Player     PlayerTypeSetConfig     `json:"player"`
-	Projectile ProjectileTypeSetConfig `json:"projectile"`
-	Mode       GameModeConfig          `json:"mode"`
-	Map        MapData                 `json:"map"`
+	Version      int                     `json:"version"`
+	TickRate     int                     `json:"tickRate"`
+	Tile         TileConfig              `json:"tile"`
+	Player       PlayerTypeSetConfig     `json:"player"`
+	Projectile   ProjectileTypeSetConfig `json:"projectile"`
+	ModeCatalog  GameModeCatalogConfig   `json:"mode"`
+	SelectedMode GameModeConfig          `json:"-"`
+	Map          MapData                 `json:"map"`
 }
 
 type TileConfig struct {
@@ -51,6 +52,11 @@ type GameModeConfig struct {
 	Rules           GameModeRulesConfig `json:"rules"`
 }
 
+type GameModeCatalogConfig struct {
+	Default string           `json:"default"`
+	Catalog []GameModeConfig `json:"catalog"`
+}
+
 type TeamConfig struct {
 	Name Team `json:"name"`
 	Size int  `json:"size"`
@@ -62,9 +68,23 @@ type GameModeRulesConfig struct {
 }
 
 const (
-	GameModeDuel1v1      = "duel_1v1"
-	TeamBehaviorTwoTeams = "two_teams"
+	GameModeDuel1v1        = "duel_1v1"
+	GameModeSolo           = "solo"
+	GameModeTeam           = "team"
+	TeamBehaviorTwoTeams   = "two_teams"
+	TeamBehaviorFreeForAll = "free_for_all"
 )
+
+func (config GameConfig) SelectMode(id string) (GameConfig, error) {
+	for _, mode := range config.ModeCatalog.Catalog {
+		if mode.ID == id {
+			selected := config
+			selected.SelectedMode = mode
+			return selected, nil
+		}
+	}
+	return GameConfig{}, fmt.Errorf("unknown game mode %q", id)
+}
 
 func LoadGameConfig(reader io.Reader) (GameConfig, error) {
 	var config GameConfig
@@ -112,7 +132,7 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 			return GameConfig{}, fmt.Errorf("game config projectile type %q values must be positive", projectile.ID)
 		}
 	}
-	if err := validateGameModeConfig(config.Mode); err != nil {
+	if err := validateGameModeCatalogConfig(config.ModeCatalog); err != nil {
 		return GameConfig{}, err
 	}
 	gameMap := config.Map
@@ -123,11 +143,41 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 	if err != nil {
 		return GameConfig{}, fmt.Errorf("resolve game config map: %w", err)
 	}
-	if config.Mode.PlayersPerMatch > resolvedMap.MaxPlayers {
-		return GameConfig{}, fmt.Errorf("game config mode playersPerMatch must be less than or equal to map.maxPlayers")
+	for _, mode := range config.ModeCatalog.Catalog {
+		if mode.PlayersPerMatch > resolvedMap.MaxPlayers {
+			return GameConfig{}, fmt.Errorf("game config mode %q playersPerMatch must be less than or equal to map.maxPlayers", mode.ID)
+		}
 	}
 	config.Map = resolvedMap
-	return config, nil
+	selected, err := config.SelectMode(config.ModeCatalog.Default)
+	if err != nil {
+		return GameConfig{}, fmt.Errorf("select game config mode.default: %w", err)
+	}
+	return selected, nil
+}
+
+func validateGameModeCatalogConfig(catalog GameModeCatalogConfig) error {
+	if catalog.Default == "" {
+		return fmt.Errorf("game config mode.default must not be empty")
+	}
+	if len(catalog.Catalog) == 0 {
+		return fmt.Errorf("game config mode.catalog must not be empty")
+	}
+
+	seenModes := make(map[string]bool, len(catalog.Catalog))
+	for _, mode := range catalog.Catalog {
+		if err := validateGameModeConfig(mode); err != nil {
+			return err
+		}
+		if seenModes[mode.ID] {
+			return fmt.Errorf("game config mode %q must not be duplicated", mode.ID)
+		}
+		seenModes[mode.ID] = true
+	}
+	if !seenModes[catalog.Default] {
+		return fmt.Errorf("game config mode.default %q must reference a catalog mode", catalog.Default)
+	}
+	return nil
 }
 
 func validateGameModeConfig(mode GameModeConfig) error {
@@ -166,6 +216,7 @@ func validateGameModeConfig(mode GameModeConfig) error {
 }
 
 func StaticGameConfig() GameConfig {
+	defaultMode := DefaultGameModeConfig()
 	return GameConfig{
 		Version:  1,
 		TickRate: TickRate,
@@ -194,8 +245,42 @@ func StaticGameConfig() GameConfig {
 				},
 			},
 		},
-		Mode: DefaultGameModeConfig(),
-		Map:  StaticMapFixture(),
+		ModeCatalog: GameModeCatalogConfig{
+			Default: GameModeDuel1v1,
+			Catalog: []GameModeConfig{
+				defaultMode,
+				{
+					ID:              GameModeSolo,
+					PlayersPerMatch: 6,
+					Teams: []TeamConfig{
+						{Name: Team("solo-1"), Size: 1},
+						{Name: Team("solo-2"), Size: 1},
+						{Name: Team("solo-3"), Size: 1},
+						{Name: Team("solo-4"), Size: 1},
+						{Name: Team("solo-5"), Size: 1},
+						{Name: Team("solo-6"), Size: 1},
+					},
+					Rules: GameModeRulesConfig{
+						TeamBehavior: TeamBehaviorFreeForAll,
+						FriendlyFire: false,
+					},
+				},
+				{
+					ID:              GameModeTeam,
+					PlayersPerMatch: 6,
+					Teams: []TeamConfig{
+						{Name: TeamRed, Size: 3},
+						{Name: TeamBlue, Size: 3},
+					},
+					Rules: GameModeRulesConfig{
+						TeamBehavior: TeamBehaviorTwoTeams,
+						FriendlyFire: false,
+					},
+				},
+			},
+		},
+		SelectedMode: defaultMode,
+		Map:          StaticMapFixture(),
 	}
 }
 
@@ -229,17 +314,17 @@ func (config GameConfig) DefaultProjectileType() ProjectileTypeConfig {
 }
 
 func (config GameConfig) MatchPlayerCount() int {
-	if config.Mode.PlayersPerMatch <= 0 {
+	if config.SelectedMode.PlayersPerMatch <= 0 {
 		return DefaultGameModeConfig().PlayersPerMatch
 	}
-	return config.Mode.PlayersPerMatch
+	return config.SelectedMode.PlayersPerMatch
 }
 
 func (config GameConfig) MatchTeamForPlayerIndex(index int) (Team, int, bool) {
 	if index < 0 || index >= config.MatchPlayerCount() {
 		return "", 0, false
 	}
-	return matchTeamForPlayerIndex(index, config.Mode.Teams)
+	return matchTeamForPlayerIndex(index, config.SelectedMode.Teams)
 }
 
 func (config GameConfig) TeamForPlayerIndex(index int) (Team, int, bool) {
@@ -252,7 +337,7 @@ func (config GameConfig) TeamForPlayerIndex(index int) (Team, int, bool) {
 			return team, slot, true
 		}
 	}
-	team, slot, ok := roomTeamForPlayerIndex(index, config.Mode.Teams)
+	team, slot, ok := roomTeamForPlayerIndex(index, config.SelectedMode.Teams)
 	if ok {
 		return team, slot, true
 	}

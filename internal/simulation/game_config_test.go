@@ -150,29 +150,90 @@ func TestResolveGameConfigRejectsInvalidAttackBudget(t *testing.T) {
 	}
 }
 
-func TestServerGameConfigArtifactIncludesDefaultOneVsOneMode(t *testing.T) {
+func TestServerGameConfigModeCatalog(t *testing.T) {
 	config := loadServerGameConfig(t)
+	want := map[string]GameModeConfig{
+		GameModeDuel1v1: {
+			ID:              GameModeDuel1v1,
+			PlayersPerMatch: 2,
+			Teams:           []TeamConfig{{Name: TeamRed, Size: 1}, {Name: TeamBlue, Size: 1}},
+			Rules:           GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams, FriendlyFire: false},
+		},
+		GameModeSolo: {
+			ID:              GameModeSolo,
+			PlayersPerMatch: 6,
+			Teams:           []TeamConfig{{Name: Team("solo-1"), Size: 1}, {Name: Team("solo-2"), Size: 1}, {Name: Team("solo-3"), Size: 1}, {Name: Team("solo-4"), Size: 1}, {Name: Team("solo-5"), Size: 1}, {Name: Team("solo-6"), Size: 1}},
+			Rules:           GameModeRulesConfig{TeamBehavior: TeamBehaviorFreeForAll, FriendlyFire: false},
+		},
+		GameModeTeam: {
+			ID:              GameModeTeam,
+			PlayersPerMatch: 6,
+			Teams:           []TeamConfig{{Name: TeamRed, Size: 3}, {Name: TeamBlue, Size: 3}},
+			Rules:           GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams, FriendlyFire: false},
+		},
+	}
 
-	if config.Mode.ID != GameModeDuel1v1 {
-		t.Fatalf("expected default mode %q, got %q", GameModeDuel1v1, config.Mode.ID)
+	if config.ModeCatalog.Default != GameModeDuel1v1 {
+		t.Fatalf("expected default mode %q, got %q", GameModeDuel1v1, config.ModeCatalog.Default)
 	}
-	if config.Mode.PlayersPerMatch != 2 {
-		t.Fatalf("expected default mode playersPerMatch 2, got %d", config.Mode.PlayersPerMatch)
+	if len(config.ModeCatalog.Catalog) != len(want) {
+		t.Fatalf("expected exactly %d modes, got %+v", len(want), config.ModeCatalog.Catalog)
 	}
-	if len(config.Mode.Teams) != 2 {
-		t.Fatalf("expected red/blue teams, got %+v", config.Mode.Teams)
+	for _, got := range config.ModeCatalog.Catalog {
+		wantMode, ok := want[got.ID]
+		if !ok {
+			t.Fatalf("unexpected mode %q in catalog", got.ID)
+		}
+		if !reflect.DeepEqual(got, wantMode) {
+			t.Fatalf("mode %q mismatch:\n got: %+v\nwant: %+v", got.ID, got, wantMode)
+		}
+		delete(want, got.ID)
 	}
-	if config.Mode.Teams[0] != (TeamConfig{Name: TeamRed, Size: 1}) {
-		t.Fatalf("expected first team red size 1, got %+v", config.Mode.Teams[0])
+	if len(want) != 0 {
+		t.Fatalf("missing catalog modes: %+v", want)
 	}
-	if config.Mode.Teams[1] != (TeamConfig{Name: TeamBlue, Size: 1}) {
-		t.Fatalf("expected second team blue size 1, got %+v", config.Mode.Teams[1])
+	if config.SelectedMode.ID != GameModeDuel1v1 {
+		t.Fatalf("expected selected default mode %q, got %+v", GameModeDuel1v1, config.SelectedMode)
 	}
-	if config.Mode.Rules.TeamBehavior != TeamBehaviorTwoTeams {
-		t.Fatalf("expected team behavior %q, got %q", TeamBehaviorTwoTeams, config.Mode.Rules.TeamBehavior)
+}
+
+func TestSelectModeSelectsRuntimeModeWithoutMutatingOriginalConfig(t *testing.T) {
+	config := StaticGameConfig()
+	wantOriginal := StaticGameConfig()
+
+	for _, modeID := range []string{GameModeSolo, GameModeTeam} {
+		t.Run(modeID, func(t *testing.T) {
+			selected, err := config.SelectMode(modeID)
+			if err != nil {
+				t.Fatalf("select mode %q: %v", modeID, err)
+			}
+			var wantSelected GameModeConfig
+			for _, mode := range config.ModeCatalog.Catalog {
+				if mode.ID == modeID {
+					wantSelected = mode
+					break
+				}
+			}
+			if !reflect.DeepEqual(selected.SelectedMode, wantSelected) {
+				t.Fatalf("selected mode mismatch:\n got: %+v\nwant: %+v", selected.SelectedMode, wantSelected)
+			}
+			if !reflect.DeepEqual(config, wantOriginal) {
+				t.Fatalf("SelectMode mutated original config:\n got: %+v\nwant: %+v", config, wantOriginal)
+			}
+		})
 	}
-	if config.Mode.Rules.FriendlyFire {
-		t.Fatal("expected default 1v1 mode to disable friendly fire")
+}
+
+func TestSelectModeRejectsUnknownMode(t *testing.T) {
+	selected, err := StaticGameConfig().SelectMode("unknown")
+	if err == nil {
+		t.Fatal("expected unknown mode to be rejected")
+	}
+	if !strings.Contains(err.Error(), `unknown game mode "unknown"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(selected, GameConfig{}) {
+		t.Fatalf("expected zero config after failed selection, got %+v", selected)
 	}
 }
 
@@ -227,7 +288,7 @@ func expectedClientMap0() [][]TileType {
 	}
 }
 
-func TestResolveGameConfigRejectsInvalidModeRules(t *testing.T) {
+func TestResolveGameConfigRejectsInvalidModeCatalog(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*GameConfig)
@@ -236,28 +297,42 @@ func TestResolveGameConfigRejectsInvalidModeRules(t *testing.T) {
 		{
 			name: "empty mode id",
 			mutate: func(config *GameConfig) {
-				config.Mode.ID = ""
+				config.ModeCatalog.Catalog[0].ID = ""
 			},
 			wantErr: "mode.id",
 		},
 		{
 			name: "empty team name",
 			mutate: func(config *GameConfig) {
-				config.Mode.Teams[0].Name = ""
+				config.ModeCatalog.Catalog[0].Teams[0].Name = ""
 			},
 			wantErr: "team name",
 		},
 		{
+			name: "duplicate mode id",
+			mutate: func(config *GameConfig) {
+				config.ModeCatalog.Catalog[1].ID = GameModeDuel1v1
+			},
+			wantErr: "duplicated",
+		},
+		{
+			name: "missing default mode",
+			mutate: func(config *GameConfig) {
+				config.ModeCatalog.Default = "missing"
+			},
+			wantErr: "default",
+		},
+		{
 			name: "team size sum mismatch",
 			mutate: func(config *GameConfig) {
-				config.Mode.Teams[0].Size = 2
+				config.ModeCatalog.Catalog[2].Teams[0].Size = 2
 			},
 			wantErr: "team size total",
 		},
 		{
 			name: "mode exceeds map capacity",
 			mutate: func(config *GameConfig) {
-				config.Map.MaxPlayers = 1
+				config.Map.MaxPlayers = 5
 			},
 			wantErr: "map.maxPlayers",
 		},
@@ -297,7 +372,7 @@ func TestGameConfigAssignsDefaultOneVsOneMatchTeams(t *testing.T) {
 
 func TestGameConfigAssignsConfiguredMatchTeams(t *testing.T) {
 	config := StaticGameConfig()
-	config.Mode = GameModeConfig{
+	config.SelectedMode = GameModeConfig{
 		ID:              "test_quartet",
 		PlayersPerMatch: 4,
 		Teams: []TeamConfig{

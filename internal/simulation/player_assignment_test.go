@@ -7,7 +7,7 @@ import (
 
 func TestPlayerAssignmentsUseMapSpawnPointTilesInJoinOrder(t *testing.T) {
 	config := assignmentTestConfig()
-	config.Mode = GameModeConfig{
+	config.SelectedMode = GameModeConfig{
 		ID:              "test_trio",
 		PlayersPerMatch: 3,
 		Teams: []TeamConfig{
@@ -53,6 +53,42 @@ func TestPlayerAssignmentsUseMapSpawnPointTilesInJoinOrder(t *testing.T) {
 		Slot:          1,
 		SpawnPosition: config.Map.WorldPos(3, 2),
 	})
+}
+
+func TestPlayerAssignmentsUseSelectedModeTeams(t *testing.T) {
+	playerIDs := []PlayerID{"player-1", "player-2", "player-3", "player-4", "player-5", "player-6"}
+	tests := []struct {
+		modeID string
+		teams  []Team
+		slots  []int
+	}{
+		{
+			modeID: GameModeTeam,
+			teams:  []Team{TeamRed, TeamBlue, TeamRed, TeamBlue, TeamRed, TeamBlue},
+			slots:  []int{0, 0, 1, 1, 2, 2},
+		},
+		{
+			modeID: GameModeSolo,
+			teams:  []Team{Team("solo-1"), Team("solo-2"), Team("solo-3"), Team("solo-4"), Team("solo-5"), Team("solo-6")},
+			slots:  []int{0, 0, 0, 0, 0, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modeID, func(t *testing.T) {
+			config, err := assignmentTestConfig().SelectMode(tt.modeID)
+			if err != nil {
+				t.Fatalf("select mode %q: %v", tt.modeID, err)
+			}
+
+			assignments := PlayerAssignments(playerIDs, config)
+			for index := range playerIDs {
+				if assignments[index].Team != tt.teams[index] || assignments[index].Slot != tt.slots[index] {
+					t.Fatalf("player index %d: expected team=%q slot=%d, got team=%q slot=%d", index, tt.teams[index], tt.slots[index], assignments[index].Team, assignments[index].Slot)
+				}
+			}
+		})
+	}
 }
 
 func TestPlayerAssignmentsUseMapDerivedFallbackSpawnsWhenNoSpawnTiles(t *testing.T) {
