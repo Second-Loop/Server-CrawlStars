@@ -2,14 +2,638 @@ package rooms
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
+
+func TestStoreReturnsTypedErrors(t *testing.T) {
+	t.Run("active room cap from create", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+
+		if _, err := store.createRoom(); err != nil {
+			t.Fatalf("create first room: %v", err)
+		}
+		_, err := store.createRoom()
+		if !errors.Is(err, ErrActiveRoomCapReached) {
+			t.Fatalf("expected ErrActiveRoomCapReached, got %v", err)
+		}
+	})
+
+	t.Run("active room cap from matchmaking", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		for range store.matchCapacity() {
+			if _, err := store.addPlayer(room.ID); err != nil {
+				t.Fatalf("fill matchmaking room: %v", err)
+			}
+		}
+		_, err = store.joinMatchmaking()
+		if !errors.Is(err, ErrActiveRoomCapReached) {
+			t.Fatalf("expected ErrActiveRoomCapReached, got %v", err)
+		}
+	})
+
+	t.Run("missing room", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		if _, err := store.addPlayer("missing"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("add player: expected ErrRoomNotFound, got %v", err)
+		}
+		if _, err := store.startRoom("missing"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("start room: expected ErrRoomNotFound, got %v", err)
+		}
+		if err := store.reserveClient("missing", "player-1"); !errors.Is(err, ErrRoomNotFound) {
+			t.Fatalf("reserve client: expected ErrRoomNotFound, got %v", err)
+		}
+	})
+
+	t.Run("room full", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		for range store.debugRoomCapacity() {
+			if _, err := store.addPlayer(room.ID); err != nil {
+				t.Fatalf("fill room: %v", err)
+			}
+		}
+		if _, err := store.addPlayer(room.ID); !errors.Is(err, ErrRoomFull) {
+			t.Fatalf("expected ErrRoomFull, got %v", err)
+		}
+	})
+
+	t.Run("room has no players", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if _, err := store.startRoom(room.ID); !errors.Is(err, ErrRoomHasNoPlayers) {
+			t.Fatalf("expected ErrRoomHasNoPlayers, got %v", err)
+		}
+	})
+
+	t.Run("missing player", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		if err := store.reserveClient(room.ID, "missing"); !errors.Is(err, ErrPlayerNotFound) {
+			t.Fatalf("expected ErrPlayerNotFound, got %v", err)
+		}
+	})
+
+	t.Run("player already connected", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+
+		room, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		player, err := store.addPlayer(room.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		if err := store.reserveClient(room.ID, player.ID); err != nil {
+			t.Fatalf("reserve first client: %v", err)
+		}
+		if err := store.reserveClient(room.ID, player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
+			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
+		}
+	})
+}
+
+func TestHandlerRouteContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       func(roomResponse, playerResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "unknown root route",
+			path:       func(roomResponse, playerResponse) string { return "/unknown" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "unknown nested room route",
+			path:       func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/unknown" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "missing player collection room",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/missing/players" },
+			wantStatus: http.StatusMethodNotAllowed,
+			wantCode:   "method_not_allowed",
+		},
+		{
+			name:       "missing websocket room",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/missing/players/player-1" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "room_not_found",
+		},
+		{
+			name:       "missing websocket player",
+			path:       func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/players/missing" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "player_not_found",
+		},
+		{
+			name: "percent encoded room ID",
+			path: func(room roomResponse, _ playerResponse) string {
+				return "/rooms/" + strings.ReplaceAll(room.ID, "-", "%2D")
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "encoded slash in room ID",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/room%2F1" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "encoded slash in websocket room ID",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/room%2F1/players/player-1" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "encoded slash in websocket player ID",
+			path:       func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/players/player%2F1" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "duplicate slash",
+			path:       func(roomResponse, playerResponse) string { return "/rooms//" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "room_not_found",
+		},
+		{
+			name:       "dot segment",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/./" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "dot dot segment",
+			path:       func(roomResponse, playerResponse) string { return "/rooms/../rooms" },
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+			player := createPlayer(t, handler, room.ID)
+
+			rec := request(handler, http.MethodGet, tt.path(room, player))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+func TestHandlerRouteEncodedWildcardContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse, playerResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:   "escaped room detail get",
+			method: http.MethodGet,
+			path: func(room roomResponse, _ playerResponse) string {
+				return "/rooms/" + strings.ReplaceAll(room.ID, "-", "%2D")
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:   "escaped room detail delete",
+			method: http.MethodDelete,
+			path: func(room roomResponse, _ playerResponse) string {
+				return "/rooms/" + strings.ReplaceAll(room.ID, "-", "%2D")
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:   "escaped player collection",
+			method: http.MethodPost,
+			path: func(room roomResponse, _ playerResponse) string {
+				return "/rooms/" + strings.ReplaceAll(room.ID, "-", "%2D") + "/players"
+			},
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:   "escaped start",
+			method: http.MethodPost,
+			path: func(room roomResponse, _ playerResponse) string {
+				return "/rooms/" + strings.ReplaceAll(room.ID, "-", "%2D") + "/start"
+			},
+			wantStatus: http.StatusOK,
+		},
+		{name: "encoded slash room detail get", method: http.MethodGet, path: func(roomResponse, playerResponse) string { return "/rooms/room%2F1" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "encoded slash room detail delete", method: http.MethodDelete, path: func(roomResponse, playerResponse) string { return "/rooms/room%2F1" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "encoded slash player collection", method: http.MethodPost, path: func(roomResponse, playerResponse) string { return "/rooms/room%2F1/players" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "encoded slash start", method: http.MethodPost, path: func(roomResponse, playerResponse) string { return "/rooms/room%2F1/start" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+			player := createPlayer(t, handler, room.ID)
+
+			rec := request(handler, tt.method, tt.path(room, player))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+func TestHandlerRouteDotSegmentDetailContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "dot get", method: http.MethodGet, path: "/rooms/.", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot delete", method: http.MethodDelete, path: "/rooms/.", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot head", method: http.MethodHead, path: "/rooms/.", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "dot dot get", method: http.MethodGet, path: "/rooms/..", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot dot delete", method: http.MethodDelete, path: "/rooms/..", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "dot dot head", method: http.MethodHead, path: "/rooms/..", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot get", method: http.MethodGet, path: "/rooms/%2e", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot head", method: http.MethodHead, path: "/rooms/%2e", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			rec := request(Handler(store), tt.method, tt.path)
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+func TestHandlerRouteNestedDotSegmentContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "raw dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/./players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/../players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/%2e/players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot dot room player collection", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/%2e%2e/players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/./players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/../players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/%2e/players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded dot dot websocket room", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/%2e%2e/players/player-1" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "raw dot dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/.." }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "encoded dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "encoded dot dot websocket player", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e%2e" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "raw dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "raw dot dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/.." }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded dot dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/%2e%2e" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+
+			rec := request(handler, tt.method, tt.path(room))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+			if location := rec.Header().Get("Location"); location != "" {
+				t.Fatalf("expected no redirect Location, got %q", location)
+			}
+		})
+	}
+}
+
+func TestHandlerRouteEncodedSlashKnownRouteContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "raw player collection get", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/missing/players" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded slash player collection get", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/missing%2Fplayers" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "raw player collection post", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/missing/players" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded slash player collection post", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/missing%2Fplayers" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "raw player collection head", method: http.MethodHead, path: func(roomResponse) string { return "/rooms/missing/players" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded slash player collection head", method: http.MethodHead, path: func(roomResponse) string { return "/rooms/missing%2Fplayers" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "raw dot websocket player get", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "encoded slash dot websocket player get", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "%2Fplayers%2F%2e" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "raw dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/." }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded slash dot websocket player head", method: http.MethodHead, path: func(room roomResponse) string { return "/rooms/" + room.ID + "%2Fplayers%2F%2e" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "encoded slash room prefix get", method: http.MethodGet, path: func(roomResponse) string { return "/rooms%2Fmissing" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "encoded slash room prefix head", method: http.MethodHead, path: func(roomResponse) string { return "/rooms%2Fmissing" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+
+			rec := request(handler, tt.method, tt.path(room))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+			if location := rec.Header().Get("Location"); location != "" {
+				t.Fatalf("expected no redirect Location, got %q", location)
+			}
+		})
+	}
+}
+
+func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	room, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	player, err := store.addPlayer(room.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	router := newRouter(store)
+
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		wantStatus   int
+		wantPattern  string
+		wantRoomID   string
+		wantPlayerID string
+	}{
+		{name: "room collection", method: http.MethodGet, path: "/rooms", wantStatus: http.StatusOK, wantPattern: "GET /rooms"},
+		{name: "room detail", method: http.MethodGet, path: "/rooms/" + room.ID, wantStatus: http.StatusOK, wantPattern: "GET /rooms/{roomID}", wantRoomID: room.ID},
+		{name: "player collection", method: http.MethodPost, path: "/rooms/" + room.ID + "/players", wantStatus: http.StatusCreated, wantPattern: "POST /rooms/{roomID}/players", wantRoomID: room.ID},
+		{name: "start", method: http.MethodPost, path: "/rooms/" + room.ID + "/start", wantStatus: http.StatusOK, wantPattern: "POST /rooms/{roomID}/start", wantRoomID: room.ID},
+		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.ID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d with body %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+			if req.Pattern != tt.wantPattern {
+				t.Fatalf("expected pattern %q, got %q", tt.wantPattern, req.Pattern)
+			}
+			if got := req.PathValue("roomID"); got != tt.wantRoomID {
+				t.Fatalf("expected room path value %q, got %q", tt.wantRoomID, got)
+			}
+			if got := req.PathValue("playerID"); got != tt.wantPlayerID {
+				t.Fatalf("expected player path value %q, got %q", tt.wantPlayerID, got)
+			}
+		})
+	}
+}
+
+func TestHandlerMethodContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse, playerResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "get room collection", method: http.MethodGet, path: func(roomResponse, playerResponse) string { return "/rooms" }, wantStatus: http.StatusOK},
+		{name: "post room collection", method: http.MethodPost, path: func(roomResponse, playerResponse) string { return "/rooms" }, wantStatus: http.StatusCreated},
+		{name: "delete room collection", method: http.MethodDelete, path: func(roomResponse, playerResponse) string { return "/rooms" }, wantStatus: http.StatusOK},
+		{name: "put matchmaking", method: http.MethodPut, path: func(roomResponse, playerResponse) string { return "/matchmaking/join" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put room collection", method: http.MethodPut, path: func(roomResponse, playerResponse) string { return "/rooms" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put room detail", method: http.MethodPut, path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put missing room detail", method: http.MethodPut, path: func(roomResponse, playerResponse) string { return "/rooms/missing" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put player collection", method: http.MethodPut, path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/players" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "get missing player collection", method: http.MethodGet, path: func(roomResponse, playerResponse) string { return "/rooms/missing/players" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put start", method: http.MethodPut, path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/start" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "get missing start", method: http.MethodGet, path: func(roomResponse, playerResponse) string { return "/rooms/missing/start" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put websocket path", method: http.MethodPut, path: func(room roomResponse, player playerResponse) string {
+			return "/rooms/" + room.ID + "/players/" + player.ID
+		}, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "put missing websocket path", method: http.MethodPut, path: func(roomResponse, playerResponse) string {
+			return "/rooms/missing/players/missing"
+		}, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+			player := createPlayer(t, handler, room.ID)
+
+			rec := request(handler, tt.method, tt.path(room, player))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+func TestHandlerRouteErrorContract(t *testing.T) {
+	t.Run("room cap from collection", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+		handler := Handler(store)
+		_ = createRoom(t, handler)
+
+		rec := request(handler, http.MethodPost, "/rooms")
+		assertJSONRouteResponse(t, rec, http.StatusConflict, "room_cap_reached")
+	})
+
+	t.Run("room cap from matchmaking", func(t *testing.T) {
+		store := NewStore(1)
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+		for range store.matchCapacity() {
+			_ = createPlayer(t, handler, room.ID)
+		}
+
+		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		assertJSONRouteResponse(t, rec, http.StatusConflict, "room_cap_reached")
+	})
+
+	t.Run("room full", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+		for range store.debugRoomCapacity() {
+			_ = createPlayer(t, handler, room.ID)
+		}
+
+		rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
+		assertJSONRouteResponse(t, rec, http.StatusConflict, "room_full")
+	})
+
+	t.Run("room has no players", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+
+		rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/start")
+		assertJSONRouteResponse(t, rec, http.StatusConflict, "room_has_no_players")
+	})
+
+	t.Run("room not found from player collection", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		rec := request(handler, http.MethodPost, "/rooms/missing/players")
+		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
+	})
+
+	t.Run("room not found from start", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		rec := request(handler, http.MethodPost, "/rooms/missing/start")
+		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
+	})
+
+	t.Run("room detail not found", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		rec := request(handler, http.MethodGet, "/rooms/missing")
+		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
+	})
+
+	t.Run("room not found before websocket upgrade", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		rec := request(handler, http.MethodGet, "/rooms/missing/players/player-1")
+		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
+	})
+
+	t.Run("player not found before websocket upgrade", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler := Handler(store)
+		room := createRoom(t, handler)
+
+		rec := request(handler, http.MethodGet, "/rooms/"+room.ID+"/players/missing")
+		assertJSONRouteResponse(t, rec, http.StatusNotFound, "player_not_found")
+	})
+}
+
+func TestHandlerTrailingSlashContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       func(roomResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "get room collection slash", method: http.MethodGet, path: func(roomResponse) string { return "/rooms/" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "post room collection slash", method: http.MethodPost, path: func(roomResponse) string { return "/rooms/" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "delete room collection slash", method: http.MethodDelete, path: func(roomResponse) string { return "/rooms/" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "room detail slash", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "player collection slash", method: http.MethodPost, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "start slash", method: http.MethodPost, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/start/" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "websocket empty player slash", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/" }, wantStatus: http.StatusNotFound, wantCode: "player_not_found"},
+		{name: "websocket path slash", method: http.MethodGet, path: func(room roomResponse) string { return "/rooms/" + room.ID + "/players/player-1/" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+
+			rec := request(handler, tt.method, tt.path(room))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+func TestHandlerHeadContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       func(roomResponse, playerResponse) string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "matchmaking", path: func(roomResponse, playerResponse) string { return "/matchmaking/join" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "room collection", path: func(roomResponse, playerResponse) string { return "/rooms" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "room collection slash", path: func(roomResponse, playerResponse) string { return "/rooms/" }, wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "room detail", path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "player collection", path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/players" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "start", path: func(room roomResponse, _ playerResponse) string { return "/rooms/" + room.ID + "/start" }, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "websocket path", path: func(room roomResponse, player playerResponse) string {
+			return "/rooms/" + room.ID + "/players/" + player.ID
+		}, wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "unknown", path: func(roomResponse, playerResponse) string { return "/unknown" }, wantStatus: http.StatusNotFound, wantCode: "not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			defer store.Close()
+			handler := Handler(store)
+			room := createRoom(t, handler)
+			player := createPlayer(t, handler, room.ID)
+
+			rec := request(handler, http.MethodHead, tt.path(room, player))
+			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
 
 func TestHandlerListsAndCreatesRooms(t *testing.T) {
 	handler := Handler(NewStore(5))
@@ -636,5 +1260,38 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 	decodeResponse(t, rec, &body)
 	if body.Error.Code != code {
 		t.Fatalf("expected error code %q, got %+v", code, body)
+	}
+}
+
+func assertJSONRouteResponse(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Fatalf("expected status %d, got %d with body %s", status, rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", got)
+	}
+	if code != "" {
+		var body errorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode error response: %v", err)
+		}
+		if body.Error.Code != code {
+			t.Fatalf("expected error code %q, got %+v", code, body)
+		}
+		wantMessage := map[string]string{
+			"method_not_allowed":       "method not allowed",
+			"not_found":                "route not found",
+			"player_already_connected": "player already connected",
+			"player_not_found":         "player not found",
+			"room_cap_reached":         "active room cap reached",
+			"room_full":                "room full",
+			"room_has_no_players":      "room has no players",
+			"room_not_found":           "room not found",
+		}[code]
+		if body.Error.Message != wantMessage {
+			t.Fatalf("expected error message %q, got %+v", wantMessage, body)
+		}
 	}
 }

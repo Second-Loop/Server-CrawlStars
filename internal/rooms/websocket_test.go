@@ -14,6 +14,11 @@ import (
 	"nhooyr.io/websocket"
 )
 
+type snapshotMessage struct {
+	Type     string              `json:"Type"`
+	Snapshot simulation.Snapshot `json:"Snapshot"`
+}
+
 func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -97,10 +102,28 @@ func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
 	first := dialRoomPlayer(t, server.URL, room.ID, player.ID)
 	defer first.Close(websocket.StatusNormalClosure, "")
 
-	_, _, err := websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, player.ID), nil)
+	_, resp, err := websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, player.ID), nil)
 	if err == nil {
 		t.Fatal("expected duplicate player dial to fail")
 	}
+	assertWebSocketErrorResponse(t, resp, http.StatusConflict, "player_already_connected")
+}
+
+func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := Handler(store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := createPlayer(t, handler, room.ID)
+	roomID := strings.ReplaceAll(room.ID, "-", "%2D")
+	playerID := strings.ReplaceAll(player.ID, "-", "%2D")
+
+	conn := dialRoomPlayer(t, server.URL, roomID, playerID)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, player.ID)
 }
 
 func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
@@ -1042,6 +1065,9 @@ func assertWebSocketErrorResponse(t *testing.T, resp *http.Response, status int,
 	if resp.StatusCode != status {
 		t.Fatalf("expected websocket response status %d, got %d", status, resp.StatusCode)
 	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected websocket application/json content type, got %q", got)
+	}
 	var body errorResponse
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1052,5 +1078,13 @@ func assertWebSocketErrorResponse(t *testing.T, resp *http.Response, status int,
 	}
 	if body.Error.Code != code {
 		t.Fatalf("expected websocket error code %q, got %+v", code, body.Error)
+	}
+	wantMessage := map[string]string{
+		"player_already_connected": "player already connected",
+		"player_not_found":         "player not found",
+		"room_not_found":           "room not found",
+	}[code]
+	if body.Error.Message != wantMessage {
+		t.Fatalf("expected websocket error message %q, got %+v", wantMessage, body.Error)
 	}
 }
