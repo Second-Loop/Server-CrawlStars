@@ -477,7 +477,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 
 func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T) {
 	fakeClock := newFakeClock()
-	store := NewStoreWithClock(5, fakeClock)
+	store := newStore(5, fakeClock, StoreConfig{GameConfig: fastRechargeGameConfig()})
 	handler := Handler(store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -547,7 +547,10 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 
 func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 	fakeClock := newFakeClock()
-	store := newStore(5, fakeClock, StoreConfig{Map: verticalDuelMap()})
+	store := newStore(5, fakeClock, StoreConfig{
+		Map:        verticalDuelMap(),
+		GameConfig: fastRechargeGameConfig(),
+	})
 	handler := Handler(store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -582,7 +585,10 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 
 func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 	fakeClock := newFakeClock()
-	store := newStore(5, fakeClock, StoreConfig{Map: verticalDuelMap()})
+	store := newStore(5, fakeClock, StoreConfig{
+		Map:        verticalDuelMap(),
+		GameConfig: fastRechargeGameConfig(),
+	})
 	handler := Handler(store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -629,6 +635,12 @@ type fakeClock struct {
 
 func newFakeClock() *fakeClock {
 	return newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
+}
+
+func fastRechargeGameConfig() simulation.GameConfig {
+	config := simulation.StaticGameConfig()
+	config.Player.Types[0].AttackRechargeTicks = 1
+	return config
 }
 
 func newFakeClockAt(now time.Time) *fakeClock {

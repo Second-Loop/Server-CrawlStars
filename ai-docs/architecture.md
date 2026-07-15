@@ -30,7 +30,7 @@ internal/simulation
   transport-independent gameplay core
   State.Step(inputs) -> Snapshot
   server runtime game config와 mode/team/spawn assignment model
-  map, movement, collision, projectile, hit, HP/death rule
+  map, input 검증, movement, collision, projectile, attack charge, hit, HP/death rule
   default map fixture loader
 ```
 
@@ -69,6 +69,7 @@ State.Step(inputs []InputCommand) Snapshot
 - `TickRate = 30`
 - `TileSize = 1.2`
 - player speed/radius/HP = `2`, `0.5`, `100`
+- player normal attack charge/recharge = `4`, `30 ticks`
 - projectile speed/damage/radius = `13`, `10`, `0.3`
 - default map source = server binary가 embed한 `server-config/game-config.json`의 `map`
 - config load/validation failure fallback = `StaticGameConfig()`의 5x5 static map, max players `6`
@@ -78,6 +79,7 @@ State.Step(inputs []InputCommand) Snapshot
 Movement:
 
 - `MoveDir * Speed * TickDuration`으로 이동합니다.
+- 유한한 `MoveDir`의 크기가 `1` 이하면 그대로 보존하고, `1`보다 크면 unit vector로 clamp합니다.
 - X축과 Y축을 분리해 wall collision을 검사합니다.
 - wall rectangle에 닿거나 map 밖으로 나가면 해당 axis movement를 무시합니다.
 - non-finite input은 무시합니다.
@@ -85,7 +87,10 @@ Movement:
 
 Attack/projectile:
 
-- `PressedAttack = true`이고 `AttackDir`가 zero가 아니면 projectile을 만듭니다.
+- zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화합니다.
+- player는 4 attack charge로 시작하고, 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다.
+- `PressedAttack = true`, 정규화한 `AttackDir != zero`, 남은 charge가 모두 충족될 때만 charge 1개를 소비하고 projectile을 만듭니다.
+- snapshot의 `PressedAttack`은 그 tick에 서버가 공격을 승인했을 때만 `true`입니다.
 - 새 projectile은 이동 후 player 위치에서 생성됩니다.
 - 기존 projectile은 tick마다 `Dir * Speed * TickDuration`으로 이동합니다.
 - wall 또는 boundary에 닿으면 `IsDestroyed = true`가 됩니다.
@@ -97,6 +102,7 @@ Hit/death:
 - hit projectile은 destroyed가 됩니다.
 - target HP는 projectile damage만큼 감소합니다.
 - HP가 0 이하가 되면 `HP = 0`, `IsDead = true`입니다.
+- projectile 이동에서 먼저 사망한 player의 같은 tick input은 position, direction, projectile을 바꾸지 않으며 `PressedAttack = false`입니다.
 - respawn, score는 아직 없습니다.
 
 ## Room과 WebSocket
@@ -170,4 +176,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - respawn, score
 - bot replacement
 
-Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, damage, active mode/team rules, map을 담습니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, active mode/team rules, map을 담습니다. Attack charge 상태는 `simulation.State` 내부에만 있고 public snapshot schema는 바뀌지 않습니다.

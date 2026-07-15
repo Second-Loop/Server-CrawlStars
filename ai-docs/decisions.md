@@ -309,3 +309,20 @@ Spawn은 map의 `TileSpawnPoint(2)`를 tile scan/join 순서로 먼저 사용합
 - Simulation package는 계속 `Step(inputs) -> Snapshot`만 담당합니다.
 - WebSocket GameEnd schema와 AsyncAPI contract는 바뀌지 않습니다.
 - 동시 사망은 계속 양쪽 `Draw`입니다.
+
+## ADR-0022: SL-81 일반 공격 Budget과 방향 검증은 Simulation State가 소유
+
+상태: 승인됨
+
+맥락: `State.Step`은 NaN/Inf만 거르고 input vector 크기를 그대로 신뢰했습니다. 그래서 큰 `MoveDir`로 이동 속도를 키우거나 큰 `AttackDir`로 projectile 속도를 바꿀 수 있었고, `PressedAttack`을 매 tick 보내면 제한 없이 공격할 수 있었습니다. 기존 projectile 이동에서 먼저 사망한 player도 같은 tick의 input을 적용할 수 있었습니다.
+
+결정: `internal/simulation` 경계에서 유한한 `MoveDir`은 크기 `1`을 넘을 때만 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 unit vector로 정규화합니다. Player별 일반 공격 상태는 private `attackState`로 `State` 안에 두며, server runtime player config의 `maxAttackCharges = 4`, `attackRechargeTicks = 30`을 사용합니다. 최대치보다 적을 때만 recharge를 진행하고, 유효한 공격 요청이 남은 charge를 소비해 projectile을 만든 경우에만 snapshot `PressedAttack = true`로 기록합니다. 사망한 player input은 state mutation 전에 거부합니다.
+
+Attack charge 설정과 진행도는 server-only입니다. `client-config/game-config.json`, `InputCommand`, `PlayerData`, `ProjectileData`, `Snapshot`에는 field를 추가하지 않습니다.
+
+결과:
+
+- 과대 이동과 조준 vector가 server simulation 결과를 증폭하지 못합니다.
+- 기본 player는 4회 연속 공격할 수 있고, 30 tick마다 최대 4까지 1 charge를 회복합니다.
+- Zero 방향, 소진된 charge, dead player input은 projectile을 만들지 않으며 snapshot `PressedAttack`도 `false`입니다.
+- `State.Step(inputs) -> Snapshot` transport boundary와 REST/WebSocket schema는 그대로 유지됩니다.

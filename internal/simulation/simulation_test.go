@@ -315,9 +315,11 @@ func TestStepKeepsPlayerPositionWhenMovementHitsWall(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
 }
 
-func TestStepAppliesUnblockedAxisWhenOtherAxisHitsWall(t *testing.T) {
+func TestStepClampsDiagonalMovementWhenOtherAxisHitsWall(t *testing.T) {
+	component := 1 / math.Sqrt(2)
+	stepDistance := DefaultPlayerSpeed * TickDuration * component
 	start := Vector2{
-		X: StaticMapFixture().WorldPos(0, 2).X + TileSize/2 + DefaultPlayerRadius + DefaultPlayerSpeed*TickDuration,
+		X: StaticMapFixture().WorldPos(0, 2).X + TileSize/2 + DefaultPlayerRadius + stepDistance,
 		Y: StaticMapFixture().WorldPos(1, 2).Y,
 	}
 	state := NewStateWithConfig([]PlayerData{
@@ -335,7 +337,7 @@ func TestStepAppliesUnblockedAxisWhenOtherAxisHitsWall(t *testing.T) {
 		{PlayerID: PlayerID("red-1"), MoveDir: Vector2{X: -1, Y: 1}},
 	})
 
-	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, Vector2{X: start.X, Y: start.Y + DefaultPlayerSpeed*TickDuration})
+	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, Vector2{X: start.X, Y: start.Y + stepDistance})
 }
 
 func TestStepAllowsMovementWhenPlayerCircleStaysOutsideWall(t *testing.T) {
@@ -405,6 +407,145 @@ func TestStepKeepsPlayerPositionWhenPlayerCircleOverlapsWall(t *testing.T) {
 	})
 
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
+}
+
+func TestStepClampsOversizedMovementDirection(t *testing.T) {
+	oversizedState := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	unitState := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	oversized := oversizedState.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  Vector2{X: 100},
+	}})
+	unit := unitState.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  Vector2{X: 1},
+	}})
+
+	assertVector(t, "clamped position", oversized.Players[0].Pos, unit.Players[0].Pos)
+	assertVector(t, "clamped movement direction", oversized.Players[0].MoveDir, unit.Players[0].MoveDir)
+}
+
+func TestStepClampsDiagonalMovementDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  Vector2{X: 1, Y: 1},
+	}})
+
+	component := 1 / math.Sqrt(2)
+	wantDirection := Vector2{X: component, Y: component}
+	wantPosition := Vector2{
+		X: DefaultPlayerSpeed * TickDuration * component,
+		Y: DefaultPlayerSpeed * TickDuration * component,
+	}
+	assertVector(t, "diagonal movement direction", snapshot.Players[0].MoveDir, wantDirection)
+	assertVector(t, "diagonal position", snapshot.Players[0].Pos, wantPosition)
+}
+
+func TestStepClampsExtremeFiniteMovementDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  Vector2{X: math.MaxFloat64, Y: math.MaxFloat64},
+	}})
+
+	component := 1 / math.Sqrt(2)
+	wantDirection := Vector2{X: component, Y: component}
+	wantPosition := Vector2{
+		X: DefaultPlayerSpeed * TickDuration * component,
+		Y: DefaultPlayerSpeed * TickDuration * component,
+	}
+	assertVector(t, "extreme finite movement direction", snapshot.Players[0].MoveDir, wantDirection)
+	assertVector(t, "extreme finite position", snapshot.Players[0].Pos, wantPosition)
+}
+
+func TestStepClampPreservesAnalogMovementDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	direction := Vector2{X: 0.25}
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"),
+		MoveDir:  direction,
+	}})
+
+	assertVector(t, "analog movement direction", snapshot.Players[0].MoveDir, direction)
+	assertVector(t, "analog position", snapshot.Players[0].Pos, Vector2{
+		X: DefaultPlayerSpeed * TickDuration * direction.X,
+	})
+}
+
+func TestStepNormalizesOversizedAttackDirection(t *testing.T) {
+	oversizedState := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	unitState := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	oversized := oversizedState.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		AttackDir:     Vector2{Y: 50},
+		PressedAttack: true,
+	}})
+	unit := unitState.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		AttackDir:     Vector2{Y: 1},
+		PressedAttack: true,
+	}})
+
+	assertVector(t, "normalized attack direction", oversized.Players[0].AttackDir, unit.Players[0].AttackDir)
+	assertVector(t, "normalized projectile direction", oversized.Projectiles[0].Dir, unit.Projectiles[0].Dir)
+}
+
+func TestStepNormalizesExtremeFiniteAttackDirection(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		AttackDir:     Vector2{X: math.MaxFloat64, Y: math.MaxFloat64},
+		PressedAttack: true,
+	}})
+
+	component := 1 / math.Sqrt(2)
+	wantDirection := Vector2{X: component, Y: component}
+	assertVector(t, "extreme finite attack direction", snapshot.Players[0].AttackDir, wantDirection)
+	if len(snapshot.Projectiles) != 1 {
+		t.Fatalf("expected extreme finite attack direction to create 1 projectile, got %d", len(snapshot.Projectiles))
+	}
+	assertVector(t, "extreme finite projectile direction", snapshot.Projectiles[0].Dir, wantDirection)
+}
+
+func TestStepDeadPlayerInputIsIgnoredAfterProjectileHit(t *testing.T) {
+	shooterPosition := Vector2{}
+	targetPosition := Vector2{X: DefaultProjectileSpeed * TickDuration}
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed, Pos: shooterPosition},
+		{ID: PlayerID("blue-1"), Team: TeamBlue, Pos: targetPosition, HP: DefaultProjectileDamage},
+	})
+
+	state.Step([]InputCommand{
+		{PlayerID: PlayerID("red-1"), AttackDir: Vector2{X: 1}, PressedAttack: true},
+		{PlayerID: PlayerID("blue-1"), AttackDir: Vector2{X: 1}, PressedAttack: true},
+	})
+	snapshot := state.Step([]InputCommand{{
+		PlayerID:      PlayerID("blue-1"),
+		MoveDir:       Vector2{Y: 1},
+		AttackDir:     Vector2{X: -1},
+		PressedAttack: true,
+	}})
+
+	target := snapshot.Players[1]
+	if !target.IsDead || target.HP != 0 {
+		t.Fatalf("expected target to be dead with zero HP, got HP=%f IsDead=%t", target.HP, target.IsDead)
+	}
+	assertVector(t, "dead player position", target.Pos, targetPosition)
+	assertVector(t, "dead player movement direction", target.MoveDir, Vector2{})
+	assertVector(t, "dead player attack direction", target.AttackDir, Vector2{X: 1})
+	if target.PressedAttack {
+		t.Fatal("expected dead player PressedAttack to be false")
+	}
+	if got := len(snapshot.Projectiles); got != 2 {
+		t.Fatalf("expected dead input to create no projectile, got %d projectiles", got)
+	}
 }
 
 func TestStepIgnoresNonFiniteMovementInput(t *testing.T) {
@@ -489,6 +630,116 @@ func TestStepDoesNotCreateProjectileWhenAttackIsNotPressed(t *testing.T) {
 
 	if len(snapshot.Projectiles) != 0 {
 		t.Fatalf("expected no projectiles, got %d", len(snapshot.Projectiles))
+	}
+}
+
+func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	for attack := 0; attack < 4; attack++ {
+		snapshot := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+		if !snapshot.Players[0].PressedAttack {
+			t.Fatalf("expected attack %d to be accepted", attack+1)
+		}
+	}
+	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+
+	if got := len(exhausted.Projectiles); got != 4 {
+		t.Fatalf("expected exhausted fifth attack to be ignored, got %d projectiles", got)
+	}
+	if exhausted.Players[0].PressedAttack {
+		t.Fatal("expected exhausted fifth attack to leave PressedAttack false")
+	}
+}
+
+func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
+	gameConfig := StaticGameConfig()
+	gameConfig.Player.Types[0].MaxAttackCharges = 1
+	gameConfig.Map = MapData{}
+	state := NewStateWithConfig([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}}, Config{Game: gameConfig})
+
+	state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	for tick := 0; tick < 28; tick++ {
+		state.Step(nil)
+	}
+	notYetRecharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(notYetRecharged.Projectiles); got != 1 {
+		t.Fatalf("expected no recharge before 30 ticks, got %d projectiles", got)
+	}
+	if notYetRecharged.Players[0].PressedAttack {
+		t.Fatal("expected attack before recharge completion to be ignored")
+	}
+
+	recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(recharged.Projectiles); got != 2 {
+		t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
+	}
+	if !recharged.Players[0].PressedAttack {
+		t.Fatal("expected attack after recharge completion to be accepted")
+	}
+}
+
+func TestStepAttackChargeDoesNotAccumulateAboveMaximum(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	for tick := 0; tick < 120; tick++ {
+		state.Step(nil)
+	}
+
+	for attack := 0; attack < 5; attack++ {
+		state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	}
+	snapshot := state.Step(nil)
+
+	if got := len(snapshot.Projectiles); got != 4 {
+		t.Fatalf("expected charge capacity to remain capped at 4, got %d projectiles", got)
+	}
+}
+
+func TestStepZeroDirectionDoesNotConsumeAttackCharge(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+
+	zeroDirection := state.Step([]InputCommand{{
+		PlayerID:      PlayerID("red-1"),
+		PressedAttack: true,
+	}})
+	if zeroDirection.Players[0].PressedAttack {
+		t.Fatal("expected zero attack direction to leave PressedAttack false")
+	}
+	if got := len(zeroDirection.Projectiles); got != 0 {
+		t.Fatalf("expected zero attack direction to create no projectile, got %d", got)
+	}
+
+	for attack := 0; attack < 4; attack++ {
+		state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	}
+	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+	if got := len(exhausted.Projectiles); got != 4 {
+		t.Fatalf("expected zero direction to consume no charge, got %d projectiles", got)
+	}
+}
+
+func TestStepKeepsAttackChargesSeparatePerPlayer(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed},
+		{ID: PlayerID("blue-1"), Team: TeamBlue},
+	})
+
+	for attack := 0; attack < 4; attack++ {
+		state.Step([]InputCommand{
+			attackInput(PlayerID("red-1")),
+			attackInput(PlayerID("blue-1")),
+		})
+	}
+	exhausted := state.Step([]InputCommand{
+		attackInput(PlayerID("red-1")),
+		attackInput(PlayerID("blue-1")),
+	})
+
+	if got := len(exhausted.Projectiles); got != 8 {
+		t.Fatalf("expected two independent four-charge budgets, got %d projectiles", got)
+	}
+	if exhausted.Players[0].PressedAttack || exhausted.Players[1].PressedAttack {
+		t.Fatal("expected both exhausted attacks to leave PressedAttack false")
 	}
 }
 
@@ -823,5 +1074,13 @@ func assertVector(t *testing.T, label string, got Vector2, want Vector2) {
 
 	if math.Abs(got.X-want.X) > positionEpsilon || math.Abs(got.Y-want.Y) > positionEpsilon {
 		t.Fatalf("expected %s %+v, got %+v", label, want, got)
+	}
+}
+
+func attackInput(playerID PlayerID) InputCommand {
+	return InputCommand{
+		PlayerID:      playerID,
+		AttackDir:     Vector2{X: 1},
+		PressedAttack: true,
 	}
 }

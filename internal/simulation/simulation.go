@@ -98,6 +98,11 @@ type Config struct {
 	Game GameConfig
 }
 
+type attackState struct {
+	charges       int
+	rechargeTicks int
+}
+
 type State struct {
 	tick              Tick
 	players           []PlayerData
@@ -105,6 +110,7 @@ type State struct {
 	nextProjectileSeq uint64
 	gameMap           MapData
 	gameConfig        GameConfig
+	attackStates      map[PlayerID]attackState
 }
 
 func NewState(players []PlayerData) *State {
@@ -113,14 +119,25 @@ func NewState(players []PlayerData) *State {
 
 func NewStateWithConfig(players []PlayerData, config Config) *State {
 	gameConfig := resolveStateGameConfig(config)
+	normalizedPlayers := normalizePlayersWithConfig(players, gameConfig)
+	attackStates := make(map[PlayerID]attackState, len(normalizedPlayers))
+	maxAttackCharges := gameConfig.DefaultPlayerType().MaxAttackCharges
+	for _, player := range normalizedPlayers {
+		attackStates[player.ID] = attackState{charges: maxAttackCharges}
+	}
 	return &State{
-		players:    normalizePlayersWithConfig(players, gameConfig),
-		gameMap:    gameConfig.Map,
-		gameConfig: gameConfig,
+		players:      normalizedPlayers,
+		gameMap:      gameConfig.Map,
+		gameConfig:   gameConfig,
+		attackStates: attackStates,
 	}
 }
 
 func (s *State) Step(inputs []InputCommand) Snapshot {
+	for i := range s.players {
+		s.players[i].PressedAttack = false
+	}
+	s.rechargeAttackCharges()
 	s.moveProjectiles()
 
 	for _, input := range inputs {
@@ -218,14 +235,18 @@ func (s *State) applyInput(input InputCommand) {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
+		if s.players[i].IsDead {
+			return
+		}
 
-		s.players[i].MoveDir = input.MoveDir
-		s.players[i].AttackDir = input.AttackDir
-		s.players[i].PressedAttack = input.PressedAttack
+		moveDir := clampDirection(input.MoveDir)
+		attackDir := normalizeDirection(input.AttackDir)
+		s.players[i].MoveDir = moveDir
+		s.players[i].AttackDir = attackDir
 
 		movement := Vector2{
-			X: s.players[i].Speed * s.tickDuration() * input.MoveDir.X,
-			Y: s.players[i].Speed * s.tickDuration() * input.MoveDir.Y,
+			X: s.players[i].Speed * s.tickDuration() * moveDir.X,
+			Y: s.players[i].Speed * s.tickDuration() * moveDir.Y,
 		}
 
 		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
@@ -237,11 +258,46 @@ func (s *State) applyInput(input InputCommand) {
 		if !s.collidesWithWall(nextY, s.players[i].Radius) {
 			s.players[i].Pos = nextY
 		}
-		if input.PressedAttack && input.AttackDir != (Vector2{}) {
+		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
+			s.players[i].PressedAttack = true
 			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
 		}
 		return
 	}
+}
+
+func (s *State) rechargeAttackCharges() {
+	playerConfig := s.gameConfig.DefaultPlayerType()
+	for playerID, state := range s.attackStates {
+		if state.charges >= playerConfig.MaxAttackCharges {
+			state.charges = playerConfig.MaxAttackCharges
+			state.rechargeTicks = 0
+			s.attackStates[playerID] = state
+			continue
+		}
+
+		state.rechargeTicks++
+		restored := state.rechargeTicks / playerConfig.AttackRechargeTicks
+		if restored > 0 {
+			state.charges += restored
+			state.rechargeTicks %= playerConfig.AttackRechargeTicks
+		}
+		if state.charges >= playerConfig.MaxAttackCharges {
+			state.charges = playerConfig.MaxAttackCharges
+			state.rechargeTicks = 0
+		}
+		s.attackStates[playerID] = state
+	}
+}
+
+func (s *State) consumeAttackCharge(playerID PlayerID) bool {
+	state, ok := s.attackStates[playerID]
+	if !ok || state.charges <= 0 {
+		return false
+	}
+	state.charges--
+	s.attackStates[playerID] = state
+	return true
 }
 
 func (s *State) moveProjectiles() {
@@ -387,6 +443,25 @@ func cloneTiles(tiles [][]TileType) [][]TileType {
 
 func isFinite(vector Vector2) bool {
 	return !math.IsNaN(vector.X) && !math.IsNaN(vector.Y) && !math.IsInf(vector.X, 0) && !math.IsInf(vector.Y, 0)
+}
+
+func clampDirection(direction Vector2) Vector2 {
+	maxComponent := math.Max(math.Abs(direction.X), math.Abs(direction.Y))
+	if maxComponent <= 1 && math.Hypot(direction.X, direction.Y) <= 1 {
+		return direction
+	}
+	return normalizeDirection(direction)
+}
+
+func normalizeDirection(direction Vector2) Vector2 {
+	maxComponent := math.Max(math.Abs(direction.X), math.Abs(direction.Y))
+	if maxComponent == 0 {
+		return direction
+	}
+
+	scaled := Vector2{X: direction.X / maxComponent, Y: direction.Y / maxComponent}
+	scaledMagnitude := math.Hypot(scaled.X, scaled.Y)
+	return Vector2{X: scaled.X / scaledMagnitude, Y: scaled.Y / scaledMagnitude}
 }
 
 func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool {

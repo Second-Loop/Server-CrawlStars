@@ -63,6 +63,8 @@ Input field는 Unity prototype 이름을 따릅니다.
 }
 ```
 
+서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Player별 attack budget은 server-only이며 기본 4 charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 사망한 player의 input과 zero 방향 또는 소진된 charge의 공격 요청은 거부합니다.
+
 Server message wrapper:
 
 ```json
@@ -76,6 +78,8 @@ Server message wrapper:
   }
 }
 ```
+
+Snapshot의 `Players[].PressedAttack`은 input echo가 아니라 방향, 생존 상태, 남은 charge를 검증한 뒤 서버가 해당 tick의 공격을 승인했는지 나타내는 transient 결과입니다.
 
 Ready event:
 
@@ -100,6 +104,8 @@ Ready event:
   ]
 }
 ```
+
+Ready 예시는 간결함을 위해 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며, spawn은 `TileSpawnPoint(2)` tile에서 발급됩니다.
 
 Match ready ACK:
 
