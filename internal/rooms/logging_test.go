@@ -54,7 +54,7 @@ func TestRoomCreatedWaitsForRegistryInsertionAndCredentialSuccess(t *testing.T) 
 		store := NewStoreWithConfig(5, StoreConfig{Random: random, Logger: jsonTestLogger(logs)})
 		t.Cleanup(store.Close)
 
-		if _, err := store.joinMatchmaking(); err == nil {
+		if _, err := store.joinMatchmaking(store.defaultGameMode()); err == nil {
 			t.Fatal("expected matchmaking credential failure")
 		}
 		assertLogEventCount(t, logs, "room_created", 0)
@@ -82,7 +82,7 @@ func TestRoomCreatedWaitsForRegistryInsertionAndCredentialSuccess(t *testing.T) 
 		store = NewStoreWithConfig(5, StoreConfig{Logger: slog.New(handler)})
 		t.Cleanup(store.Close)
 
-		joined, err := store.joinMatchmaking()
+		joined, err := store.joinMatchmaking(store.defaultGameMode())
 		if err != nil {
 			t.Fatalf("join matchmaking: %v", err)
 		}
@@ -265,7 +265,7 @@ func TestRoomEndedAndExpiredLogOnlySuccessfulDelete(t *testing.T) {
 		})
 		original.mu.Unlock()
 		store.mu.Lock()
-		replacement := store.newRoomLocked(started.ID)
+		replacement := store.newRoomLocked(started.ID, store.gameConfig)
 		store.rooms[started.ID] = replacement
 		store.mu.Unlock()
 

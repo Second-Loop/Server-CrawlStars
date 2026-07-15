@@ -265,11 +265,11 @@ func TestHeartbeatFailureCancelsPreStartMatchOnce(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{HeartbeatInterval: 7 * time.Second})
 	t.Cleanup(store.Close)
-	first, err := store.joinMatchmaking()
+	first, err := store.joinMatchmaking(store.defaultGameMode())
 	if err != nil {
 		t.Fatalf("join first player: %v", err)
 	}
-	second, err := store.joinMatchmaking()
+	second, err := store.joinMatchmaking(store.defaultGameMode())
 	if err != nil {
 		t.Fatalf("join second player: %v", err)
 	}
@@ -1687,7 +1687,7 @@ func TestStaleSessionReaderReleasePreservesReplacementRoomSession(t *testing.T) 
 		currentSession.close(websocket.StatusNormalClosure, "test complete")
 	})
 	store.mu.Lock()
-	replacement := store.newRoomLocked(created.ID)
+	replacement := store.newRoomLocked(created.ID, store.gameConfig)
 	replacement.Players = append(replacement.Players, issued.Player)
 	replacement.clients[issued.Player.ID] = currentSession
 	store.rooms[created.ID] = replacement
@@ -2744,7 +2744,7 @@ func TestStoreStaleRoomTickPreservesReplacementPlayerID(t *testing.T) {
 	original.mu.Unlock()
 
 	store.mu.Lock()
-	replacement := store.newRoomLocked(started.ID)
+	replacement := store.newRoomLocked(started.ID, store.gameConfig)
 	replacement.Players = append(replacement.Players, player)
 	store.rooms[started.ID] = replacement
 	store.mu.Unlock()

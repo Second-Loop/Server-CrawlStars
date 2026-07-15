@@ -107,7 +107,7 @@ func TestStoreShutdownBlocksNewMutationAndDrainsInFlightMutation(t *testing.T) {
 		{
 			name: "join matchmaking",
 			assertRejected: func(t *testing.T, store *Store, _ *room, _, _ playerSessionResponse, _ *clientReservation, _ *clientSession) {
-				_, err := store.joinMatchmaking()
+				_, err := store.joinMatchmaking(store.defaultGameMode())
 				if !errors.Is(err, ErrInternal) {
 					t.Fatalf("expected join matchmaking ErrInternal, got %v", err)
 				}
@@ -651,11 +651,11 @@ func TestStoreShutdownCancellationUsesShutdownReasonForEveryPreStartSession(t *t
 		store.Close()
 	})
 
-	first, err := store.joinMatchmaking()
+	first, err := store.joinMatchmaking(store.defaultGameMode())
 	if err != nil {
 		t.Fatalf("first matchmaking join: %v", err)
 	}
-	second, err := store.joinMatchmaking()
+	second, err := store.joinMatchmaking(store.defaultGameMode())
 	if err != nil {
 		t.Fatalf("second matchmaking join: %v", err)
 	}

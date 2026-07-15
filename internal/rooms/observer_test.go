@@ -185,11 +185,11 @@ func TestActiveRoomGaugeCoversCreateDeleteExpiryCancelGameEndClearAndClose(t *te
 		observer := &recordingObserver{}
 		store := newStore(5, newFakeClock(), StoreConfig{Observer: observer})
 		t.Cleanup(store.Close)
-		first, err := store.joinMatchmaking()
+		first, err := store.joinMatchmaking(store.defaultGameMode())
 		if err != nil {
 			t.Fatalf("first matchmaking join: %v", err)
 		}
-		if _, err := store.joinMatchmaking(); err != nil {
+		if _, err := store.joinMatchmaking(store.defaultGameMode()); err != nil {
 			t.Fatalf("second matchmaking join: %v", err)
 		}
 		reservation, err := store.reserveClient(first.Room.ID, first.Player.ID, []string{first.SessionToken})
@@ -430,7 +430,7 @@ func TestConnectedClientGaugeCoversAttachFailureReconnectDetachAndStoreClose(t *
 		clock.Advance(defaultHardRoomLifetime)
 		const staleSnapshotKey = "observation-stale-room"
 		store.mu.Lock()
-		replacement := store.newRoomLocked(created.ID)
+		replacement := store.newRoomLocked(created.ID, store.gameConfig)
 		store.rooms[created.ID] = replacement
 		store.rooms[staleSnapshotKey] = original
 		store.mu.Unlock()

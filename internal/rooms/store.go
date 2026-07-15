@@ -65,11 +65,12 @@ type StoreConfig struct {
 }
 
 // room owns synchronization for one room independently of the Store registry.
-// ID is immutable. mu protects every other field, including removed and all
-// gameplay, client, countdown, and resource state.
+// ID and gameConfig are immutable. mu protects every other field, including
+// removed and all gameplay, client, countdown, and resource state.
 type room struct {
-	ID string
-	mu sync.Mutex
+	ID         string
+	gameConfig simulation.GameConfig
+	mu         sync.Mutex
 
 	removed         bool
 	Status          RoomStatus
@@ -250,7 +251,7 @@ func (s *Store) createRoomOnce() (roomResponse, error) {
 		s.mu.Unlock()
 		return roomResponse{}, err
 	}
-	room := s.newRoomLocked(roomID)
+	room := s.newRoomLocked(roomID, s.gameConfig)
 	response := room.toResponse(s.gameMap)
 	s.rooms[room.ID] = room
 	transition := s.observation.activeRoomsDelta(1)
@@ -446,16 +447,21 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 	return issued, nil
 }
 
-func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
+func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error) {
 	if !s.beginMutation() {
 		return matchmakingJoinResponse{}, ErrInternal
 	}
 	defer s.endMutation()
+	selectedConfig, err := s.gameConfig.SelectMode(gameMode)
+	if err != nil {
+		return matchmakingJoinResponse{}, ErrInvalidGameMode
+	}
 
 	var credentials *playerCredentials
 	for _, room := range s.registeredRooms() {
 		room.mu.Lock()
-		canJoin := room.canAcceptMatchmakingLocked(s.debugRoomCapacity(), s.matchCapacity())
+		canJoin := room.gameConfig.SelectedMode.ID == selectedConfig.SelectedMode.ID &&
+			room.canAcceptMatchmakingLocked(s.debugRoomCapacity())
 		room.mu.Unlock()
 		if !canJoin {
 			continue
@@ -472,10 +478,10 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 		}
 	}
 
-	response, err := s.createMatchmakingRoom(credentials)
+	response, err := s.createMatchmakingRoom(credentials, selectedConfig)
 	if errors.Is(err, ErrActiveRoomCapReached) {
 		s.cleanupExpired(s.clock.Now())
-		response, err = s.createMatchmakingRoom(credentials)
+		response, err = s.createMatchmakingRoom(credentials, selectedConfig)
 	}
 	if err != nil && credentials != nil {
 		s.releasePlayerID(credentials.id)
@@ -486,7 +492,7 @@ func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
 func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, bool) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if !room.canAcceptMatchmakingLocked(s.debugRoomCapacity(), s.matchCapacity()) {
+	if !room.canAcceptMatchmakingLocked(s.debugRoomCapacity()) {
 		return matchmakingJoinResponse{}, false
 	}
 
@@ -495,7 +501,7 @@ func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials
 	return matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued), true
 }
 
-func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmakingJoinResponse, error) {
+func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig simulation.GameConfig) (matchmakingJoinResponse, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -519,7 +525,7 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmaki
 		credentials = &issued
 	}
 
-	room := s.newRoomLocked(roomID)
+	room := s.newRoomLocked(roomID, gameConfig)
 	issued := s.addPlayerLocked(room, *credentials)
 	s.markRoomMatchedIfFullLocked(room)
 	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
@@ -533,7 +539,7 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmaki
 }
 
 func (s *Store) markRoomMatchedIfFullLocked(room *room) {
-	if len(room.Players) != s.matchCapacity() {
+	if len(room.Players) != room.gameConfig.MatchPlayerCount() {
 		return
 	}
 	room.matchStatus = MatchStatusMatched
@@ -543,6 +549,7 @@ func (s *Store) markRoomMatchedIfFullLocked(room *room) {
 
 func matchmakingJoinResponseFrom(room roomResponse, issued playerSessionResponse) matchmakingJoinResponse {
 	return matchmakingJoinResponse{
+		GameMode:      room.GameMode,
 		Room:          room,
 		Player:        issued.Player,
 		SessionToken:  issued.SessionToken,
@@ -550,12 +557,12 @@ func matchmakingJoinResponseFrom(room roomResponse, issued playerSessionResponse
 	}
 }
 
-func (r *room) canAcceptMatchmakingLocked(debugCapacity int, matchCapacity int) bool {
+func (r *room) canAcceptMatchmakingLocked(debugCapacity int) bool {
 	return !r.removed &&
 		r.Status == RoomStatusWaiting &&
 		r.matchStatus == "" &&
 		len(r.Players) < debugCapacity &&
-		len(r.Players) < matchCapacity
+		len(r.Players) < r.gameConfig.MatchPlayerCount()
 }
 
 func (s *Store) debugRoomCapacity() int {
@@ -564,6 +571,10 @@ func (s *Store) debugRoomCapacity() int {
 
 func (s *Store) matchCapacity() int {
 	return s.gameConfig.MatchPlayerCount()
+}
+
+func (s *Store) defaultGameMode() string {
+	return s.gameConfig.ModeCatalog.Default
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
@@ -650,10 +661,11 @@ func boundedWebSocketLogAttrs(attrs []any, allowedKeys map[string]bool, allowedC
 	return bounded
 }
 
-func (s *Store) newRoomLocked(roomID string) *room {
+func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *room {
 	now := s.clock.Now()
 	room := &room{
 		ID:             roomID,
+		gameConfig:     gameConfig,
 		Status:         RoomStatusWaiting,
 		sessions:       make(map[string]playerSession),
 		pendingInputs:  make(map[string]simulation.InputCommand),
@@ -714,7 +726,11 @@ func (s *Store) releasePlayerIDs(playerIDs []string) {
 
 func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playerSessionResponse {
 	playerIndex := len(room.Players)
-	team, slot := s.playerAssignmentForIndex(playerIndex)
+	team, slot, ok := room.gameConfig.TeamForPlayerIndex(playerIndex)
+	if !ok {
+		team = simulation.TeamRed
+		slot = playerIndex
+	}
 	player := playerResponse{
 		ID:   credentials.id,
 		Team: string(team),
@@ -786,14 +802,6 @@ func (s *Store) startRoomLocked(room *room) bool {
 		}
 	}
 	return started
-}
-
-func (s *Store) playerAssignmentForIndex(playerIndex int) (simulation.Team, int) {
-	team, slot, ok := s.gameConfig.TeamForPlayerIndex(playerIndex)
-	if !ok {
-		return simulation.TeamRed, playerIndex
-	}
-	return team, slot
 }
 
 // hasPlayer requires r.mu because Players is room-owned state.

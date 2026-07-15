@@ -268,12 +268,12 @@ func TestMatchmakingRateLimitUsesDefaultBurst(t *testing.T) {
 	handler := Handler(store)
 
 	for attempt := 0; attempt < DefaultJoinBurst; attempt++ {
-		rec := matchmakingJoinRequest(handler, "198.51.100.10:1234", "", "")
+		rec := performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", "")
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected burst attempt %d to return 201, got %d", attempt+1, rec.Code)
 		}
 	}
-	assertRateLimited(t, matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "")
+	assertRateLimited(t, performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "")
 }
 
 func TestMatchmakingRateLimitReturnsJSONAndRetryAfter(t *testing.T) {
@@ -287,11 +287,11 @@ func TestMatchmakingRateLimitReturnsJSONAndRetryAfter(t *testing.T) {
 		t.Fatalf("create handler: %v", err)
 	}
 
-	if rec := matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""); rec.Code != http.StatusCreated {
+	if rec := performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""); rec.Code != http.StatusCreated {
 		t.Fatalf("expected first request to return 201, got %d", rec.Code)
 	}
 	roomCount := len(store.listRooms().Rooms)
-	assertRateLimited(t, matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "6")
+	assertRateLimited(t, performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "6")
 	if got := len(store.listRooms().Rooms); got != roomCount {
 		t.Fatalf("expected rejected join not to mutate rooms, got %d before and %d after", roomCount, got)
 	}
@@ -308,8 +308,8 @@ func TestMatchmakingRateLimitRoundsRetryAfterUpToOneSecond(t *testing.T) {
 		t.Fatalf("create handler: %v", err)
 	}
 
-	_ = matchmakingJoinRequest(handler, "198.51.100.10:1234", "", "")
-	assertRateLimited(t, matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "1")
+	_ = performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", "")
+	assertRateLimited(t, performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "1")
 }
 
 func TestMatchmakingRateLimitOnlyConsumesExactPOST(t *testing.T) {
@@ -332,10 +332,10 @@ func TestMatchmakingRateLimitOnlyConsumesExactPOST(t *testing.T) {
 			t.Fatalf("expected %s to return 405, got %d", method, rec.Code)
 		}
 	}
-	if rec := matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""); rec.Code != http.StatusCreated {
+	if rec := performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""); rec.Code != http.StatusCreated {
 		t.Fatalf("expected first POST to return 201, got %d", rec.Code)
 	}
-	assertRateLimited(t, matchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "6")
+	assertRateLimited(t, performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "", ""), "6")
 }
 
 func TestMatchmakingRateLimitUsesTrustedClientIP(t *testing.T) {
@@ -351,12 +351,12 @@ func TestMatchmakingRateLimitUsesTrustedClientIP(t *testing.T) {
 	}
 
 	for _, forwarded := range []string{"203.0.113.1", "203.0.113.2"} {
-		rec := matchmakingJoinRequest(handler, "192.0.2.10:1234", forwarded, "")
+		rec := performMatchmakingJoinRequest(handler, "192.0.2.10:1234", forwarded, "")
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected isolated forwarded client to return 201, got %d", rec.Code)
 		}
 	}
-	assertRateLimited(t, matchmakingJoinRequest(handler, "192.0.2.10:1234", "203.0.113.1", ""), "6")
+	assertRateLimited(t, performMatchmakingJoinRequest(handler, "192.0.2.10:1234", "203.0.113.1", ""), "6")
 }
 
 func TestMatchmakingRateLimitCopiesTrustedProxyPrefixes(t *testing.T) {
@@ -374,7 +374,7 @@ func TestMatchmakingRateLimitCopiesTrustedProxyPrefixes(t *testing.T) {
 	prefixes[0] = netip.MustParsePrefix("198.51.100.0/24")
 
 	for _, forwarded := range []string{"203.0.113.1", "203.0.113.2"} {
-		rec := matchmakingJoinRequest(handler, "192.0.2.10:1234", forwarded, "")
+		rec := performMatchmakingJoinRequest(handler, "192.0.2.10:1234", forwarded, "")
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected copied trust boundary to isolate clients, got %d", rec.Code)
 		}
@@ -393,11 +393,11 @@ func TestMatchmakingRateLimitIgnoresUntrustedHeadersAndSharesInvalidPeers(t *tes
 			t.Fatalf("create handler: %v", err)
 		}
 
-		first := matchmakingJoinRequest(handler, "198.51.100.10:1234", "203.0.113.1", "203.0.113.2")
+		first := performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "203.0.113.1", "203.0.113.2")
 		if first.Code != http.StatusCreated {
 			t.Fatalf("expected first request to return 201, got %d", first.Code)
 		}
-		assertRateLimited(t, matchmakingJoinRequest(handler, "198.51.100.10:1234", "203.0.113.3", "203.0.113.4"), "6")
+		assertRateLimited(t, performMatchmakingJoinRequest(handler, "198.51.100.10:1234", "203.0.113.3", "203.0.113.4"), "6")
 	})
 
 	t.Run("invalid peers", func(t *testing.T) {
@@ -412,15 +412,15 @@ func TestMatchmakingRateLimitIgnoresUntrustedHeadersAndSharesInvalidPeers(t *tes
 			t.Fatalf("create handler: %v", err)
 		}
 
-		first := matchmakingJoinRequest(handler, "invalid-one", "203.0.113.1", "")
+		first := performMatchmakingJoinRequest(handler, "invalid-one", "203.0.113.1", "")
 		if first.Code != http.StatusCreated {
 			t.Fatalf("expected first invalid peer to return 201, got %d", first.Code)
 		}
-		assertRateLimited(t, matchmakingJoinRequest(handler, "invalid-two", "203.0.113.2", ""), "6")
+		assertRateLimited(t, performMatchmakingJoinRequest(handler, "invalid-two", "203.0.113.2", ""), "6")
 	})
 }
 
-func matchmakingJoinRequest(handler http.Handler, remoteAddr string, forwarded string, xff string) *httptest.ResponseRecorder {
+func performMatchmakingJoinRequest(handler http.Handler, remoteAddr string, forwarded string, xff string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
 	req.RemoteAddr = remoteAddr
 	if forwarded != "" {

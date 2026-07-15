@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -115,8 +116,20 @@ func newRouterWithDebugGuard(
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 			return
 		}
-		joined, err := store.joinMatchmaking()
+		joinRequest, err := decodeMatchmakingJoinRequest(r.Body)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", ErrInvalidRequest.Error())
+			return
+		}
+		if joinRequest.GameMode == "" {
+			joinRequest.GameMode = store.defaultGameMode()
+		}
+		joined, err := store.joinMatchmaking(joinRequest.GameMode)
+		if err != nil {
+			if errors.Is(err, ErrInvalidGameMode) {
+				writeError(w, http.StatusBadRequest, "invalid_game_mode", err.Error())
+				return
+			}
 			if errors.Is(err, ErrInternal) {
 				writeInternalError(w)
 				return
@@ -252,6 +265,23 @@ func newRouterWithDebugGuard(
 		writeRouteNotFound(w)
 	})
 	return mux
+}
+
+func decodeMatchmakingJoinRequest(body io.Reader) (matchmakingJoinRequest, error) {
+	var request matchmakingJoinRequest
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&request); err != nil {
+		if errors.Is(err, io.EOF) {
+			return request, nil
+		}
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	return request, nil
 }
 
 func requestWithDecodedPathSegments(r *http.Request) *http.Request {
