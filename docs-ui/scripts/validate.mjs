@@ -218,6 +218,36 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
   ]);
 }
+for (const marker of [
+  "duel_1v1은 2명, solo와 team은 6명",
+  "6개의 서로 다른 WebSocket connection",
+  "각 player가 보낸 ready ACK",
+  "중복 ready ACK",
+  "Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다.",
+  "Wall과 Water",
+  "Ground와 Bush",
+]) {
+  assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
+}
+const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
+assert(hasLine(asyncAPIInfo, "  version: 0.3.0"), "api/asyncapi.yaml must publish version 0.3.0");
+const modeTeamEnum = "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]";
+assert(
+  countOccurrences(asyncAPIText, modeTeamEnum) === 2,
+  "ReadyPlayer and PlayerData must expose every mode team value exactly once",
+);
+const readyEventSchema = extractYAMLSchema(asyncAPIText, "ReadyEventMessage");
+const readyPlayers = extractYAMLNamedBlock(readyEventSchema, "        Players:");
+assert(hasLine(readyPlayers, "          oneOf:"), "Ready Players must use oneOf exact-cardinality array branches");
+const exactReadyArrayBranch = /^            - type: array\n              minItems: (2|6)\n              maxItems: \1\n              items:\n                \$ref: "#\/components\/schemas\/ReadyPlayer"$/gm;
+const readyPlayerCounts = [...readyPlayers.matchAll(exactReadyArrayBranch)]
+  .map(([, count]) => Number(count))
+  .sort((left, right) => left - right);
+const readyPlayerDirectBranches = readyPlayers.match(/^            - /gm) ?? [];
+assert(
+  JSON.stringify(readyPlayerCounts) === "[2,6]" && readyPlayerDirectBranches.length === 2,
+  "Ready Players must allow only exact array cardinalities 2 or 6",
+);
 assert(
   asyncAPIText.includes("선택 mode의 required player"),
   "api/asyncapi.yaml must describe Ready using the selected mode player count",

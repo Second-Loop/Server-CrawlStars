@@ -43,7 +43,7 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 required player 수는 duel 2명, solo/team 6명이며 정원이 차면 room은 matched 상태로 잠기지만 `room.status: waiting`은 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
+`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 required player 수는 duel 2명, solo/team 6명이며 정원이 차면 room은 matched 상태로 잠기지만 public `room.status: waiting`은 Ready/start 전까지 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
 
 Join raw body가 1024 bytes를 초과하거나 JSON이 잘못되면 400 `invalid_request`, 지원하지 않는 non-empty mode면 400 `invalid_game_mode`를 반환합니다.
 
@@ -116,12 +116,18 @@ Ready event:
       "Team": "red",
       "Slot": 0,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    },
+    {
+      "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
+      "Team": "blue",
+      "Slot": 0,
+      "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
 }
 ```
 
-Ready 예시는 간결함을 위해 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며 client SL-79에서 merge된 `Map_0`과 exact grid가 같습니다. Spawn은 `TileSpawnPoint(2)` tile에서 발급됩니다.
+Ready 예시는 exact 2-player duel cardinality와 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며 client SL-79에서 merge된 `Map_0`과 exact grid가 같습니다. Spawn은 `TileSpawnPoint(2)`를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용합니다.
 
 Match ready ACK:
 
@@ -130,6 +136,14 @@ Match ready ACK:
   "Type": "ready"
 }
 ```
+
+| mode | Ready `Players` 길이 | 필요한 human ACK |
+| --- | ---: | ---: |
+| `duel_1v1` | 2 | 2 |
+| `solo` | 6 | 6 |
+| `team` | 6 | 6 |
+
+Solo는 `solo-1`부터 `solo-6`까지 각 slot 0을 사용합니다. Team은 join 순서대로 `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2`를 사용합니다. Ready spawn과 첫 gameplay snapshot position은 같은 room-local `PlayerAssignments` 결과입니다. Fallback map에서는 player collision과 같은 기준으로 Wall과 Water를 spawn candidate에서 제외하고 Ground와 Bush를 허용합니다.
 
 Countdown snapshot:
 

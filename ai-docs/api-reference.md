@@ -128,23 +128,22 @@ Retry-After: 6
 
 Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY_CIDRS`에 속하고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 신뢰합니다. Header가 없거나 malformed/multiple이면 요청을 거부하지 않고 peer IP bucket으로 fallback합니다. `X-Forwarded-For`는 항상 무시합니다. Cloudflare Tunnel loopback peer를 trust하지 않으면 public client가 하나의 loopback bucket을 공유할 수 있으므로 배포 설정은 `ai-docs/deployment.md`를 따릅니다.
 
-시뮬레이션 시작 트리거:
+시뮬레이션 시작 quorum:
 
-- `/matchmaking/join`을 한 번만 호출하면 room은 `waiting`이고 gameplay snapshot은 아직 오지 않습니다.
-- 선택 mode의 required player 수가 차면 room은 matchmaking match로 잠기고 late join 대상에서 빠집니다.
-- 모든 matched player가 WebSocket에 연결하면 `Type: "Ready"` event로 map과 player별 spawn 위치를 받습니다.
-- 모든 client가 `{"Type":"ready"}`를 보내면 countdown 시작 신호를 1번 받고, client는 fake timer를 표시합니다.
-- Server는 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 보내고 30Hz snapshot을 시작합니다.
-- start 전 WebSocket close는 match cancel로 room을 제거합니다.
-- 1명으로 디버그할 때는 `POST /rooms/{roomID}/start`를 호출하면 됩니다.
+| gameMode | Join 정원 | WebSocket | 서로 다른 Ready ACK | team/slot |
+| --- | ---: | ---: | ---: | --- |
+| `duel_1v1` | 2 | 2 | 2 | `red/0`, `blue/0` |
+| `solo` | 6 | 6 | 6 | `solo-1/0`부터 `solo-6/0` |
+| `team` | 6 | 6 | 6 | `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2` |
 
-Mode별 match 정원과 team/slot은 다음과 같습니다.
-
-| gameMode | 정원 | assignment |
-| --- | ---: | --- |
-| `duel_1v1` | 2 | `red/0`, `blue/0` |
-| `solo` | 6 | `solo-1/0`부터 `solo-6/0` |
-| `team` | 6 | `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2` |
+- Required player가 모두 join해도 `room.status`는 Ready/start 전까지 `waiting`입니다.
+- Required player가 모두 WebSocket에 연결되면 모든 connection이 같은 `Type: "Ready"` event를 받습니다.
+- Ready의 `Players[].Team`, `Slot`, `SpawnPosition`은 room이 선택한 mode config의 assignment 결과입니다.
+- 다섯 Solo/Team player만 ACK한 상태에서는 countdown을 시작하지 않습니다. 여섯 번째 서로 다른 player ACK 뒤 `starting/countdown: 5`를 한 번 보냅니다.
+- 같은 player의 중복 ACK는 quorum을 늘리지 않고 countdown이나 gameplay ticker를 다시 만들지 않습니다.
+- Server는 5초를 내부에서 센 뒤 `started`를 한 번 보내고 room-local 30Hz snapshot을 시작합니다.
+- Ready timeout, reconnect grace, participant replacement, bot fill은 없습니다. Start 전 실제 WebSocket close는 match cancel입니다.
+- 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 
 ### Room debug API
 
@@ -319,10 +318,18 @@ Ready event:
       "Team": "red",
       "Slot": 0,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    },
+    {
+      "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
+      "Team": "blue",
+      "Slot": 0,
+      "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
 }
 ```
+
+이 예시는 exact 2-player duel payload입니다. Solo/Team Ready는 같은 schema에서 `Players`가 정확히 6개이며, fallback spawn은 Wall/Water를 제외하고 Ground/Bush를 허용합니다.
 
 Server snapshot:
 
