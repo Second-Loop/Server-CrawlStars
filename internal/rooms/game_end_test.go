@@ -58,7 +58,8 @@ func TestGameEndUsesRoomMode(t *testing.T) {
 		},
 	}
 	roomConfig := singleModeGameConfig(mode)
-	results := calculateGameEndResults(roomConfig, simulation.Snapshot{
+	room := &room{gameConfig: roomConfig}
+	results := room.gameEndResults(simulation.Snapshot{
 		Players: []simulation.PlayerData{
 			{ID: "custom-1"},
 			{ID: "custom-2", IsDead: true},

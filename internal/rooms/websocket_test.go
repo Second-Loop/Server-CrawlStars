@@ -2346,6 +2346,44 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 	}
 }
 
+func TestRoomSelectedModeQuorumUsesRoomConfig(t *testing.T) {
+	gameConfig, err := simulation.StaticGameConfig().SelectMode(simulation.GameModeTeam)
+	if err != nil {
+		t.Fatalf("select team mode: %v", err)
+	}
+	room := &room{
+		gameConfig:   gameConfig,
+		clients:      make(map[string]*clientSession),
+		readyPlayers: make(map[string]bool),
+	}
+
+	for index := range 2 {
+		playerID := fmt.Sprintf("player-%d", index+1)
+		room.Players = append(room.Players, playerResponse{ID: playerID})
+		room.clients[playerID] = &clientSession{conn: newFakeClientConn(false)}
+		room.readyPlayers[playerID] = true
+	}
+	if room.allMatchClientsAttached() {
+		t.Fatal("expected two attached clients not to satisfy Team room capacity")
+	}
+	if room.allMatchPlayersReady() {
+		t.Fatal("expected two Ready ACKs not to satisfy Team room capacity")
+	}
+
+	for index := 2; index < gameConfig.MatchPlayerCount(); index++ {
+		playerID := fmt.Sprintf("player-%d", index+1)
+		room.Players = append(room.Players, playerResponse{ID: playerID})
+		room.clients[playerID] = &clientSession{conn: newFakeClientConn(false)}
+		room.readyPlayers[playerID] = true
+	}
+	if !room.allMatchClientsAttached() {
+		t.Fatal("expected every Team room client to satisfy room-local capacity")
+	}
+	if !room.allMatchPlayersReady() {
+		t.Fatal("expected every Team room Ready ACK to satisfy room-local capacity")
+	}
+}
+
 func TestStartRoomUsesRoomMode(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2383,6 +2421,12 @@ func TestStartRoomUsesRoomMode(t *testing.T) {
 				t.Fatalf("select room mode %q: %v", tt.mode, err)
 			}
 			roomConfig.TickRate = 17
+			roomConfig.Player.Types = append([]simulation.PlayerTypeConfig(nil), roomConfig.Player.Types...)
+			roomPlayerHP := simulation.DefaultPlayerHP + 37
+			roomConfig.Player.Types[0].HP = roomPlayerHP
+			if store.gameConfig.DefaultPlayerType().HP == roomPlayerHP {
+				t.Fatal("expected room player HP fixture to differ from Store default")
+			}
 			players := make([]playerResponse, len(tt.want))
 			for index, want := range tt.want {
 				players[index] = playerResponse{
@@ -2417,6 +2461,9 @@ func TestStartRoomUsesRoomMode(t *testing.T) {
 				got := snapshot.Players[index]
 				if string(got.ID) != players[index].ID || string(got.Team) != want.Team || got.Slot != want.Slot {
 					t.Fatalf("expected simulation player %d to be %s/%s slot %d, got %+v", index, players[index].ID, want.Team, want.Slot, got)
+				}
+				if got.HP != roomPlayerHP {
+					t.Fatalf("expected simulation player %s HP %f from room config, got %f", got.ID, roomPlayerHP, got.HP)
 				}
 			}
 

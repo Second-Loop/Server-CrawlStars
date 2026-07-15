@@ -14,6 +14,10 @@ func (r gameEndResult) String() string {
 	return string(r)
 }
 
+func (r *room) gameEndResults(snapshot simulation.Snapshot) map[string]gameEndResult {
+	return calculateGameEndResults(r.gameConfig, snapshot)
+}
+
 func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
 	switch gameConfig.SelectedMode.ID {
 	case simulation.GameModeDuel1v1:

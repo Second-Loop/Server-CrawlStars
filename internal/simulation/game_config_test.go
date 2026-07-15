@@ -237,20 +237,35 @@ func TestSelectModeRejectsUnknownMode(t *testing.T) {
 	}
 }
 
-func TestResolveStateGameConfigPreservesSelectedRuntimeMode(t *testing.T) {
+func TestResolveGameConfigCanonicalizesSelectedRuntimeMode(t *testing.T) {
 	for _, modeID := range []string{GameModeSolo, GameModeTeam} {
 		t.Run(modeID, func(t *testing.T) {
 			selected, err := StaticGameConfig().SelectMode(modeID)
 			if err != nil {
 				t.Fatalf("select mode %q: %v", modeID, err)
 			}
-
-			resolved := resolveStateGameConfig(Config{Game: selected})
-			if resolved.SelectedMode.ID != modeID {
-				t.Fatalf("expected state config to preserve selected mode %q, got %+v", modeID, resolved.SelectedMode)
+			canonicalMode := selected.SelectedMode
+			selected.SelectedMode = GameModeConfig{
+				ID:              modeID,
+				PlayersPerMatch: 1,
+				Teams:           []TeamConfig{{Name: Team("tampered"), Size: 1}},
+				Rules: GameModeRulesConfig{
+					TeamBehavior: "tampered",
+					FriendlyFire: true,
+				},
 			}
-			if !reflect.DeepEqual(resolved.SelectedMode, selected.SelectedMode) {
-				t.Fatalf("expected canonical selected mode to remain unchanged:\n got: %+v\nwant: %+v", resolved.SelectedMode, selected.SelectedMode)
+
+			resolved, err := ResolveGameConfig(selected)
+			if err != nil {
+				t.Fatalf("resolve selected mode %q: %v", modeID, err)
+			}
+			if !reflect.DeepEqual(resolved.SelectedMode, canonicalMode) {
+				t.Fatalf("expected resolved mode to use canonical catalog entry:\n got: %+v\nwant: %+v", resolved.SelectedMode, canonicalMode)
+			}
+
+			stateResolved := resolveStateGameConfig(Config{Game: selected})
+			if !reflect.DeepEqual(stateResolved.SelectedMode, canonicalMode) {
+				t.Fatalf("expected state mode to use canonical catalog entry:\n got: %+v\nwant: %+v", stateResolved.SelectedMode, canonicalMode)
 			}
 		})
 	}
