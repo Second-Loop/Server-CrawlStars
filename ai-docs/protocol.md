@@ -151,7 +151,7 @@ Ready event:
 }
 ```
 
-예시의 map/spawn 값은 간결함을 위해 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이고, spawn은 `TileSpawnPoint(2)` tile에서 발급되므로 실제 값은 예시와 다릅니다.
+예시의 map/spawn 값은 간결함을 위해 5x5 fallback map 기준입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map이고, spawn은 `TileSpawnPoint(2)` tile에서 발급되므로 실제 값은 예시와 다릅니다.
 
 Ready ACK:
 
