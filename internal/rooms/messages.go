@@ -200,11 +200,11 @@ func (r *room) matchSnapshotMessage(status MatchStatus, countdown int) roomSnaps
 	}
 }
 
-func (r *room) readyEventDeliveries(gameConfig simulation.GameConfig) []webSocketDelivery {
+func (r *room) readyEventDeliveries() []webSocketDelivery {
 	message := readyEventMessage{
 		Type:    "Ready",
-		Map:     mapResponseFromSimulation(gameConfig.Map),
-		Players: readyEventPlayers(r.Players, gameConfig),
+		Map:     mapResponseFromSimulation(r.gameConfig.Map),
+		Players: readyEventPlayers(r.Players, r.gameConfig),
 	}
 	deliveries := make([]webSocketDelivery, 0, len(r.clients))
 	for _, session := range r.clients {

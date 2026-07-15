@@ -655,10 +655,11 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
-	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
+	matchCapacity := room.gameConfig.MatchPlayerCount()
+	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(matchCapacity) {
 		room.matchStatus = MatchStatusLoading
-		deliveries = append(deliveries, room.readyEventDeliveries(s.gameConfig)...)
-		if room.allMatchPlayersReady(s.matchCapacity()) {
+		deliveries = append(deliveries, room.readyEventDeliveries()...)
+		if room.allMatchPlayersReady(matchCapacity) {
 			s.startMatchCountdownLocked(room)
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
@@ -780,7 +781,7 @@ func (s *Store) markClientReady(roomID string, playerID string, expectedSession 
 	}
 	room.readyPlayers[playerID] = true
 	room.lastActivityAt = s.clock.Now()
-	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(s.matchCapacity()) {
+	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(room.gameConfig.MatchPlayerCount()) {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
@@ -915,7 +916,7 @@ func (s *Store) tickRoomState(room *room) {
 			snapshotSessions = append(snapshotSessions, session)
 		}
 	}
-	results := calculateGameEndResults(s.gameConfig, snapshot)
+	results := calculateGameEndResults(room.gameConfig, snapshot)
 	var playerIDs []string
 	if len(results) > 0 {
 		snapshotPayload, snapshotMarshalErr = marshalMessage(message)

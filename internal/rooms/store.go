@@ -787,10 +787,10 @@ func (s *Store) startRoomLocked(room *room) bool {
 		room.disconnectedAt = time.Time{}
 	}
 	if room.state == nil {
-		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameConfig), simulation.Config{Game: s.gameConfig})
+		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, room.gameConfig), simulation.Config{Game: room.gameConfig})
 	}
 	if room.ticker == nil {
-		roomTicker := s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
+		roomTicker := s.clock.NewTicker(time.Second / time.Duration(room.gameConfig.TickRate))
 		roomStop := make(chan struct{})
 		room.ticker = roomTicker
 		room.stop = roomStop

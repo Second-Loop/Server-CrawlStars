@@ -237,6 +237,38 @@ func TestSelectModeRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestResolveStateGameConfigPreservesSelectedRuntimeMode(t *testing.T) {
+	for _, modeID := range []string{GameModeSolo, GameModeTeam} {
+		t.Run(modeID, func(t *testing.T) {
+			selected, err := StaticGameConfig().SelectMode(modeID)
+			if err != nil {
+				t.Fatalf("select mode %q: %v", modeID, err)
+			}
+
+			resolved := resolveStateGameConfig(Config{Game: selected})
+			if resolved.SelectedMode.ID != modeID {
+				t.Fatalf("expected state config to preserve selected mode %q, got %+v", modeID, resolved.SelectedMode)
+			}
+			if !reflect.DeepEqual(resolved.SelectedMode, selected.SelectedMode) {
+				t.Fatalf("expected canonical selected mode to remain unchanged:\n got: %+v\nwant: %+v", resolved.SelectedMode, selected.SelectedMode)
+			}
+		})
+	}
+}
+
+func TestResolveGameConfigRejectsUnknownSelectedMode(t *testing.T) {
+	config := StaticGameConfig()
+	config.SelectedMode = GameModeConfig{ID: "unknown"}
+
+	_, err := ResolveGameConfig(config)
+	if err == nil {
+		t.Fatal("expected unknown selected mode to be rejected")
+	}
+	if !strings.Contains(err.Error(), `unknown game mode "unknown"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestServerGameConfigArtifactIncludesRuntimeMap(t *testing.T) {
 	config := loadServerGameConfig(t)
 	gameMap, err := ResolveMapData(config.Map)

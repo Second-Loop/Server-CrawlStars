@@ -2209,6 +2209,231 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	assertReadyPlayerSpawn(t, redReady.Players, blue.Player.ID, assignments[1].SpawnPosition)
 }
 
+func TestReadyEventUsesRoomMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want []playerResponse
+	}{
+		{
+			name: "solo",
+			mode: simulation.GameModeSolo,
+			want: []playerResponse{
+				{Team: "solo-1", Slot: 0}, {Team: "solo-2", Slot: 0},
+				{Team: "solo-3", Slot: 0}, {Team: "solo-4", Slot: 0},
+				{Team: "solo-5", Slot: 0}, {Team: "solo-6", Slot: 0},
+			},
+		},
+		{
+			name: "team",
+			mode: simulation.GameModeTeam,
+			want: []playerResponse{
+				{Team: "red", Slot: 0}, {Team: "blue", Slot: 0},
+				{Team: "red", Slot: 1}, {Team: "blue", Slot: 1},
+				{Team: "red", Slot: 2}, {Team: "blue", Slot: 2},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := newStore(5, fakeClock, StoreConfig{GameConfig: distinctDefaultGameConfig()})
+			t.Cleanup(store.Close)
+
+			joined := make([]matchmakingJoinResponse, 0, len(tt.want))
+			for range tt.want {
+				response, err := store.joinMatchmaking(tt.mode)
+				if err != nil {
+					t.Fatalf("join %s matchmaking: %v", tt.mode, err)
+				}
+				if len(joined) > 0 && response.Room.ID != joined[0].Room.ID {
+					t.Fatalf("expected %s players to share room %q, got %q", tt.mode, joined[0].Room.ID, response.Room.ID)
+				}
+				joined = append(joined, response)
+			}
+
+			room := store.lookupRoom(joined[0].Room.ID)
+			if room == nil {
+				t.Fatalf("expected matched %s room", tt.mode)
+			}
+			room.mu.Lock()
+			roomConfig := room.gameConfig
+			matchStatus := room.matchStatus
+			room.mu.Unlock()
+			if matchStatus != MatchStatusMatched {
+				t.Fatalf("expected full %s room to be matched, got %q", tt.mode, matchStatus)
+			}
+
+			connections := make([]*fakeClientConn, 0, len(joined))
+			sessions := make([]*clientSession, 0, len(joined))
+			for index, response := range joined {
+				conn := newFakeClientConn(false)
+				session := attachHeartbeatTestSession(
+					t,
+					store,
+					response.Room.ID,
+					response.Player.ID,
+					response.SessionToken,
+					conn,
+				)
+				connections = append(connections, conn)
+				sessions = append(sessions, session)
+
+				room.mu.Lock()
+				gotStatus := room.matchStatus
+				room.mu.Unlock()
+				wantStatus := MatchStatusMatched
+				if index == len(joined)-1 {
+					wantStatus = MatchStatusLoading
+				}
+				if gotStatus != wantStatus {
+					t.Fatalf("expected %s attach %d/%d to leave match %q, got %q", tt.mode, index+1, len(joined), wantStatus, gotStatus)
+				}
+			}
+
+			playerIDs := make([]simulation.PlayerID, 0, len(joined))
+			for _, response := range joined {
+				playerIDs = append(playerIDs, simulation.PlayerID(response.Player.ID))
+			}
+			assignments := simulation.PlayerAssignments(playerIDs, roomConfig)
+			for _, conn := range connections {
+				ready := readFakeReadyEventMessage(t, conn)
+				if ready.Type != "Ready" {
+					t.Fatalf("expected Ready event, got %q", ready.Type)
+				}
+				if ready.Map.Index != roomConfig.Map.Index {
+					t.Fatalf("expected room map index %d, got %d", roomConfig.Map.Index, ready.Map.Index)
+				}
+				if len(ready.Players) != len(tt.want) {
+					t.Fatalf("expected %d ready players, got %+v", len(tt.want), ready.Players)
+				}
+				for index, want := range tt.want {
+					got := ready.Players[index]
+					if got.ID != joined[index].Player.ID || got.Team != want.Team || got.Slot != want.Slot {
+						t.Fatalf("expected ready player %d to be %s/%s slot %d, got %+v", index, joined[index].Player.ID, want.Team, want.Slot, got)
+					}
+					if got.SpawnPosition != assignments[index].SpawnPosition {
+						t.Fatalf("expected ready player %s spawn %+v, got %+v", got.ID, assignments[index].SpawnPosition, got.SpawnPosition)
+					}
+				}
+			}
+
+			for index, response := range joined {
+				store.markClientReady(response.Room.ID, response.Player.ID, sessions[index])
+				room.mu.Lock()
+				gotStatus := room.matchStatus
+				gotCountdown := room.countdown
+				room.mu.Unlock()
+
+				if index < len(joined)-1 {
+					if gotStatus != MatchStatusLoading || gotCountdown != 0 {
+						t.Fatalf("expected %s ready ACK %d/%d to keep loading, got status %q countdown %d", tt.mode, index+1, len(joined), gotStatus, gotCountdown)
+					}
+					if got := fakeClock.TickerCount(time.Second); got != 0 {
+						t.Fatalf("expected no countdown ticker before room quorum, got %d", got)
+					}
+					continue
+				}
+				if gotStatus != MatchStatusStarting || gotCountdown != matchCountdownSeconds {
+					t.Fatalf("expected final %s ready ACK to start countdown %d, got status %q countdown %d", tt.mode, matchCountdownSeconds, gotStatus, gotCountdown)
+				}
+				if got := fakeClock.TickerCount(time.Second); got != 1 {
+					t.Fatalf("expected one countdown ticker at room quorum, got %d", got)
+				}
+			}
+		})
+	}
+}
+
+func TestStartRoomUsesRoomMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want []playerResponse
+	}{
+		{
+			name: "solo",
+			mode: simulation.GameModeSolo,
+			want: []playerResponse{
+				{Team: "solo-1", Slot: 0}, {Team: "solo-2", Slot: 0},
+				{Team: "solo-3", Slot: 0}, {Team: "solo-4", Slot: 0},
+				{Team: "solo-5", Slot: 0}, {Team: "solo-6", Slot: 0},
+			},
+		},
+		{
+			name: "team",
+			mode: simulation.GameModeTeam,
+			want: []playerResponse{
+				{Team: "red", Slot: 0}, {Team: "blue", Slot: 0},
+				{Team: "red", Slot: 1}, {Team: "blue", Slot: 1},
+				{Team: "red", Slot: 2}, {Team: "blue", Slot: 2},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := newStore(5, fakeClock, StoreConfig{GameConfig: distinctDefaultGameConfig()})
+			t.Cleanup(store.Close)
+
+			roomConfig, err := store.gameConfig.SelectMode(tt.mode)
+			if err != nil {
+				t.Fatalf("select room mode %q: %v", tt.mode, err)
+			}
+			roomConfig.TickRate = 17
+			players := make([]playerResponse, len(tt.want))
+			for index, want := range tt.want {
+				players[index] = playerResponse{
+					ID:   fmt.Sprintf("%s-player-%d", tt.mode, index+1),
+					Team: want.Team,
+					Slot: want.Slot,
+				}
+			}
+
+			store.mu.Lock()
+			room := store.newRoomLocked("room-"+tt.mode, roomConfig)
+			room.Players = players
+			store.rooms[room.ID] = room
+			store.mu.Unlock()
+
+			room.mu.Lock()
+			if !store.startRoomLocked(room) {
+				room.mu.Unlock()
+				t.Fatal("expected room to start")
+			}
+			state := room.state
+			room.mu.Unlock()
+			if state == nil {
+				t.Fatal("expected room start to create simulation state")
+			}
+
+			snapshot := state.Step(nil)
+			if len(snapshot.Players) != len(tt.want) {
+				t.Fatalf("expected %d simulation players, got %+v", len(tt.want), snapshot.Players)
+			}
+			for index, want := range tt.want {
+				got := snapshot.Players[index]
+				if string(got.ID) != players[index].ID || string(got.Team) != want.Team || got.Slot != want.Slot {
+					t.Fatalf("expected simulation player %d to be %s/%s slot %d, got %+v", index, players[index].ID, want.Team, want.Slot, got)
+				}
+			}
+
+			roomInterval := time.Second / time.Duration(roomConfig.TickRate)
+			if got := fakeClock.TickerCount(roomInterval); got != 1 {
+				t.Fatalf("expected one room tick-rate ticker at %s, got %d", roomInterval, got)
+			}
+			storeInterval := time.Second / time.Duration(store.gameConfig.TickRate)
+			if storeInterval != roomInterval {
+				if got := fakeClock.TickerCount(storeInterval); got != 0 {
+					t.Fatalf("expected no Store-default gameplay ticker at %s, got %d", storeInterval, got)
+				}
+			}
+		})
+	}
+}
+
 func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -3043,6 +3268,21 @@ func newFakeClock() *fakeClock {
 	return newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 }
 
+func distinctDefaultGameConfig() simulation.GameConfig {
+	config := simulation.StaticGameConfig()
+	for index := range config.ModeCatalog.Catalog {
+		if config.ModeCatalog.Catalog[index].ID != simulation.GameModeDuel1v1 {
+			continue
+		}
+		config.ModeCatalog.Catalog[index].Teams = []simulation.TeamConfig{
+			{Name: simulation.TeamBlue, Size: 1},
+			{Name: simulation.TeamRed, Size: 1},
+		}
+		break
+	}
+	return config
+}
+
 func fastRechargeGameConfig() simulation.GameConfig {
 	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
 	config.Player.Types[0].AttackRechargeTicks = 1
@@ -3195,6 +3435,21 @@ func readFakeMatchSnapshot(t *testing.T, conn *fakeClientConn) matchSnapshotMess
 	case <-time.After(time.Second):
 		t.Fatal("expected fake match snapshot")
 		return matchSnapshotMessage{}
+	}
+}
+
+func readFakeReadyEventMessage(t *testing.T, conn *fakeClientConn) readyEventMessage {
+	t.Helper()
+	select {
+	case payload := <-conn.writes:
+		var message readyEventMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode fake Ready event: %v", err)
+		}
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("expected fake Ready event")
+		return readyEventMessage{}
 	}
 }
 

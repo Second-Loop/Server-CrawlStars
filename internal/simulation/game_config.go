@@ -149,9 +149,15 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 		}
 	}
 	config.Map = resolvedMap
-	selected, err := config.SelectMode(config.ModeCatalog.Default)
+	selectedModeID := config.SelectedMode.ID
+	selectedModeSource := "selected"
+	if selectedModeID == "" {
+		selectedModeID = config.ModeCatalog.Default
+		selectedModeSource = "default"
+	}
+	selected, err := config.SelectMode(selectedModeID)
 	if err != nil {
-		return GameConfig{}, fmt.Errorf("select game config mode.default: %w", err)
+		return GameConfig{}, fmt.Errorf("select game config mode.%s: %w", selectedModeSource, err)
 	}
 	return selected, nil
 }
