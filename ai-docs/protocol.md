@@ -7,8 +7,9 @@
 - simple matchmaking join
 - room/player WebSocket
 - server-authoritative snapshot stream
-- static map movement/collision
-- projectile movement/destroy
+- client SL-79 `Map_0` 기반 static map movement
+- player Wall/Water/boundary collision과 projectile Wall/boundary destroy
+- Bush는 둘 다 통과하고 projectile은 Water도 통과
 - projectile hit, HP, death snapshot
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
@@ -40,9 +41,9 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 1. 모든 player의 transient `PressedAttack`을 `false`로 초기화
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
 3. 기존 projectile 이동
-4. projectile wall/boundary destroy와 player hit 처리
+4. projectile의 Wall/boundary 충돌 destroy와 player hit 처리
 5. live player의 유한한 input만 적용하고 방향 벡터 검증
-6. movement는 X축, Y축 순서로 collision 검사
+6. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
 7. 공격 입력, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
 8. tick 증가
 9. snapshot 반환
@@ -59,6 +60,8 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultProjectileSpeed = 13`
 - `DefaultProjectileDamage = 10`
 - `DefaultProjectileRadius = 0.3`
+- tile 값은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`
+- Player는 Wall/Water/boundary, projectile은 Wall/boundary에 충돌
 - `StaticMapFixture().MaxPlayers = 6`
 - player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용하고, spawn point가 부족하거나 없으면 map 크기에서 유도한 fallback 좌표를 씁니다.
 - active server mode는 `duel_1v1`이고 `playersPerMatch = 2`입니다.
@@ -80,7 +83,7 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 - player type별 `id/radius/hp/speed/maxAttackCharges/attackRechargeTicks`
 - projectile type별 `id/radius/damage/speed`
 - `mode.id`, `mode.playersPerMatch`, `mode.teams`, `mode.rules`
-- `map`
+- `map`: client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 exact grid
 
 Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server snapshot이나 Ready event로 받거나 서버만 판단하므로 client 공유 config에 넣지 않습니다.
 Mode/team rule도 server-only입니다. 현재는 `duel_1v1`만 active이며, `friendlyFire`와 `teamBehavior`는 solo/team mode 확장을 위한 metadata입니다. 이 값들은 REST/WebSocket response schema에 노출하지 않습니다.

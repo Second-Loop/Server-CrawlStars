@@ -401,7 +401,10 @@ components:
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]
-      description: 서버 simulation이 사용하는 tile map입니다. `map` row는 JSON number array로 직렬화되며 tile 값은 0=ground, 1=wall, 2=spawnPoint입니다.
+      description: >-
+        서버 simulation이 사용하는 tile map입니다. tile 값은 0=ground, 1=wall, 2=spawnPoint,
+        3=bush, 4=water이며 map row는 JSON number array입니다. Player는 wall/water,
+        projectile은 wall에 충돌하고 map boundary는 둘 다 막습니다.
       properties:
         width:
           type: integer
@@ -424,7 +427,7 @@ components:
             type: array
             items:
               type: integer
-              enum: [0, 1, 2]
+              enum: [0, 1, 2, 3, 4]
     ReadyPlayer:
       type: object
       required: [Id, Team, Slot, SpawnPosition]

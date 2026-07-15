@@ -17,7 +17,8 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 이미 있는 서버 범위:
 
 - `Step(inputs) -> Snapshot`
-- movement, wall collision
+- client SL-79 `Map_0`과 Ground/Wall/SpawnPoint/Bush/Water tile 계약
+- movement와 entity별 collision(Player는 Wall/Water, projectile은 Wall, boundary는 둘 다)
 - projectile 생성, 이동, destroy
 - hit, HP, death snapshot
 - 기본 비활성화된 room REST debug API와 Bearer 보호

@@ -105,7 +105,8 @@ State.Step(inputs []InputCommand) Snapshot
 - player speed/radius/HP = `2`, `0.5`, `100`
 - player normal attack charge/recharge = `4`, `30 ticks`
 - projectile speed/damage/radius = `13`, `10`, `0.3`
-- default map source = server binary가 embed한 `server-config/game-config.json`의 `map`
+- default map source = server binary가 embed한 `server-config/game-config.json`의 client SL-79 `Map_0` exact 20x20 grid
+- map drift guard = client `Map_0` 값을 고정한 exact-grid Go regression
 - config load/validation failure fallback = `StaticGameConfig()`의 5x5 static map, max players `6`
 - `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 사용
 - player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 부족하거나 없으면 map 크기에서 유도한 legacy-compatible fallback 좌표 사용
@@ -114,10 +115,21 @@ Movement:
 
 - `MoveDir * Speed * TickDuration`으로 이동합니다.
 - 유한한 `MoveDir`의 크기가 `1` 이하면 그대로 보존하고, `1`보다 크면 unit vector로 clamp합니다.
-- X축과 Y축을 분리해 wall collision을 검사합니다.
-- wall rectangle에 닿거나 map 밖으로 나가면 해당 axis movement를 무시합니다.
+- X축과 Y축을 분리해 player의 Wall/Water/boundary collision을 검사합니다.
+- blocking tile rectangle에 닿거나 map 밖으로 나가면 해당 axis movement를 무시합니다.
 - non-finite input은 무시합니다.
 - player-player collision은 아직 없습니다.
+
+Tile collision은 circle-vs-tile 기하와 boundary 계산을 공유하고 entity별 blocking predicate만 나눕니다.
+
+| Tile | 값 | Player | Projectile |
+| --- | ---: | --- | --- |
+| Ground | 0 | 통과 | 통과 |
+| Wall | 1 | 충돌 | 충돌 |
+| SpawnPoint | 2 | 통과 | 통과 |
+| Bush | 3 | 통과 | 통과 |
+| Water | 4 | 충돌 | 통과 |
+| Map boundary | - | 충돌 | 충돌 |
 
 Attack/projectile:
 
@@ -127,7 +139,7 @@ Attack/projectile:
 - snapshot의 `PressedAttack`은 그 tick에 서버가 공격을 승인했을 때만 `true`입니다.
 - 새 projectile은 이동 후 player 위치에서 생성됩니다.
 - 기존 projectile은 tick마다 `Dir * Speed * TickDuration`으로 이동합니다.
-- wall 또는 boundary에 닿으면 `IsDestroyed = true`가 됩니다.
+- Wall 또는 boundary에 닿으면 `IsDestroyed = true`가 되고 Bush와 Water는 통과합니다.
 - destroyed projectile은 snapshot에 남지만 더 움직이지 않습니다.
 
 Hit/death:
