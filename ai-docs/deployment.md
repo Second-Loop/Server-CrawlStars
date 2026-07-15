@@ -10,8 +10,9 @@ main push 또는 workflow_dispatch
   -> docs build
   -> linux/amd64 server build
   -> crawl-stars-server-linux-amd64.tar.gz
-  -> GitHub Release asset
-  -> VM pull script
+  -> GitHub Release package + SHA256SUMS
+  -> VM이 latest를 commit SHA 기반 tag로 1회 해석
+  -> 같은 tag의 package + SHA256SUMS 검증
   -> systemd restart
   -> /health smoke check
 ```
@@ -82,6 +83,8 @@ Server는 application과 metrics listener를 둘 다 먼저 bind하고 성공한
 
 ## 최신 release 배포
 
+VM에는 `bash`, `curl`, `jq`, GNU `sha256sum`, `tar`, `mktemp`가 필요합니다. `pull-latest.sh`는 다운로드 전에 필요한 명령을 확인합니다.
+
 ```sh
 sudo scripts/deploy/pull-latest.sh
 ```
@@ -91,10 +94,25 @@ Override:
 ```sh
 REPO=Second-Loop/Server-CrawlStars sudo scripts/deploy/pull-latest.sh
 RELEASE_TAG=server-<commit-sha> sudo scripts/deploy/pull-latest.sh
-GH_TOKEN=<token> sudo -E scripts/deploy/pull-latest.sh
 ```
 
-Script는 package를 download하고 release directory를 만든 뒤 `current` symlink를 전환합니다. Restart나 `/health` check가 실패하면 가능한 경우 이전 release로 rollback합니다.
+`RELEASE_TAG` 기본값 `latest`는 GitHub API에서 시작 시 정확히 한 번만 조회합니다. 응답의 non-`latest` tag를 고정한 뒤 package와 `SHA256SUMS`를 모두 같은 `/releases/download/<tag>/...` 경로에서 받습니다. 명시적인 `RELEASE_TAG`는 API 조회 없이 URL encoding 후 바로 사용합니다.
+
+`ASSET_NAME` override는 영문자, 숫자, `.`, `_`, `-`만 포함한 최대 255자 basename만 허용합니다. 빈 값, `.`, `..`, 예약 manifest 이름 `SHA256SUMS`, slash, 공백, control character는 임시 파일 생성이나 network 요청 전에 거부합니다.
+
+Manifest는 요청한 asset의 GNU `sha256sum` record 정확히 하나만 포함해야 합니다. Script는 checksum이 맞아야만 package를 압축 해제하고 release directory를 만든 뒤 `current` symlink를 전환합니다. 이 검증은 전송 중 손상이나 서로 다른 release asset 혼합을 막지만, GitHub release 쓰기 권한이 탈취되어 package와 manifest가 함께 바뀌는 경우까지 막지는 못합니다. Restart나 `/health` check가 실패하면 가능한 경우 이전 release로 rollback합니다.
+
+Public repo는 token이 필요 없습니다. Private repo에서는 GitHub `Contents: read`만 허용한 token을 shell history에 쓰지 않고 숨김 입력으로 전달합니다.
+
+```sh
+read -r -s -p 'GitHub token: ' GH_TOKEN
+printf '\n'
+export GH_TOKEN
+sudo --preserve-env=GH_TOKEN scripts/deploy/pull-latest.sh
+unset GH_TOKEN
+```
+
+Script는 caller의 xtrace를 끄고 token을 mode `0600` 임시 header file로 전달한 뒤 환경 변수에서 제거합니다. 줄바꿈이 포함된 token은 header injection을 막기 위해 network 요청 전에 거부합니다.
 
 ## 운영 명령
 

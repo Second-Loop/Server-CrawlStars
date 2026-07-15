@@ -111,7 +111,7 @@ make docs-build
 npx --yes --package @asyncapi/cli asyncapi validate api/asyncapi.yaml
 ```
 
-`make ci`는 docs validation/build, `go vet`, `go test`, server build, deploy script syntax check를 함께 실행합니다. Clean checkout에서 `go test ./...`만 바로 실행하면 Go embed 대상 docs 파일이 없을 수 있으므로 공식 검증은 `make ci`입니다.
+`make ci`는 docs validation/build, `go vet`, `go test`, server build, network를 쓰지 않는 deploy 회귀 테스트, deploy script syntax check를 함께 실행합니다. Deploy만 빠르게 확인할 때는 `make deploy-test`를 실행합니다. Clean checkout에서 `go test ./...`만 바로 실행하면 Go embed 대상 docs 파일이 없을 수 있으므로 공식 검증은 `make ci`입니다.
 
 `docs-ui/scripts/validate.mjs`는 필수 marker와 secret-free DTO 경계를 빠르게 확인하지만 YAML schema parser는 아닙니다. 계약 변경 시 OpenAPI/AsyncAPI YAML parse와 공식 AsyncAPI CLI validation을 별도로 실행합니다.
 
