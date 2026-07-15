@@ -423,6 +423,7 @@ components:
           format: double
         map:
           type: array
+          description: Row-major 2D tile grid입니다. map[y][x]이며 바깥 배열은 y(row), 안쪽 배열은 x(column)입니다.
           items:
             type: array
             items:

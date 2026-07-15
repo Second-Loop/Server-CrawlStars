@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Linear `SL-92`만 구현하고 Bush 시야, client 렌더링, pathfinding/bot AI, 여러 맵/맵 로테이션, client/server 공유 map artifact는 추가하지 않아요.
-- 권위 있는 client source는 `Second-Loop/Client-CrawlStars#22`의 merged `CrawlStars/Assets/StreamingAssets/Maps/Map_0.json`(blob SHA `1d9409c26cf711d99d7473276c9e9e946cccd3d6`)이에요.
+- 권위 있는 client source는 `Second-Loop/Client-CrawlStars#22`의 merged `CrawlStars/Assets/StreamingAssets/Maps/Map_0.json`(blob SHA `1d9409bdf654a04cd0d385f3f9043795d76813a9`)이에요.
 - Tile 계약은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`예요.
 - Player는 Wall, Water, map boundary에 막히고 Bush를 통과해요.
 - Projectile은 Wall, map boundary에 막히고 Bush와 Water를 통과해요.
