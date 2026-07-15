@@ -169,6 +169,60 @@ func TestPlayerAssignmentsAvoidFallbackTilesAlreadyUsedBySpawnPoints(t *testing.
 	})
 }
 
+func TestPlayerAssignmentsSkipBlockingFallbackTilesForSixPlayers(t *testing.T) {
+	config, err := StaticGameConfig().SelectMode(GameModeSolo)
+	if err != nil {
+		t.Fatalf("select solo mode: %v", err)
+	}
+	config.Map.Map[1][2] = TileWater
+	config.Map.Map[2][1] = TileBush
+
+	playerIDs := []PlayerID{
+		"player-1", "player-2", "player-3",
+		"player-4", "player-5", "player-6",
+	}
+	assignments := PlayerAssignments(playerIDs, config)
+	if len(assignments) != 6 {
+		t.Fatalf("expected six assignments, got %d", len(assignments))
+	}
+
+	blockedPositions := []struct {
+		position Vector2
+		tile     TileType
+	}{
+		{position: config.Map.WorldPos(2, 2), tile: TileWall},
+		{position: config.Map.WorldPos(2, 1), tile: TileWater},
+	}
+	wantTiles := []spawnTile{
+		{X: 1, Y: 1},
+		{X: 3, Y: 3},
+		{X: 3, Y: 1},
+		{X: 1, Y: 3},
+		{X: 1, Y: 2},
+		{X: 3, Y: 2},
+	}
+	seen := make(map[Vector2]bool, len(assignments))
+	for index, assignment := range assignments {
+		for _, blocked := range blockedPositions {
+			if sameVector(assignment.SpawnPosition, blocked.position) {
+				t.Fatalf("assignment %d landed on blocking fallback tile %d at %+v", index, blocked.tile, assignment.SpawnPosition)
+			}
+		}
+		if seen[assignment.SpawnPosition] {
+			t.Fatalf("assignment %d reused fallback spawn %+v", index, assignment.SpawnPosition)
+		}
+		seen[assignment.SpawnPosition] = true
+
+		want := config.Map.WorldPos(wantTiles[index].X, wantTiles[index].Y)
+		if !sameVector(assignment.SpawnPosition, want) {
+			t.Fatalf("assignment %d expected spawn %+v, got %+v", index, want, assignment.SpawnPosition)
+		}
+		if index == 4 && config.Map.Map[wantTiles[index].Y][wantTiles[index].X] != TileBush {
+			t.Fatal("expected the fifth passable fallback candidate to remain Bush")
+		}
+	}
+}
+
 func assignmentTestConfig() GameConfig {
 	config := StaticGameConfig()
 	config.Map = noSpawnAssignmentMap()
