@@ -1641,6 +1641,8 @@ func TestMatchmakingJoinGameMode(t *testing.T) {
 		{name: "trailing whitespace", body: "{\"gameMode\":\"solo\"} \n\t", wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
 		{name: "unknown", body: `{"gameMode":"ranked"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
 		{name: "whitespace mode", body: `{"gameMode":" "}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
+		{name: "top-level null", body: `null`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "null mode", body: `{"gameMode":null}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
 		{name: "malformed", body: `{"gameMode":`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
 		{name: "trailing JSON", body: `{"gameMode":"solo"} {}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
 	}
@@ -1658,6 +1660,12 @@ func TestMatchmakingJoinGameMode(t *testing.T) {
 				assertError(t, rec, tt.wantCode)
 				if got := len(store.listRooms().Rooms); got != 0 {
 					t.Fatalf("expected rejected join not to create a room, got %d", got)
+				}
+				store.mu.RLock()
+				playerIDCount := len(store.playerIDs)
+				store.mu.RUnlock()
+				if playerIDCount != 0 {
+					t.Fatalf("expected rejected join not to create player state, got %d player IDs", playerIDCount)
 				}
 				return
 			}

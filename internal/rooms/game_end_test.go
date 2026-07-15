@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
@@ -43,7 +44,7 @@ func TestDuelGameEndResultsReturnDrawWhenBothPlayersAreDead(t *testing.T) {
 	assertGameEndResult(t, results, "blue", gameEndResultDraw)
 }
 
-func TestGameEndUsesRoomMode(t *testing.T) {
+func TestGameEndUsesRoomConfig(t *testing.T) {
 	mode := simulation.GameModeConfig{
 		ID:              "custom_survival",
 		PlayersPerMatch: 3,
@@ -58,18 +59,39 @@ func TestGameEndUsesRoomMode(t *testing.T) {
 		},
 	}
 	roomConfig := singleModeGameConfig(mode)
-	room := &room{gameConfig: roomConfig}
-	results := room.gameEndResults(simulation.Snapshot{
+	snapshot := simulation.Snapshot{
 		Players: []simulation.PlayerData{
 			{ID: "custom-1"},
 			{ID: "custom-2", IsDead: true},
 			{ID: "custom-3"},
 		},
-	})
+	}
+	wantResults := map[string]gameEndResult{"captured": gameEndResultDraw}
+	var capturedConfig simulation.GameConfig
+	var capturedSnapshot simulation.Snapshot
+	room := &room{
+		gameConfig: roomConfig,
+		calculateGameEnd: func(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
+			capturedConfig = gameConfig
+			capturedSnapshot = snapshot
+			return wantResults
+		},
+	}
 
-	assertGameEndResult(t, results, "custom-1", gameEndResultWin)
-	assertGameEndResult(t, results, "custom-2", gameEndResultLose)
-	assertGameEndResult(t, results, "custom-3", gameEndResultWin)
+	results := room.gameEndResults(snapshot)
+
+	if !reflect.DeepEqual(capturedConfig, roomConfig) {
+		t.Fatalf("expected calculator to receive room config %+v, got %+v", roomConfig, capturedConfig)
+	}
+	if capturedConfig.SelectedMode.ID != mode.ID {
+		t.Fatalf("expected calculator to receive selected mode %q, got %q", mode.ID, capturedConfig.SelectedMode.ID)
+	}
+	if !reflect.DeepEqual(capturedSnapshot, snapshot) {
+		t.Fatalf("expected calculator to receive snapshot %+v, got %+v", snapshot, capturedSnapshot)
+	}
+	if !reflect.DeepEqual(results, wantResults) {
+		t.Fatalf("expected calculator results %+v, got %+v", wantResults, results)
+	}
 }
 
 func assertGameEndResult(t *testing.T, results map[string]gameEndResult, playerID string, want gameEndResult) {

@@ -65,12 +65,13 @@ type StoreConfig struct {
 }
 
 // room owns synchronization for one room independently of the Store registry.
-// ID and gameConfig are immutable. mu protects every other field, including
-// removed and all gameplay, client, countdown, and resource state.
+// ID, gameConfig, and calculateGameEnd are immutable. mu protects every other
+// field, including removed and all gameplay, client, countdown, and resource state.
 type room struct {
-	ID         string
-	gameConfig simulation.GameConfig
-	mu         sync.Mutex
+	ID               string
+	gameConfig       simulation.GameConfig
+	calculateGameEnd gameEndCalculator
+	mu               sync.Mutex
 
 	removed         bool
 	Status          RoomStatus
@@ -664,15 +665,16 @@ func boundedWebSocketLogAttrs(attrs []any, allowedKeys map[string]bool, allowedC
 func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *room {
 	now := s.clock.Now()
 	room := &room{
-		ID:             roomID,
-		gameConfig:     gameConfig,
-		Status:         RoomStatusWaiting,
-		sessions:       make(map[string]playerSession),
-		pendingInputs:  make(map[string]simulation.InputCommand),
-		clients:        make(map[string]*clientSession),
-		reservations:   make(map[string]*clientReservation),
-		createdAt:      now,
-		lastActivityAt: now,
+		ID:               roomID,
+		gameConfig:       gameConfig,
+		calculateGameEnd: calculateGameEndResults,
+		Status:           RoomStatusWaiting,
+		sessions:         make(map[string]playerSession),
+		pendingInputs:    make(map[string]simulation.InputCommand),
+		clients:          make(map[string]*clientSession),
+		reservations:     make(map[string]*clientReservation),
+		createdAt:        now,
+		lastActivityAt:   now,
 	}
 	return room
 }

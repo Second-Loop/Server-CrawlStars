@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -271,17 +272,38 @@ func newRouterWithDebugGuard(
 }
 
 func decodeMatchmakingJoinRequest(body io.Reader) (matchmakingJoinRequest, error) {
-	var request matchmakingJoinRequest
 	decoder := json.NewDecoder(body)
-	if err := decoder.Decode(&request); err != nil {
+	var rawRequest json.RawMessage
+	if err := decoder.Decode(&rawRequest); err != nil {
 		if errors.Is(err, io.EOF) {
-			return request, nil
+			return matchmakingJoinRequest{}, nil
 		}
 		return matchmakingJoinRequest{}, ErrInvalidRequest
 	}
 
 	var trailing json.RawMessage
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	if bytes.Equal(bytes.TrimSpace(rawRequest), []byte("null")) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var fields struct {
+		GameMode json.RawMessage `json:"gameMode"`
+	}
+	if err := json.Unmarshal(rawRequest, &fields); err != nil {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	if fields.GameMode == nil {
+		return matchmakingJoinRequest{}, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(fields.GameMode), []byte("null")) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var request matchmakingJoinRequest
+	if err := json.Unmarshal(fields.GameMode, &request.GameMode); err != nil {
 		return matchmakingJoinRequest{}, ErrInvalidRequest
 	}
 	return request, nil

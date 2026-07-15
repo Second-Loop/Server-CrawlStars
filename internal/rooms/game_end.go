@@ -4,6 +4,8 @@ import "github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 
 type gameEndResult string
 
+type gameEndCalculator func(simulation.GameConfig, simulation.Snapshot) map[string]gameEndResult
+
 const (
 	gameEndResultWin  gameEndResult = "Win"
 	gameEndResultLose gameEndResult = "Lose"
@@ -15,7 +17,7 @@ func (r gameEndResult) String() string {
 }
 
 func (r *room) gameEndResults(snapshot simulation.Snapshot) map[string]gameEndResult {
-	return calculateGameEndResults(r.gameConfig, snapshot)
+	return r.calculateGameEnd(r.gameConfig, snapshot)
 }
 
 func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
