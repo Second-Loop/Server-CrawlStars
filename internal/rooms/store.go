@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -13,25 +14,40 @@ import (
 
 // Store owns registry and store-lifecycle synchronization only.
 //
+// mutationMu is the outer quiescing gate for externally initiated mutations.
 // mu protects rooms, activeSessions, playerIDs, random, and closed. Room
 // gameplay, connection, countdown, and resource fields are protected by room.mu
-// instead. When both locks are ever needed, Store.mu must be acquired before
-// room.mu; acquiring Store.mu while holding room.mu is forbidden.
+// instead. The lock order is mutationMu -> Store.mu -> room.mu; acquiring an
+// outer lock while holding an inner lock is forbidden. workerMu is a leaf lock
+// that closes the gameplay/countdown launch gate before shutdown waits on
+// workerWG; no core lock is acquired while workerMu is held.
 type Store struct {
+	mutationMu        sync.RWMutex
 	mu                sync.RWMutex
-	closeOnce         sync.Once
+	shutdownOnce      sync.Once
+	shutdownErrMu     sync.Mutex
+	workerMu          sync.Mutex
+	workerWG          sync.WaitGroup
 	maxActiveRooms    int
 	rooms             map[string]*room
 	activeSessions    map[*clientSession]chan struct{}
 	playerIDs         map[string]struct{}
 	random            io.Reader
 	clock             clock
+	wallNow           func() time.Time
 	gameMap           simulation.MapData
 	gameConfig        simulation.GameConfig
+	logger            *slog.Logger
+	observation       *observationState
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
 	janitorStop       chan struct{}
 	janitorDone       chan struct{}
+	shutdownDone      chan struct{}
+	shutdownErr       error
+	shutdownPanic     any
+	shutdownPanicked  bool
+	workersClosing    bool
 	closed            bool
 }
 
@@ -41,6 +57,11 @@ type StoreConfig struct {
 	Random            io.Reader
 	HeartbeatInterval time.Duration
 	HeartbeatTimeout  time.Duration
+	// Logger and Observer handlers run synchronously as bounded pure sinks after
+	// core locks are released. They must not call Store methods. Lifecycle
+	// mutators wait for their log and Observer publication before returning.
+	Logger   *slog.Logger
+	Observer Observer
 }
 
 // room owns synchronization for one room independently of the Store registry.
@@ -125,15 +146,64 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		playerIDs:         make(map[string]struct{}),
 		random:            random,
 		clock:             clock,
+		wallNow:           time.Now,
 		gameMap:           resolvedConfig.Map,
 		gameConfig:        resolvedConfig,
+		logger:            normalizeLogger(config.Logger),
+		observation:       newObservationState(config.Observer),
 		heartbeatInterval: heartbeatInterval,
 		heartbeatTimeout:  heartbeatTimeout,
 		janitorStop:       make(chan struct{}),
 		janitorDone:       make(chan struct{}),
+		shutdownDone:      make(chan struct{}),
 	}
 	store.startJanitor()
 	return store
+}
+
+// beginMutation holds the shared quiescing gate for the entire externally
+// initiated mutation, including synchronous log and metrics publication.
+func (s *Store) beginMutation() bool {
+	s.mutationMu.RLock()
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		s.mutationMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (s *Store) endMutation() {
+	s.mutationMu.RUnlock()
+}
+
+func (s *Store) launchRoomWorker(worker func()) bool {
+	s.workerMu.Lock()
+	defer s.workerMu.Unlock()
+	if s.workersClosing {
+		return false
+	}
+	s.workerWG.Add(1)
+	go func() {
+		defer s.workerWG.Done()
+		worker()
+	}()
+	return true
+}
+
+func (s *Store) stopLaunchingRoomWorkers() {
+	s.workerMu.Lock()
+	s.workersClosing = true
+	s.workerMu.Unlock()
+}
+
+func normalizeLogger(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return logger
 }
 
 func (s *Store) listRooms() roomListResponse {
@@ -150,6 +220,11 @@ func (s *Store) listRooms() roomListResponse {
 }
 
 func (s *Store) createRoom() (roomResponse, error) {
+	if !s.beginMutation() {
+		return roomResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	response, err := s.createRoomOnce()
 	if !errors.Is(err, ErrActiveRoomCapReached) {
 		return response, err
@@ -161,33 +236,47 @@ func (s *Store) createRoom() (roomResponse, error) {
 
 func (s *Store) createRoomOnce() (roomResponse, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return roomResponse{}, ErrInternal
 	}
 	if len(s.rooms) >= s.maxActiveRooms {
+		s.mu.Unlock()
 		return roomResponse{}, ErrActiveRoomCapReached
 	}
 
 	roomID, err := s.uniqueRoomIDLocked()
 	if err != nil {
+		s.mu.Unlock()
 		return roomResponse{}, err
 	}
 	room := s.newRoomLocked(roomID)
 	response := room.toResponse(s.gameMap)
 	s.rooms[room.ID] = room
+	transition := s.observation.activeRoomsDelta(1)
+	s.mu.Unlock()
+
+	s.observation.publish(transition)
+	s.logRoomEvent("room_created", room.ID)
 	return response, nil
 }
 
 func (s *Store) clearRooms() clearRoomsResponse {
+	if !s.beginMutation() {
+		return clearRoomsResponse{}
+	}
+	defer s.endMutation()
+
 	registered := s.registeredRooms()
 	deleted := 0
 	var resources roomResources
 	for _, room := range registered {
+		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
 		playerIDs, removed := resources.removeRoomLocked(room)
+		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
+		s.publishDisconnectedClients(clientTransitions)
 		if removed && s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
 			deleted++
@@ -199,6 +288,11 @@ func (s *Store) clearRooms() clearRoomsResponse {
 }
 
 func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
+	if !s.beginMutation() {
+		return clearRoomsResponse{}, false
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return clearRoomsResponse{}, false
@@ -207,7 +301,9 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 	var resources roomResources
 	room.mu.Lock()
 	playerIDs, removed := resources.removeRoomLocked(room)
+	clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations, -1)
 	room.mu.Unlock()
+	s.publishDisconnectedClients(clientTransitions)
 	if !removed || !s.deleteRoomIfSame(roomID, room) {
 		resources.close(defaultRoomDebugDeleteMsg)
 		return clearRoomsResponse{}, false
@@ -242,13 +338,67 @@ func (s *Store) registeredRooms() []*room {
 }
 
 func (s *Store) deleteRoomIfSame(roomID string, expected *room) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if expected == nil || s.rooms[roomID] != expected {
+	transition, deleted := s.removeRegisteredRoomIfSame(roomID, expected)
+	if !deleted {
 		return false
 	}
-	delete(s.rooms, roomID)
+	s.observation.publish(transition)
 	return true
+}
+
+func (s *Store) removeRegisteredRoomIfSame(roomID string, expected *room) (observationTransition, bool) {
+	s.mu.Lock()
+	if expected == nil || s.rooms[roomID] != expected {
+		s.mu.Unlock()
+		return observationTransition{}, false
+	}
+	delete(s.rooms, roomID)
+	transition := s.observation.activeRoomsDelta(-1)
+	s.mu.Unlock()
+	return transition, true
+}
+
+type clientObservationTransition struct {
+	clientObservation
+	transition observationTransition
+}
+
+func (s *Store) clientObservationTransitionsLocked(clients []clientObservation, delta int) []clientObservationTransition {
+	transitions := make([]clientObservationTransition, 0, len(clients))
+	for _, client := range clients {
+		if client.session == nil {
+			continue
+		}
+		transitions = append(transitions, clientObservationTransition{
+			clientObservation: client,
+			transition:        s.observation.connectedClientsDelta(delta),
+		})
+	}
+	return transitions
+}
+
+func (s *Store) prepareConnectedClientPublication(client clientObservation, transition observationTransition) *clientLifecyclePublication {
+	return client.session.enqueueLifecyclePublication(false, func() {
+		s.observation.publish(transition)
+		s.logWebSocketEvent("websocket_connected", client.roomID, client.playerID)
+	})
+}
+
+func (s *Store) publishDisconnectedClients(transitions []clientObservationTransition) {
+	for _, observed := range transitions {
+		observed.session.enqueueLifecyclePublication(true, func() {
+			s.observation.publish(observed.transition)
+			category, status := observed.session.ioError()
+			if category != "" {
+				attrs := []any{"category", category}
+				if status != "" {
+					attrs = append(attrs, "status", status)
+				}
+				s.logWebSocketEvent("websocket_io_error", observed.roomID, observed.playerID, attrs...)
+			}
+			s.logWebSocketEvent("websocket_disconnected", observed.roomID, observed.playerID)
+		})
+	}
 }
 
 func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
@@ -265,6 +415,11 @@ func (s *Store) getRoomResponse(roomID string) (roomResponse, bool) {
 }
 
 func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
+	if !s.beginMutation() {
+		return playerSessionResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return playerSessionResponse{}, ErrRoomNotFound
@@ -292,6 +447,11 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 }
 
 func (s *Store) joinMatchmaking() (matchmakingJoinResponse, error) {
+	if !s.beginMutation() {
+		return matchmakingJoinResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	var credentials *playerCredentials
 	for _, room := range s.registeredRooms() {
 		room.mu.Lock()
@@ -337,21 +497,23 @@ func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials
 
 func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmakingJoinResponse, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return matchmakingJoinResponse{}, ErrInternal
 	}
 	if len(s.rooms) >= s.maxActiveRooms {
+		s.mu.Unlock()
 		return matchmakingJoinResponse{}, ErrActiveRoomCapReached
 	}
 	roomID, err := s.uniqueRoomIDLocked()
 	if err != nil {
+		s.mu.Unlock()
 		return matchmakingJoinResponse{}, err
 	}
 	if credentials == nil {
 		issued, err := s.issuePlayerCredentialsLocked()
 		if err != nil {
+			s.mu.Unlock()
 			return matchmakingJoinResponse{}, err
 		}
 		credentials = &issued
@@ -362,6 +524,11 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials) (matchmaki
 	s.markRoomMatchedIfFullLocked(room)
 	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
 	s.rooms[room.ID] = room
+	transition := s.observation.activeRoomsDelta(1)
+	s.mu.Unlock()
+
+	s.observation.publish(transition)
+	s.logRoomEvent("room_created", room.ID)
 	return response, nil
 }
 
@@ -400,21 +567,87 @@ func (s *Store) matchCapacity() int {
 }
 
 func (s *Store) startRoom(roomID string) (roomResponse, error) {
+	if !s.beginMutation() {
+		return roomResponse{}, ErrInternal
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return roomResponse{}, ErrRoomNotFound
 	}
 	room.mu.Lock()
-	defer room.mu.Unlock()
 	if room.removed {
+		room.mu.Unlock()
 		return roomResponse{}, ErrRoomNotFound
 	}
 	if len(room.Players) == 0 {
+		room.mu.Unlock()
 		return roomResponse{}, ErrRoomHasNoPlayers
 	}
 
-	s.startRoomLocked(room)
-	return room.toResponse(s.gameMap), nil
+	started := s.startRoomLocked(room)
+	response := room.toResponse(s.gameMap)
+	room.mu.Unlock()
+	if started {
+		s.logRoomEvent("room_started", room.ID)
+	}
+	return response, nil
+}
+
+func (s *Store) logRoomEvent(event string, roomID string) {
+	switch event {
+	case "room_created", "room_started", "room_ended", "room_expired":
+	default:
+		return
+	}
+	s.logger.Info(event, "event", event, "roomID", roomID)
+}
+
+func (s *Store) logWebSocketEvent(event string, roomID string, playerID string, attrs ...any) {
+	switch event {
+	case "websocket_connected", "websocket_disconnected":
+		attrs = nil
+	case "websocket_auth_rejected":
+		attrs = boundedWebSocketLogAttrs(attrs, map[string]bool{"category": true}, map[string]bool{"invalid_token": true}, nil)
+	case "websocket_io_error":
+		attrs = boundedWebSocketLogAttrs(attrs,
+			map[string]bool{"category": true, "status": true},
+			map[string]bool{
+				"read_failed": true, "write_failed": true, "ping_failed": true,
+				"ping_timeout": true, "read_close": true,
+			},
+			map[string]bool{
+				"policy_violation": true, "unsupported_data": true, "invalid_payload": true,
+				"message_too_big": true, "internal_error": true, "abnormal_closure": true,
+				"other": true,
+			},
+		)
+	default:
+		return
+	}
+	fields := []any{"event", event, "roomID", roomID, "playerID", playerID}
+	fields = append(fields, attrs...)
+	s.logger.Info(event, fields...)
+}
+
+func boundedWebSocketLogAttrs(attrs []any, allowedKeys map[string]bool, allowedCategories map[string]bool, allowedStatuses map[string]bool) []any {
+	bounded := make([]any, 0, 4)
+	for index := 0; index+1 < len(attrs); index += 2 {
+		key, keyOK := attrs[index].(string)
+		value, valueOK := attrs[index+1].(string)
+		if !keyOK || !valueOK || !allowedKeys[key] {
+			continue
+		}
+		if key == "category" && !allowedCategories[value] {
+			continue
+		}
+		if key == "status" && !allowedStatuses[value] {
+			continue
+		}
+		bounded = append(bounded, key, value)
+	}
+	return bounded
 }
 
 func (s *Store) newRoomLocked(roomID string) *room {
@@ -524,7 +757,8 @@ func (s *Store) uniquePlayerIDLocked() (string, error) {
 	return "", ErrInternal
 }
 
-func (s *Store) startRoomLocked(room *room) {
+func (s *Store) startRoomLocked(room *room) bool {
+	started := room.Status != RoomStatusStarted
 	now := s.clock.Now()
 	s.stopMatchCountdownLocked(room)
 	room.Status = RoomStatusStarted
@@ -540,10 +774,18 @@ func (s *Store) startRoomLocked(room *room) {
 		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, s.gameConfig), simulation.Config{Game: s.gameConfig})
 	}
 	if room.ticker == nil {
-		room.ticker = s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
-		room.stop = make(chan struct{})
-		go s.runRoom(room, room.ticker, room.stop)
+		roomTicker := s.clock.NewTicker(time.Second / time.Duration(s.gameConfig.TickRate))
+		roomStop := make(chan struct{})
+		room.ticker = roomTicker
+		room.stop = roomStop
+		if !s.launchRoomWorker(func() { s.runRoom(room, roomTicker, roomStop) }) {
+			roomTicker.Stop()
+			close(roomStop)
+			room.ticker = nil
+			room.stop = nil
+		}
 	}
+	return started
 }
 
 func (s *Store) playerAssignmentForIndex(playerIndex int) (simulation.Team, int) {

@@ -49,11 +49,16 @@ type fakeClientConn struct {
 	events       chan string
 	writeFn      func(context.Context, []byte) error
 	pingFn       func(context.Context) error
+	forceFn      func() error
 	closeBlock   <-chan struct{}
 	closeStarted chan struct{}
 	writeOnce    sync.Once
 	closeOnce    sync.Once
+	closeMu      sync.Mutex
+	closeCode    websocket.StatusCode
+	closeReason  string
 	closeCount   atomic.Int32
+	forceCount   atomic.Int32
 	pingCount    atomic.Int32
 }
 
@@ -102,8 +107,12 @@ func (c *fakeClientConn) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (c *fakeClientConn) Close(websocket.StatusCode, string) error {
+func (c *fakeClientConn) Close(code websocket.StatusCode, reason string) error {
 	c.closeCount.Add(1)
+	c.closeMu.Lock()
+	c.closeCode = code
+	c.closeReason = reason
+	c.closeMu.Unlock()
 	c.closeOnce.Do(func() { close(c.closed) })
 	if c.closeStarted != nil {
 		close(c.closeStarted)
@@ -113,6 +122,20 @@ func (c *fakeClientConn) Close(websocket.StatusCode, string) error {
 	}
 	if c.events != nil {
 		c.events <- "close"
+	}
+	return nil
+}
+
+func (c *fakeClientConn) closeMetadata() (websocket.StatusCode, string) {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	return c.closeCode, c.closeReason
+}
+
+func (c *fakeClientConn) CloseNow() error {
+	c.forceCount.Add(1)
+	if c.forceFn != nil {
+		return c.forceFn()
 	}
 	return nil
 }

@@ -14,6 +14,9 @@ internal/health
 internal/docs
   OpenAPI/AsyncAPI raw spec과 docs UI embed
 
+internal/observability
+  process-local Prometheus registry와 metrics handler
+
 internal/rooms
   handler.go       ServeMux pattern과 JSON fallback
   store.go         in-memory room/player/match lifecycle
@@ -51,9 +54,37 @@ Oracle VM
 Cloudflare Tunnel
   -> api-crawlstars.tolerblanc.com -> 127.0.0.1:8080
   -> tolerblanc.com                -> 127.0.0.1:8081 Caddy hello
+
+Go server process
+  -> application HTTP  127.0.0.1:8080
+  -> private metrics   127.0.0.1:9090
 ```
 
-Go server는 production에서도 `127.0.0.1:8080`에 bind합니다. Public HTTPS edge는 Cloudflare Tunnel입니다. Caddy는 apex hello page용 local service입니다. Rate limiter가 public client IP를 쓰려면 loopback cloudflared peer를 `TRUSTED_PROXY_CIDRS`로 명시해야 하며, `X-Forwarded-For`는 신뢰하지 않습니다.
+Go server는 production에서도 application HTTP를 `127.0.0.1:8080`, metrics를 `127.0.0.1:9090`에 bind합니다. Public HTTPS edge는 Cloudflare Tunnel이며 metrics listener는 tunnel이나 public firewall에 연결하지 않습니다. Caddy는 apex hello page용 local service입니다. Rate limiter가 public client IP를 쓰려면 loopback cloudflared peer를 `TRUSTED_PROXY_CIDRS`로 명시해야 하며, `X-Forwarded-For`는 신뢰하지 않습니다.
+
+## Application과 observability 경계
+
+`cmd/server`의 application 하나가 `rooms.Store` 하나, process-local `observability.Metrics` 하나, HTTP server 두 개를 함께 소유합니다. Application listener와 metrics listener를 모두 먼저 bind한 뒤에만 serve를 시작하므로, 한쪽 bind 실패로 반쪽짜리 process가 남지 않습니다. Metrics listener의 `METRICS_ADDR`는 `127.0.0.0/8` 또는 `::1`의 IP literal과 숫자 port만 허용하며 hostname, wildcard, private/Tailscale IP를 거부합니다.
+
+```text
+SIGINT/SIGTERM 또는 어느 한 HTTP server 종료
+  -> 새 application mutation 차단
+  -> rooms.Store + application HTTP + metrics HTTP 병렬 shutdown
+  -> 최대 10초 graceful drain
+  -> 남은 HTTP transport 강제 close
+```
+
+Systemd의 `TimeoutStopSec=15s` 안에서 application 자체 10초 grace를 사용합니다. `rooms.Store.Shutdown`은 janitor와 room ticker를 멈추고, WebSocket에 `1000 / server shutting down` close를 보낸 뒤 writer와 heartbeat까지 join합니다. Application HTTP는 `ReadHeaderTimeout=5s`, `IdleTimeout=60s`를 사용합니다. WebSocket과 streaming response를 자르지 않도록 server-wide `WriteTimeout`은 두지 않습니다.
+
+Process log와 HTTP server error log는 stdout의 JSON `slog`로 기록합니다. Process event 이름은 `msg`에, room lifecycle과 WebSocket event 이름은 `event`와 `msg`에 기록합니다. Room/WebSocket log는 `roomID`, 필요한 경우 `playerID`와 bounded category/status만 추가합니다. Logger와 Observer callback은 Store를 다시 호출하지 않는 bounded pure sink입니다. Mutation 함수가 반환되면 해당 transition의 log와 metric publication도 끝난 상태입니다.
+
+Private listener는 정확한 `GET /metrics`에서 다음 process-local Prometheus series만 제공합니다.
+
+- `crawlstars_active_rooms`
+- `crawlstars_connected_clients`
+- `crawlstars_tick_duration_seconds`
+
+Application HTTP의 `/metrics`와 private listener의 다른 method/path는 노출하지 않습니다. 이 운영 endpoint는 REST/WebSocket product contract가 아니므로 OpenAPI/AsyncAPI에는 포함하지 않습니다.
 
 ## Simulation core
 
@@ -168,7 +199,7 @@ WebSocket:
 
 Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
-동시성 소유권은 세 층으로 나눕니다. `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Attach는 `Store.mu -> room.mu` 순서로 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
+동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
 
 ## Cleanup
 

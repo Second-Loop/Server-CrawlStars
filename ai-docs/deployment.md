@@ -34,7 +34,7 @@ main push 또는 workflow_dispatch
 /etc/crawl-stars-server/environment
 ```
 
-Service는 `crawlstars` user로 실행되고 `SERVER_ADDR=127.0.0.1:8080`을 사용합니다.
+Service는 `crawlstars` user로 실행됩니다. Systemd unit은 application HTTP에 `SERVER_ADDR=127.0.0.1:8080`, private Prometheus endpoint에 `METRICS_ADDR=127.0.0.1:9090`을 사용합니다.
 
 ## Runtime environment와 secret
 
@@ -64,6 +64,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 - Debug enabled 상태에서 missing/wrong/multiple `Authorization`은 route dispatch 전에 `401 unauthorized`입니다. 올바른 Bearer 뒤에만 route별 2xx/404/405/409/500을 평가합니다. WebSocket GET은 debug Bearer 대신 player session query token을 씁니다.
 - Join limiter 기본값은 10 requests/minute, burst 4입니다. Override 중 하나만 쓰면 다른 값은 default를 사용합니다. Non-positive, non-finite rate나 유효하지 않은 burst는 startup error입니다.
 - `TRUSTED_PROXY_CIDRS`는 comma-separated CIDR입니다. Empty element, bare IP, invalid CIDR은 startup error입니다.
+- Systemd unit의 `METRICS_ADDR`를 바꿀 때도 loopback IP literal과 숫자 port만 사용할 수 있습니다. `127.0.0.1:9090`, `[::1]:9090`은 가능하지만 hostname, wildcard, private/Tailscale IP는 startup error입니다.
 
 설정을 바꾼 뒤에는 `sudo systemctl restart crawl-stars-server`와 status/health check를 실행합니다.
 
@@ -76,6 +77,8 @@ sudo scripts/deploy/install-systemd.sh
 ```
 
 Script는 `crawlstars` user, release directory, systemd unit을 준비하고 service를 enable합니다. 현재 binary가 이미 있을 때만 즉시 restart합니다.
+
+Server는 application과 metrics listener를 둘 다 먼저 bind하고 성공한 뒤에만 요청 처리를 시작합니다. 어느 한 listener가 bind에 실패하면 process가 non-zero로 종료되어 systemd의 `Restart=on-failure`가 적용됩니다.
 
 ## 최신 release 배포
 
@@ -102,6 +105,22 @@ sudo journalctl -u crawl-stars-server -f
 curl -i http://127.0.0.1:8080/health
 curl -i http://127.0.0.1:8080/openapi
 curl -i http://127.0.0.1:8080/asyncapi
+curl -i http://127.0.0.1:9090/metrics
+```
+
+Process, room lifecycle, WebSocket, HTTP server error는 journal에 JSON 한 줄로 기록합니다. Process event 이름은 `msg`에, room/WebSocket event 이름은 `event`와 `msg`에 기록합니다. Room/WebSocket log는 `roomID`, `playerID`처럼 정해진 필드만 사용하며 raw session token, request query, transport error 문자열은 기록하지 않습니다.
+
+Metrics는 private listener의 정확한 `GET /metrics`에서만 제공합니다. Application `127.0.0.1:8080/metrics`, metrics listener의 다른 method/path는 404이고, `9090`을 Cloudflare Tunnel이나 public firewall에 연결하지 않습니다.
+
+## Graceful shutdown
+
+SIGINT/SIGTERM이나 어느 한 HTTP server 종료가 전체 application shutdown을 시작합니다. Process는 `rooms.Store`, application HTTP, metrics HTTP를 병렬로 정리하고 최대 10초 기다립니다. Store는 WebSocket에 normal close `1000 / server shutting down`을 보낸 뒤 room ticker, writer, heartbeat까지 join합니다. 10초가 지나면 남은 HTTP transport를 강제로 닫습니다.
+
+Systemd unit의 `TimeoutStopSec=15s`가 process 내부 10초 grace보다 5초 더 길어서 종료 결과를 기록할 여유가 있습니다. 수동 검증은 다른 terminal에서 WebSocket을 연결한 뒤 다음 명령으로 실행합니다.
+
+```sh
+sudo systemctl stop crawl-stars-server
+sudo journalctl -u crawl-stars-server -n 100 --no-pager
 ```
 
 ## Cloudflare Tunnel
@@ -115,6 +134,9 @@ internet
   -> cloudflared on VM
      -> api-crawlstars.tolerblanc.com  -> Go server 127.0.0.1:8080
      -> tolerblanc.com                 -> Caddy 127.0.0.1:8081
+
+private operator only
+  -> Prometheus metrics                -> Go server 127.0.0.1:9090
 ```
 
 Expected public hostname:
@@ -180,6 +202,7 @@ Caddy는 `127.0.0.1:8081`에서만 listen합니다. Public path는 Cloudflare Tu
 443/tcp
 8080/tcp
 8081/tcp
+9090/tcp
 ```
 
 Public Caddy edge나 direct ingress로 바꾸려면 별도 issue와 명시적 approval이 필요합니다.
@@ -214,6 +237,7 @@ sudo scripts/deploy/install-systemd.sh
 sudo scripts/deploy/pull-latest.sh
 systemctl status crawl-stars-server
 curl -i http://127.0.0.1:8080/health
+curl -i http://127.0.0.1:9090/metrics
 curl -i https://api-crawlstars.tolerblanc.com/health
 ```
 

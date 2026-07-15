@@ -18,6 +18,7 @@ type clientConn interface {
 	Write(context.Context, websocket.MessageType, []byte) error
 	Ping(context.Context) error
 	Close(websocket.StatusCode, string) error
+	CloseNow() error
 }
 
 type writerCommandKind uint8
@@ -39,43 +40,143 @@ type terminalWriterCommand struct {
 	reason   string
 }
 
+type clientLifecyclePublication struct {
+	ready   bool
+	publish func()
+	done    chan struct{}
+}
+
 type clientSession struct {
-	conn              clientConn
-	snapshots         chan []byte
-	control           chan writerCommand
-	terminalHandoff   chan terminalWriterCommand
-	done              chan struct{}
-	closeDone         chan struct{}
-	writerDone        chan struct{}
-	heartbeatDone     chan struct{}
-	writerCtx         context.Context
-	cancelWriter      context.CancelFunc
-	enqueueMu         sync.Mutex
-	heartbeatMu       sync.Mutex
-	closeOnce         sync.Once
-	heartbeatDoneOnce sync.Once
-	onClose           func(*clientSession)
-	heartbeatStarted  bool
-	terminal          bool
+	conn                clientConn
+	snapshots           chan []byte
+	control             chan writerCommand
+	terminalHandoff     chan terminalWriterCommand
+	done                chan struct{}
+	closeDone           chan struct{}
+	transportCloseStart chan struct{}
+	writerDone          chan struct{}
+	heartbeatDone       chan struct{}
+	writerCtx           context.Context
+	cancelWriter        context.CancelFunc
+	enqueueMu           sync.Mutex
+	heartbeatMu         sync.Mutex
+	ioErrorMu           sync.Mutex
+	publicationMu       sync.Mutex
+	closeOnce           sync.Once
+	forceOnce           sync.Once
+	heartbeatDoneOnce   sync.Once
+	onClose             func(*clientSession)
+	publications        []*clientLifecyclePublication
+	ioErrorCategory     string
+	ioErrorStatus       string
+	publicationDraining bool
+	heartbeatStarted    bool
+	terminal            bool
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
 	writerCtx, cancelWriter := context.WithCancel(context.Background())
 	session := &clientSession{
-		conn:            conn,
-		snapshots:       make(chan []byte, 1),
-		control:         make(chan writerCommand, 8),
-		terminalHandoff: make(chan terminalWriterCommand, 1),
-		done:            make(chan struct{}),
-		closeDone:       make(chan struct{}),
-		writerDone:      make(chan struct{}),
-		heartbeatDone:   make(chan struct{}),
-		writerCtx:       writerCtx,
-		cancelWriter:    cancelWriter,
-		onClose:         onClose,
+		conn:                conn,
+		snapshots:           make(chan []byte, 1),
+		control:             make(chan writerCommand, 8),
+		terminalHandoff:     make(chan terminalWriterCommand, 1),
+		done:                make(chan struct{}),
+		closeDone:           make(chan struct{}),
+		transportCloseStart: make(chan struct{}),
+		writerDone:          make(chan struct{}),
+		heartbeatDone:       make(chan struct{}),
+		writerCtx:           writerCtx,
+		cancelWriter:        cancelWriter,
+		onClose:             onClose,
 	}
 	go session.writeLoop()
 	return session
+}
+
+// Ready lifecycle publications are synchronous: the mutator returns only after
+// its log and Observer callbacks complete, including when another goroutine owns
+// the FIFO drainer. Those callbacks are bounded pure sinks and must not call
+// Store methods or reenter client lifecycle publication.
+func (s *clientSession) enqueueLifecyclePublication(ready bool, publish func()) *clientLifecyclePublication {
+	publication := &clientLifecyclePublication{
+		ready:   ready,
+		publish: publish,
+		done:    make(chan struct{}),
+	}
+	s.publicationMu.Lock()
+	s.publications = append(s.publications, publication)
+	shouldDrain := ready && s.startPublicationDrainLocked()
+	s.publicationMu.Unlock()
+	// A not-ready connected publication is prepared while room.mu is held. It
+	// must return without running callbacks or waiting for publication.
+	if !ready {
+		return publication
+	}
+	if shouldDrain {
+		s.drainLifecyclePublications()
+	} else {
+		<-publication.done
+	}
+	return publication
+}
+
+func (s *clientSession) readyLifecyclePublication(publication *clientLifecyclePublication) {
+	if publication == nil {
+		return
+	}
+	s.publicationMu.Lock()
+	publication.ready = true
+	shouldDrain := s.startPublicationDrainLocked()
+	s.publicationMu.Unlock()
+	if shouldDrain {
+		s.drainLifecyclePublications()
+	} else {
+		<-publication.done
+	}
+}
+
+func (s *clientSession) startPublicationDrainLocked() bool {
+	if s.publicationDraining || len(s.publications) == 0 || !s.publications[0].ready {
+		return false
+	}
+	s.publicationDraining = true
+	return true
+}
+
+func (s *clientSession) drainLifecyclePublications() {
+	var firstPanic any
+	hasPanic := false
+	for {
+		s.publicationMu.Lock()
+		if len(s.publications) == 0 || !s.publications[0].ready {
+			s.publicationDraining = false
+			s.publicationMu.Unlock()
+			if hasPanic {
+				panic(firstPanic)
+			}
+			return
+		}
+		publication := s.publications[0]
+		if len(s.publications) == 1 {
+			s.publications = nil
+		} else {
+			s.publications = s.publications[1:]
+		}
+		s.publicationMu.Unlock()
+		panicValue, panicked := captureCallbackPanic(publication.publish)
+		close(publication.done)
+		if panicked && !hasPanic {
+			firstPanic = panicValue
+			hasPanic = true
+		}
+	}
+}
+
+func (s *clientSession) ioError() (string, string) {
+	s.ioErrorMu.Lock()
+	defer s.ioErrorMu.Unlock()
+	return s.ioErrorCategory, s.ioErrorStatus
 }
 
 func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, timeout time.Duration) {
@@ -95,9 +196,14 @@ func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, time
 			case <-ticker.C():
 				ctx, cancel := context.WithTimeout(s.writerCtx, timeout)
 				err := s.conn.Ping(ctx)
+				timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 				cancel()
 				if err != nil {
-					s.close(websocket.StatusGoingAway, "heartbeat failed")
+					category := "ping_failed"
+					if timedOut {
+						category = "ping_timeout"
+					}
+					s.closeWithIOError(websocket.StatusGoingAway, "heartbeat failed", category, "")
 					return
 				}
 			case <-s.done:
@@ -261,7 +367,7 @@ func (s *clientSession) writeCommand(command writerCommand) bool {
 	err := s.conn.Write(ctx, websocket.MessageText, command.payload)
 	cancel()
 	if err != nil {
-		s.close(websocket.StatusGoingAway, "write failed")
+		s.closeWithIOError(websocket.StatusGoingAway, "write failed", "write_failed", "")
 		return false
 	}
 	return true
@@ -277,8 +383,22 @@ func (s *clientSession) isDone() bool {
 }
 
 func (s *clientSession) close(code websocket.StatusCode, reason string) {
+	s.closeWithCause(code, reason, "", "")
+}
+
+func (s *clientSession) closeWithIOError(code websocket.StatusCode, reason string, category string, status string) {
+	s.closeWithCause(code, reason, category, status)
+}
+
+func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string, category string, status string) {
 	s.closeOnce.Do(func() {
 		defer close(s.closeDone)
+		if category != "" {
+			s.ioErrorMu.Lock()
+			s.ioErrorCategory = category
+			s.ioErrorStatus = status
+			s.ioErrorMu.Unlock()
+		}
 		close(s.done)
 		s.cancelWriter()
 		s.heartbeatMu.Lock()
@@ -289,8 +409,24 @@ func (s *clientSession) close(code websocket.StatusCode, reason string) {
 		if s.onClose != nil {
 			s.onClose(s)
 		}
+		close(s.transportCloseStart)
 		if s.conn != nil {
 			_ = s.conn.Close(code, reason)
+		}
+	})
+}
+
+// forceClose starts the logical close if necessary, then interrupts a transport
+// that may already be blocked inside another closeOnce owner.
+func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
+	go s.close(code, reason)
+	select {
+	case <-s.transportCloseStart:
+	case <-s.closeDone:
+	}
+	s.forceOnce.Do(func() {
+		if s.conn != nil {
+			_ = s.conn.CloseNow()
 		}
 	})
 }
@@ -321,6 +457,7 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		if errors.Is(err, ErrUnauthorized) {
 			status = http.StatusUnauthorized
 			code = "unauthorized"
+			s.logWebSocketEvent("websocket_auth_rejected", roomID, playerID, "category", "invalid_token")
 		}
 		writeError(w, status, code, err.Error())
 		return
@@ -344,6 +481,7 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 	for {
 		_, payload, err := session.conn.Read(r.Context())
 		if err != nil {
+			recordWebSocketReadError(session, err)
 			return
 		}
 
@@ -394,10 +532,43 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 	}
 }
 
+func recordWebSocketReadError(session *clientSession, err error) {
+	status := websocket.CloseStatus(err)
+	if status == websocket.StatusNormalClosure || status == websocket.StatusGoingAway {
+		return
+	}
+	if status == -1 {
+		session.closeWithIOError(websocket.StatusNormalClosure, "", "read_failed", "")
+		return
+	}
+	session.closeWithIOError(websocket.StatusNormalClosure, "", "read_close", normalizedWebSocketStatus(status))
+}
+
+func normalizedWebSocketStatus(status websocket.StatusCode) string {
+	switch status {
+	case websocket.StatusPolicyViolation:
+		return "policy_violation"
+	case websocket.StatusUnsupportedData:
+		return "unsupported_data"
+	case websocket.StatusInvalidFramePayloadData:
+		return "invalid_payload"
+	case websocket.StatusMessageTooBig:
+		return "message_too_big"
+	case websocket.StatusInternalError:
+		return "internal_error"
+	case websocket.StatusAbnormalClosure:
+		return "abnormal_closure"
+	default:
+		return "other"
+	}
+}
+
 func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
-	if s.isClosed() {
+	if !s.beginMutation() {
 		return nil, ErrRoomNotFound
 	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return nil, ErrRoomNotFound
@@ -449,6 +620,11 @@ func (s *Store) attachClient(reservation *clientReservation, conn clientConn) bo
 func (s *Store) attachClientSession(reservation *clientReservation, conn clientConn) (*clientSession, bool) {
 	var deliveries []webSocketDelivery
 
+	if !s.beginMutation() {
+		return nil, false
+	}
+	defer s.endMutation()
+
 	if reservation == nil || reservation.room == nil {
 		return nil, false
 	}
@@ -467,6 +643,9 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	session := newClientSession(conn, func(expected *clientSession) {
 		s.releaseClient(reservation, expected)
 	})
+	connectedClient := clientObservation{roomID: room.ID, playerID: reservation.playerID, session: session}
+	connectedTransition := s.observation.connectedClientsDelta(1)
+	connectedPublication := s.prepareConnectedClientPublication(connectedClient, connectedTransition)
 	delete(room.reservations, reservation.playerID)
 	room.clients[reservation.playerID] = session
 	lifecycleDone := make(chan struct{})
@@ -487,6 +666,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
+	session.readyLifecyclePublication(connectedPublication)
 	closeClientSessions(failedSessions, "control delivery failed")
 	return session, true
 }
@@ -528,14 +708,23 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
 	delete(room.readyPlayers, playerID)
+	clientTransitions := s.clientObservationTransitionsLocked([]clientObservation{{
+		roomID:   room.ID,
+		playerID: playerID,
+		session:  currentSession,
+	}}, -1)
 	var playerIDs []string
 	if room.hasPreStartMatch() {
+		clientStart := len(resources.clientObservations)
 		playerIDs, shouldClose = resources.removeRoomLocked(room)
+		clientTransitions = append(clientTransitions,
+			s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)...)
 	}
 	if room.Status == RoomStatusStarted && len(room.clients) == 0 {
 		room.disconnectedAt = s.clock.Now()
 	}
 	room.mu.Unlock()
+	s.publishDisconnectedClients(clientTransitions)
 
 	if shouldClose {
 		if s.deleteRoomIfSame(room.ID, room) {
@@ -546,6 +735,11 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 }
 
 func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) {
+	if !s.beginMutation() {
+		return
+	}
+	defer s.endMutation()
+
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return
@@ -566,6 +760,11 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 
 func (s *Store) markClientReady(roomID string, playerID string, expectedSession *clientSession) {
 	var deliveries []webSocketDelivery
+
+	if !s.beginMutation() {
+		return
+	}
+	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
 	if room == nil {
@@ -594,9 +793,16 @@ func (s *Store) markClientReady(roomID string, playerID string, expectedSession 
 func (s *Store) startMatchCountdownLocked(room *room) {
 	room.matchStatus = MatchStatusStarting
 	room.countdown = matchCountdownSeconds
-	room.countdownTicker = s.clock.NewTicker(time.Second)
-	room.countdownStop = make(chan struct{})
-	go s.runMatchCountdown(room, room.countdownTicker, room.countdownStop)
+	countdownTicker := s.clock.NewTicker(time.Second)
+	countdownStop := make(chan struct{})
+	room.countdownTicker = countdownTicker
+	room.countdownStop = countdownStop
+	if !s.launchRoomWorker(func() { s.runMatchCountdown(room, countdownTicker, countdownStop) }) {
+		countdownTicker.Stop()
+		close(countdownStop)
+		room.countdownTicker = nil
+		room.countdownStop = nil
+	}
 }
 
 func (s *Store) stopMatchCountdownLocked(room *room) {
@@ -658,11 +864,14 @@ func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool 
 	}
 
 	room.countdown = 0
-	s.startRoomLocked(room)
+	started := s.startRoomLocked(room)
 	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
 	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
+	if started {
+		s.logRoomEvent("room_started", room.ID)
+	}
 	closeClientSessions(failedSessions, "control delivery failed")
 	return true
 }
@@ -681,6 +890,7 @@ func (s *Store) tickRoomState(room *room) {
 	var snapshotSessions []*clientSession
 	var snapshotPayload []byte
 	var snapshotMarshalErr error
+	var clientTransitions []clientObservationTransition
 	gameEnded := false
 
 	room.mu.Lock()
@@ -694,7 +904,9 @@ func (s *Store) tickRoomState(room *room) {
 		inputs = append(inputs, input)
 	}
 	room.pendingInputs = make(map[string]simulation.InputCommand)
+	stepStarted := s.wallNow()
 	snapshot := room.state.Step(inputs)
+	stepDuration := s.wallNow().Sub(stepStarted)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 
@@ -710,16 +922,27 @@ func (s *Store) tickRoomState(room *room) {
 		if snapshotMarshalErr == nil {
 			deliveries = append(deliveries, room.gameEndDeliveries(results)...)
 		}
+		for playerID, session := range room.clients {
+			if session != nil {
+				resources.clientObservations = append(resources.clientObservations, clientObservation{
+					roomID: room.ID, playerID: playerID, session: session,
+				})
+			}
+		}
+		clientTransitions = s.clientObservationTransitionsLocked(resources.clientObservations, -1)
 		room.clients = nil
 		playerIDs, gameEnded = resources.removeRoomLocked(room)
 	} else {
 		enqueueSnapshotMessage(snapshotSessions, message)
 	}
 	room.mu.Unlock()
+	s.observation.observeTick(stepDuration)
+	s.publishDisconnectedClients(clientTransitions)
 
 	if gameEnded {
 		if s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
+			s.logRoomEvent("room_ended", room.ID)
 		}
 	}
 	if gameEnded {

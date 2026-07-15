@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,13 +177,19 @@ func TestNewMuxRoutesRoomSecurityBeforeOuterServeMux(t *testing.T) {
 	}
 }
 
-func TestNewMuxRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
-	handler, err := newMux(rooms.HandlerConfig{EnableDebugAPI: true})
+func TestNewApplicationRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
+	app, err := newApplication(runtimeConfig{
+		serverAddr:  defaultServerAddr,
+		metricsAddr: defaultMetricsAddr,
+		roomHandlerConfig: rooms.HandlerConfig{
+			EnableDebugAPI: true,
+		},
+	})
 	if err == nil {
 		t.Fatal("expected debug API configuration error")
 	}
-	if handler != nil {
-		t.Fatal("expected no handler for invalid debug API configuration")
+	if app != nil {
+		t.Fatal("expected no application for invalid debug API configuration")
 	}
 }
 
@@ -284,11 +292,15 @@ func TestLoadRoomHandlerConfigWiresRateOverrides(t *testing.T) {
 func mustNewMux(t *testing.T, config rooms.HandlerConfig) http.Handler {
 	t.Helper()
 
-	handler, err := newMux(config)
+	store := rooms.NewStoreWithConfig(5, rooms.StoreConfig{
+		GameConfig: loadGameConfig(slog.New(slog.NewJSONHandler(io.Discard, nil))),
+	})
+	t.Cleanup(store.Close)
+	roomHandler, err := rooms.HandlerWithConfig(store, config)
 	if err != nil {
-		t.Fatalf("create server mux: %v", err)
+		t.Fatalf("create room handler: %v", err)
 	}
-	return handler
+	return newMux(roomHandler)
 }
 
 func assertRandomValue(t *testing.T, value string, prefix string, wantBytes int) {
