@@ -70,8 +70,9 @@ State.Step(inputs []InputCommand) Snapshot
 - `TileSize = 1.2`
 - player speed/radius/HP = `2`, `0.5`, `100`
 - projectile speed/damage/radius = `13`, `10`, `0.3`
-- default map fixture path = `internal/simulation/fixtures/default-map.json`
-- fixture load/validation failure fallback = 5x5 static map, max players `6`
+- default map source = server binary가 embed한 `server-config/game-config.json`의 `map`
+- config load/validation failure fallback = `StaticGameConfig()`의 5x5 static map, max players `6`
+- `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 사용
 - player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 부족하거나 없으면 map 크기에서 유도한 legacy-compatible fallback 좌표 사용
 
 Movement:
@@ -112,7 +113,7 @@ REST debug API:
 
 Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tick의 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. `DELETE` debug API는 in-memory room을 삭제하고 room-local ticker와 WebSocket connection을 닫습니다.
 
-`cmd/server`는 시작할 때 `internal/simulation/fixtures/default-map.json`을 로드해 `rooms.StoreConfig`로 주입합니다. fixture를 읽지 못하거나 shape 검증에 실패하면 `internal/simulation.StaticMapFixture()`를 사용합니다.
+`cmd/server`는 시작할 때 embed된 `server-config/game-config.json`을 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. config를 읽지 못하거나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map fallback을 사용합니다.
 
 Simple matchmaking:
 
