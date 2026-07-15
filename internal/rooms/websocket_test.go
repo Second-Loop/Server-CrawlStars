@@ -31,6 +31,11 @@ type webSocketReadPump struct {
 	errors   chan error
 }
 
+type webSocketControlQueueBarrierMessage struct {
+	Type   string `json:"Type"`
+	Marker string `json:"Marker"`
+}
+
 type issuedPlayer struct {
 	playerResponse
 	SessionToken  string
@@ -2397,6 +2402,10 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 			}
 
 			roomID := joined[0].Room.ID
+			joinedPlayerIDs := make([]string, len(joined))
+			for index := range joined {
+				joinedPlayerIDs[index] = joined[index].Player.ID
+			}
 			connections := make([]*websocket.Conn, len(joined))
 			readPumps := make([]*webSocketReadPump, len(joined))
 			for index := 0; index < len(joined)-1; index++ {
@@ -2406,14 +2415,9 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 				waitForAttachedClient(t, store, roomID, joined[index].Player.ID)
 			}
 			waitForMatchLifecycleState(t, store, roomID, MatchStatusMatched, 5, 0)
-			for index := 0; index < len(joined)-1; index++ {
-				writeWSJSON(t, connections[index], inputMessage{})
-			}
-			for index := 0; index < len(joined)-1; index++ {
-				waitForPendingInput(t, store, roomID, joined[index].Player.ID)
-			}
-			for index := 0; index < len(joined)-1; index++ {
-				assertNoWebSocketReadPumpPayload(t, readPumps[index])
+			fiveAttachedBarriers := enqueueWebSocketControlQueueBarriers(t, store, roomID, "five-attached", joinedPlayerIDs[:5])
+			for index, barrier := range fiveAttachedBarriers {
+				readWebSocketReadPumpControlBarrier(t, readPumps[index], barrier)
 			}
 
 			connections[5] = dialIssuedPlayer(t, server.URL, joined[5].WebSocketPath)
@@ -2421,6 +2425,7 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 			readPumps[5] = startWebSocketReadPump(t, connections[5])
 			waitForAttachedClient(t, store, roomID, joined[5].Player.ID)
 			waitForMatchLifecycleState(t, store, roomID, MatchStatusLoading, 6, 0)
+			readyBarriers := enqueueWebSocketControlQueueBarriers(t, store, roomID, "ready-enqueued", joinedPlayerIDs)
 
 			readyEvents := make([]readyEventMessage, len(connections))
 			for index, readPump := range readPumps {
@@ -2431,12 +2436,10 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 				if index > 0 {
 					assertMatchingReadyEvents(t, readyEvents[0], readyEvents[index])
 				}
+				readWebSocketReadPumpControlBarrier(t, readPump, readyBarriers[index])
 			}
 			if len(readyEvents[0].Players) != len(joined) {
 				t.Fatalf("expected Ready event with six players, got %+v", readyEvents[0].Players)
-			}
-			for _, readPump := range readPumps {
-				assertNoWebSocketReadPumpPayload(t, readPump)
 			}
 
 			room := store.lookupRoom(roomID)
@@ -2465,12 +2468,6 @@ func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.
 					t.Fatalf("Ready player %d expected ID=%q team=%q slot=%d spawn=%+v, got %+v", index, issued.Player.ID, tt.teams[index], tt.slots[index], assignment.SpawnPosition, readyPlayer)
 				}
 			}
-			room.mu.Lock()
-			for index := 0; index < len(joined)-1; index++ {
-				delete(room.pendingInputs, joined[index].Player.ID)
-			}
-			room.mu.Unlock()
-
 			for index := 0; index < len(connections)-1; index++ {
 				writeWSJSON(t, connections[index], readyMessage{Type: "ready"})
 			}
@@ -4070,15 +4067,52 @@ func startWebSocketReadPump(t *testing.T, conn *websocket.Conn) *webSocketReadPu
 	return pump
 }
 
-func assertNoWebSocketReadPumpPayload(t *testing.T, pump *webSocketReadPump) {
+func enqueueWebSocketControlQueueBarriers(t *testing.T, store *Store, roomID string, phase string, playerIDs []string) [][]byte {
 	t.Helper()
 
-	select {
-	case payload := <-pump.payloads:
-		t.Fatalf("expected no WebSocket payload, got %s", payload)
-	case err := <-pump.errors:
-		t.Fatalf("WebSocket read pump failed while expecting no payload: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	payloads := make([][]byte, len(playerIDs))
+	for index, playerID := range playerIDs {
+		payload, err := json.Marshal(webSocketControlQueueBarrierMessage{
+			Type:   "test_control_queue_barrier",
+			Marker: fmt.Sprintf("%s:%d:%s", phase, index, playerID),
+		})
+		if err != nil {
+			t.Fatalf("marshal WebSocket control queue barrier: %v", err)
+		}
+		payloads[index] = payload
+	}
+
+	room := store.lookupRoom(roomID)
+	if room == nil {
+		t.Fatalf("expected room %q for WebSocket control queue barrier", roomID)
+	}
+	room.mu.Lock()
+	failure := ""
+	for index, playerID := range playerIDs {
+		session := room.clients[playerID]
+		if session == nil {
+			failure = fmt.Sprintf("expected attached client session for player %s", playerID)
+			break
+		}
+		queued, shouldClose := session.tryEnqueueControl(payloads[index])
+		if !queued || shouldClose {
+			failure = fmt.Sprintf("expected control queue barrier for player %s to enqueue, got queued=%t shouldClose=%t", playerID, queued, shouldClose)
+			break
+		}
+	}
+	room.mu.Unlock()
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	return payloads
+}
+
+func readWebSocketReadPumpControlBarrier(t *testing.T, pump *webSocketReadPump, want []byte) {
+	t.Helper()
+
+	got := readWebSocketReadPumpPayload(t, pump)
+	if string(got) != string(want) {
+		t.Fatalf("expected next WebSocket payload to be control queue barrier %s, got %s", want, got)
 	}
 }
 
