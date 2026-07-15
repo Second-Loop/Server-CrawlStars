@@ -82,6 +82,8 @@ const (
 	TileGround     TileType = 0
 	TileWall       TileType = 1
 	TileSpawnPoint TileType = 2
+	TileBush       TileType = 3
+	TileWater      TileType = 4
 )
 
 type MapData struct {

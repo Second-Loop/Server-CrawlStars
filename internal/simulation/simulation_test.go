@@ -116,6 +116,27 @@ func TestLoadMapDataReadsJSONFixture(t *testing.T) {
 	}
 }
 
+func TestLoadMapDataAcceptsBushAndWaterTiles(t *testing.T) {
+	gameMap, err := LoadMapData(strings.NewReader("{" +
+		"\"width\":4,\"height\":4,\"index\":0,\"maxPlayers\":2,\"tileSize\":1.2," +
+		"\"map\":[[1,1,1,1],[1,3,4,1],[1,0,2,1],[1,1,1,1]]}"))
+	if err != nil {
+		t.Fatalf("load bush/water map data: %v", err)
+	}
+	if gameMap.Map[1][1] != TileBush || gameMap.Map[1][2] != TileWater {
+		t.Fatalf("expected bush/water tiles, got %+v", gameMap.Map[1])
+	}
+}
+
+func TestLoadMapDataRejectsTileOutsideContract(t *testing.T) {
+	_, err := LoadMapData(strings.NewReader("{" +
+		"\"width\":4,\"height\":4,\"index\":0,\"maxPlayers\":2,\"tileSize\":1.2," +
+		"\"map\":[[1,1,1,1],[1,0,5,1],[1,0,2,1],[1,1,1,1]]}"))
+	if err == nil {
+		t.Fatal("expected tile value 5 to be rejected")
+	}
+}
+
 func TestLoadMapDataRejectsInvalidTileGrid(t *testing.T) {
 	_, err := LoadMapData(strings.NewReader(`{
 		"width": 4,

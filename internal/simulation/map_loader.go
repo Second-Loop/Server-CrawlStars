@@ -56,7 +56,7 @@ func validateMapData(gameMap MapData) error {
 		}
 		for x, tile := range row {
 			switch tile {
-			case TileGround, TileWall, TileSpawnPoint:
+			case TileGround, TileWall, TileSpawnPoint, TileBush, TileWater:
 			default:
 				return fmt.Errorf("map tile at (%d,%d) has invalid value %d", x, y, tile)
 			}
