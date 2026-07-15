@@ -252,12 +252,12 @@ func (s *State) applyInput(input InputCommand) {
 		}
 
 		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
-		if !s.collidesWithWall(nextX, s.players[i].Radius) {
+		if !s.collidesWithMap(nextX, s.players[i].Radius, tileBlocksPlayer) {
 			s.players[i].Pos = nextX
 		}
 
 		nextY := Vector2{X: s.players[i].Pos.X, Y: s.players[i].Pos.Y + movement.Y}
-		if !s.collidesWithWall(nextY, s.players[i].Radius) {
+		if !s.collidesWithMap(nextY, s.players[i].Radius, tileBlocksPlayer) {
 			s.players[i].Pos = nextY
 		}
 		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
@@ -313,7 +313,7 @@ func (s *State) moveProjectiles() {
 			Y: s.projectiles[i].Pos.Y + s.projectiles[i].Dir.Y*s.projectiles[i].Speed*s.tickDuration(),
 		}
 		s.projectiles[i].Pos = next
-		if s.collidesWithWall(next, s.projectiles[i].Radius) {
+		if s.collidesWithMap(next, s.projectiles[i].Radius, tileBlocksProjectile) {
 			s.projectiles[i].IsDestroyed = true
 		}
 		if !s.projectiles[i].IsDestroyed {
@@ -362,7 +362,15 @@ func (s *State) tickDuration() float64 {
 	return 1.0 / float64(s.gameConfig.TickRate)
 }
 
-func (s *State) collidesWithWall(position Vector2, radius float64) bool {
+func tileBlocksPlayer(tile TileType) bool {
+	return tile == TileWall || tile == TileWater
+}
+
+func tileBlocksProjectile(tile TileType) bool {
+	return tile == TileWall
+}
+
+func (s *State) collidesWithMap(position Vector2, radius float64, blocksTile func(TileType) bool) bool {
 	if s.gameMap.Width == 0 || s.gameMap.Height == 0 {
 		return false
 	}
@@ -382,7 +390,7 @@ func (s *State) collidesWithWall(position Vector2, radius float64) bool {
 
 	for y, row := range s.gameMap.Map {
 		for x, tile := range row {
-			if tile != TileWall {
+			if !blocksTile(tile) {
 				continue
 			}
 			if s.gameMap.circleIntersectsTile(position, radius, x, y) {
