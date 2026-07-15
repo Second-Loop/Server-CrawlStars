@@ -44,7 +44,7 @@ func (r *room) isExpired(now time.Time) bool {
 	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
 		return true
 	}
-	if len(r.clients) > 0 {
+	if len(r.clients) > 0 || len(r.reservations) > 0 {
 		return false
 	}
 	if r.Status == RoomStatusWaiting {
@@ -85,6 +85,7 @@ func (r *roomResources) add(room *room) {
 		}
 	}
 	room.clients = nil
+	room.reservations = nil
 }
 
 func (r roomResources) close(reason string) {

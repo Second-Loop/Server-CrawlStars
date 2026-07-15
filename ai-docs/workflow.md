@@ -20,10 +20,11 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - movement, wall collision
 - projectile 생성, 이동, destroy
 - hit, HP, death snapshot
-- room REST debug API
-- room WebSocket snapshot stream
+- 기본 비활성화된 room REST debug API와 Bearer 보호
+- player session token으로 보호된 room WebSocket snapshot stream
 - room TTL cleanup
 - simple `/matchmaking/join`
+- `/matchmaking/join` IP별 token-bucket rate limit
 - matchmaking Ready event/ready ACK/countdown/start
 - start 전 match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
@@ -35,7 +36,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - ready timeout
 - start 후 disconnect, bot replacement, ping/pong timeout
 - respawn, score
-- persistence, database, auth
+- persistence, database, account auth
 - Kubernetes, dashboard, scheduler, runner
 
 ## Linear 규칙
@@ -105,9 +106,12 @@ make ci
 
 ```sh
 make docs-build
+npx --yes --package @asyncapi/cli asyncapi validate api/asyncapi.yaml
 ```
 
 `make ci`는 docs validation/build, `go vet`, `go test`, server build, deploy script syntax check를 함께 실행합니다. Clean checkout에서 `go test ./...`만 바로 실행하면 Go embed 대상 docs 파일이 없을 수 있으므로 공식 검증은 `make ci`입니다.
+
+`docs-ui/scripts/validate.mjs`는 필수 marker와 secret-free DTO 경계를 빠르게 확인하지만 YAML schema parser는 아닙니다. 계약 변경 시 OpenAPI/AsyncAPI YAML parse와 공식 AsyncAPI CLI validation을 별도로 실행합니다.
 
 ## 문서 업데이트
 
@@ -120,6 +124,7 @@ REST/WebSocket 계약이 바뀌면 같은 PR에서 다음을 확인합니다.
 - `ai-docs/api-reference.md`
 - `ai-docs/api-docs.md`
 - 필요하면 `ai-docs/protocol.md`, `ai-docs/architecture.md`, `ai-docs/decisions.md`
+- 보안 환경 변수나 proxy trust가 바뀌면 `ai-docs/deployment.md`
 
 ## 문서 역할
 

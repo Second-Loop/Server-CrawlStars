@@ -19,19 +19,368 @@ type snapshotMessage struct {
 	Snapshot simulation.Snapshot `json:"Snapshot"`
 }
 
-func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
-	fakeClock := newFakeClock()
-	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+type issuedPlayer struct {
+	playerResponse
+	SessionToken  string
+	WebSocketPath string
+}
+
+func TestWebSocketTokenRejectsInvalidCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(issuedPlayer, issuedPlayer) string
+	}{
+		{
+			name: "missing",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return strings.SplitN(first.WebSocketPath, "?", 2)[0]
+			},
+		},
+		{
+			name: "empty",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return strings.SplitN(first.WebSocketPath, "?", 2)[0] + "?token="
+			},
+		},
+		{
+			name: "wrong",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return strings.SplitN(first.WebSocketPath, "?", 2)[0] + "?token=wrong"
+			},
+		},
+		{
+			name: "another player",
+			path: func(first issuedPlayer, second issuedPlayer) string {
+				return strings.SplitN(first.WebSocketPath, "?", 2)[0] + "?token=" + second.SessionToken
+			},
+		},
+		{
+			name: "multiple",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return first.WebSocketPath + "&token=extra"
+			},
+		},
+		{
+			name: "malformed query pair",
+			path: func(first issuedPlayer, _ issuedPlayer) string {
+				return first.WebSocketPath + "&bad=one;two"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStoreWithClock(5, newFakeClock())
+			handler := debugHandler(t, store)
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			defer store.Close()
+
+			room := createRoom(t, handler)
+			first := issuePlayer(t, handler, room.ID)
+			second := issuePlayer(t, handler, room.ID)
+
+			assertWebSocketDialError(t, server.URL, tt.path(first, second), http.StatusUnauthorized, "unauthorized")
+		})
+	}
+}
+
+func TestWebSocketTokenPreservesUnknownIdentityErrors(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	assertWebSocketDialError(t, server.URL, "/rooms/missing/players/player_missing", http.StatusNotFound, "room_not_found")
+	assertWebSocketDialError(t, server.URL, "/rooms/"+room.ID+"/players/player_missing", http.StatusNotFound, "player_not_found")
+}
+
+func TestWebSocketTokenAllowsCorrectConnectionAndReconnect(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+
+	first := dialIssuedPlayer(t, server.URL, issued.WebSocketPath)
+	waitForAttachedClient(t, store, room.ID, issued.ID)
+	_ = first.Close(websocket.StatusNormalClosure, "")
+	waitForDetachedClient(t, store, room.ID, issued.ID)
+
+	second := dialIssuedPlayer(t, server.URL, issued.WebSocketPath)
+	defer second.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, issued.ID)
+}
+
+func TestWebSocketTokenAuthenticationPrecedesDuplicateCheck(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+	pathWithoutToken := strings.SplitN(issued.WebSocketPath, "?", 2)[0]
+
+	first := dialIssuedPlayer(t, server.URL, issued.WebSocketPath)
+	defer first.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, room.ID, issued.ID)
+
+	assertWebSocketDialError(t, server.URL, pathWithoutToken+"?token=wrong", http.StatusUnauthorized, "unauthorized")
+	assertWebSocketDialError(t, server.URL, issued.WebSocketPath, http.StatusConflict, "player_already_connected")
+}
+
+func TestWebSocketFailedUpgradeRollsBackReservationWithoutCancelingMatch(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := debugHandler(t, store)
+	defer store.Close()
+
+	first := joinMatchmaking(t, handler)
+	_ = joinMatchmaking(t, handler)
+
+	rec := request(handler, http.MethodGet, first.WebSocketPath)
+	if rec.Code == http.StatusSwitchingProtocols {
+		t.Fatal("expected a non-WebSocket request to fail the upgrade")
+	}
+
+	store.mu.Lock()
+	matched := store.rooms[first.Room.ID]
+	roomExists := matched != nil
+	clientCount := 0
+	reservationCount := 0
+	matchStatus := MatchStatus("")
+	if matched != nil {
+		clientCount = len(matched.clients)
+		reservationCount = len(matched.reservations)
+		matchStatus = matched.matchStatus
+	}
+	store.mu.Unlock()
+
+	if !roomExists || matchStatus != MatchStatusMatched {
+		t.Fatal("expected failed upgrade to preserve the matched room")
+	}
+	if clientCount != 0 || reservationCount != 0 {
+		t.Fatal("expected failed upgrade to leave no client or reservation")
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn := dialIssuedPlayer(t, server.URL, first.WebSocketPath)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, first.Room.ID, first.Player.ID)
+}
+
+func TestClientReservationCannotAttachAfterRoomRemoval(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	defer store.Close()
+	handler := debugHandler(t, store)
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+
+	reservation, err := store.reserveClient(room.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	if _, ok := store.deleteRoom(room.ID); !ok {
+		t.Fatal("expected room deletion to succeed")
+	}
+	if store.attachClient(reservation, nil) {
+		t.Fatal("expected attachment to fail after room deletion")
+	}
+	store.rollbackClientReservation(reservation)
+}
+
+func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	handler := debugHandler(t, store)
+	room := createRoom(t, handler)
+	issued := issuePlayer(t, handler, room.ID)
+
+	reservation, err := store.reserveClient(room.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	store.Close()
+	if store.attachClient(reservation, nil) {
+		t.Fatal("expected attachment to fail after store close")
+	}
+	store.rollbackClientReservation(reservation)
+}
+
+func TestClientReservationRollbackRestoresDisconnectedAt(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	defer store.Close()
+	handler := debugHandler(t, store)
+	roomResponse := createRoom(t, handler)
+	issued := issuePlayer(t, handler, roomResponse.ID)
+	previousDisconnectedAt := fakeClock.Now().Add(-time.Minute)
+
+	store.mu.Lock()
+	room := store.rooms[roomResponse.ID]
+	room.Status = RoomStatusStarted
+	room.disconnectedAt = previousDisconnectedAt
+	store.mu.Unlock()
+
+	reservation, err := store.reserveClient(roomResponse.ID, issued.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	store.mu.Lock()
+	reservedDisconnectedAt := room.disconnectedAt
+	store.mu.Unlock()
+	if !reservedDisconnectedAt.Equal(previousDisconnectedAt) {
+		t.Fatal("expected reservation to preserve the disconnected timestamp")
+	}
+	store.rollbackClientReservation(reservation)
+
+	store.mu.Lock()
+	gotDisconnectedAt := room.disconnectedAt
+	reservationCount := len(room.reservations)
+	store.mu.Unlock()
+	if !gotDisconnectedAt.Equal(previousDisconnectedAt) {
+		t.Fatal("expected rollback to restore the disconnected timestamp")
+	}
+	if reservationCount != 0 {
+		t.Fatal("expected rollback to remove the reservation")
+	}
+}
+
+func TestClientReservationRollbackPreservesActivityAcrossOrders(t *testing.T) {
+	tests := []struct {
+		name  string
+		order []int
+	}{
+		{name: "first then second", order: []int{0, 1}},
+		{name: "second then first", order: []int{1, 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			defer store.Close()
+			handler := debugHandler(t, store)
+			roomResponse := createRoom(t, handler)
+			first := issuePlayer(t, handler, roomResponse.ID)
+			second := issuePlayer(t, handler, roomResponse.ID)
+
+			store.mu.Lock()
+			room := store.rooms[roomResponse.ID]
+			originalLastActivityAt := fakeClock.Now()
+			room.lastActivityAt = originalLastActivityAt
+			store.mu.Unlock()
+
+			fakeClock.Advance(time.Minute)
+			firstReservation, err := store.reserveClient(roomResponse.ID, first.ID, []string{first.SessionToken})
+			if err != nil {
+				t.Fatalf("reserve first client: %v", err)
+			}
+			fakeClock.Advance(time.Minute)
+			secondReservation, err := store.reserveClient(roomResponse.ID, second.ID, []string{second.SessionToken})
+			if err != nil {
+				t.Fatalf("reserve second client: %v", err)
+			}
+
+			store.mu.Lock()
+			gotAfterReservations := room.lastActivityAt
+			store.mu.Unlock()
+			if !gotAfterReservations.Equal(originalLastActivityAt) {
+				t.Fatal("expected reservations not to count as room activity")
+			}
+
+			reservations := []*clientReservation{firstReservation, secondReservation}
+			for _, index := range tt.order {
+				store.rollbackClientReservation(reservations[index])
+			}
+
+			store.mu.Lock()
+			gotLastActivityAt := room.lastActivityAt
+			reservationCount := len(room.reservations)
+			store.mu.Unlock()
+			if !gotLastActivityAt.Equal(originalLastActivityAt) {
+				t.Fatal("expected rollback order not to change room activity")
+			}
+			if reservationCount != 0 {
+				t.Fatalf("expected no reservations, got %d", reservationCount)
+			}
+		})
+	}
+}
+
+func TestClientReservationAttachAndRollbackSameTickKeepsAttachActivity(t *testing.T) {
+	tests := []struct {
+		name          string
+		attachedIndex int
+		rollbackIndex int
+	}{
+		{name: "attach first rollback second", attachedIndex: 0, rollbackIndex: 1},
+		{name: "attach second rollback first", attachedIndex: 1, rollbackIndex: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			defer store.Close()
+			handler := debugHandler(t, store)
+			roomResponse := createRoom(t, handler)
+			players := []issuedPlayer{
+				issuePlayer(t, handler, roomResponse.ID),
+				issuePlayer(t, handler, roomResponse.ID),
+			}
+
+			store.mu.Lock()
+			room := store.rooms[roomResponse.ID]
+			room.lastActivityAt = fakeClock.Now().Add(-time.Minute)
+			store.mu.Unlock()
+
+			reservations := make([]*clientReservation, len(players))
+			for index, player := range players {
+				reservation, err := store.reserveClient(roomResponse.ID, player.ID, []string{player.SessionToken})
+				if err != nil {
+					t.Fatalf("reserve client %d: %v", index, err)
+				}
+				reservations[index] = reservation
+			}
+			if !store.attachClient(reservations[tt.attachedIndex], nil) {
+				t.Fatal("expected reservation to attach")
+			}
+			store.rollbackClientReservation(reservations[tt.rollbackIndex])
+
+			store.mu.Lock()
+			gotLastActivityAt := room.lastActivityAt
+			reservationCount := len(room.reservations)
+			store.mu.Unlock()
+			if !gotLastActivityAt.Equal(fakeClock.Now()) {
+				t.Fatal("expected successful attachment to remain the latest room activity")
+			}
+			if reservationCount != 0 {
+				t.Fatalf("expected no reservations, got %d", reservationCount)
+			}
+		})
+	}
+}
+
+func TestWebSocketConnectsIssuedPlayerAndBroadcastsSnapshotsOnTicks(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	room := createRoom(t, handler)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -69,59 +418,46 @@ func TestWebSocketWriteTimeoutStaysWithinRealtimeBudget(t *testing.T) {
 
 func TestWebSocketRejectsUnknownRoomOrPlayer(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
 
-	_, resp, err := websocket.Dial(context.Background(), websocketURL(server.URL, "missing", "player-1"), nil)
-	if err == nil {
-		t.Fatal("expected unknown room dial to fail")
-	}
-	assertWebSocketErrorResponse(t, resp, http.StatusNotFound, "room_not_found")
-
-	_, resp, err = websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, "missing-player"), nil)
-	if err == nil {
-		t.Fatal("expected unknown player dial to fail")
-	}
-	assertWebSocketErrorResponse(t, resp, http.StatusNotFound, "player_not_found")
+	assertWebSocketDialError(t, server.URL, "/rooms/missing/players/player_missing", http.StatusNotFound, "room_not_found")
+	assertWebSocketDialError(t, server.URL, "/rooms/"+room.ID+"/players/player_missing", http.StatusNotFound, "player_not_found")
 }
 
 func TestWebSocketRejectsDuplicateSamePlayerConnection(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 
-	first := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	first := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer first.Close(websocket.StatusNormalClosure, "")
 
-	_, resp, err := websocket.Dial(context.Background(), websocketURL(server.URL, room.ID, player.ID), nil)
-	if err == nil {
-		t.Fatal("expected duplicate player dial to fail")
-	}
-	assertWebSocketErrorResponse(t, resp, http.StatusConflict, "player_already_connected")
+	assertWebSocketDialError(t, server.URL, player.WebSocketPath, http.StatusConflict, "player_already_connected")
 }
 
 func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
-	roomID := strings.ReplaceAll(room.ID, "-", "%2D")
-	playerID := strings.ReplaceAll(player.ID, "-", "%2D")
+	player := issuePlayer(t, handler, room.ID)
+	encodedPath := strings.Replace(player.WebSocketPath, "room_", "room%5F", 1)
+	encodedPath = strings.Replace(encodedPath, "player_", "player%5F", 1)
 
-	conn := dialRoomPlayer(t, server.URL, roomID, playerID)
+	conn := dialIssuedPlayer(t, server.URL, encodedPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 }
@@ -129,15 +465,15 @@ func TestWebSocketRouteAcceptsPercentEncodedIDs(t *testing.T) {
 func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -152,7 +488,7 @@ func TestWebSocketAllowsWaitingRoomConnectionWithoutBroadcasting(t *testing.T) {
 
 func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -160,9 +496,9 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	red := joinMatchmaking(t, handler)
 	blue := joinMatchmaking(t, handler)
 
-	redConn := dialRoomPlayer(t, server.URL, red.Room.ID, red.Player.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
-	blueConn := dialRoomPlayer(t, server.URL, blue.Room.ID, blue.Player.ID)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, red.Room.ID, red.Player.ID)
 	waitForAttachedClient(t, store, blue.Room.ID, blue.Player.ID)
@@ -200,7 +536,7 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -208,9 +544,9 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 	red := joinMatchmaking(t, handler)
 	blue := joinMatchmaking(t, handler)
 
-	redConn := dialRoomPlayer(t, server.URL, red.Room.ID, red.Player.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
-	blueConn := dialRoomPlayer(t, server.URL, blue.Room.ID, blue.Player.ID)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, red.Room.ID, red.Player.ID)
 	waitForAttachedClient(t, store, blue.Room.ID, blue.Player.ID)
@@ -253,7 +589,7 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 
 func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
@@ -261,8 +597,8 @@ func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 	red := joinMatchmaking(t, handler)
 	blue := joinMatchmaking(t, handler)
 
-	redConn := dialRoomPlayer(t, server.URL, red.Room.ID, red.Player.ID)
-	blueConn := dialRoomPlayer(t, server.URL, blue.Room.ID, blue.Player.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, red.Room.ID, red.Player.ID)
 	waitForAttachedClient(t, store, blue.Room.ID, blue.Player.ID)
@@ -282,16 +618,16 @@ func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -311,16 +647,16 @@ func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {
 func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -343,16 +679,16 @@ func TestWebSocketSendsErrorMessageAfterInvalidInputAndKeepsSnapshotStream(t *te
 func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	waitForAttachedClient(t, store, room.ID, player.ID)
 	_ = conn.Close(websocket.StatusNormalClosure, "")
 	waitForDetachedClient(t, store, room.ID, player.ID)
@@ -373,16 +709,16 @@ func TestStoreCleansUpStartedRoomAfterAllPlayersDisconnect(t *testing.T) {
 func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -396,15 +732,15 @@ func TestStoreKeepsConnectedRoomPastDisconnectedCleanupTTL(t *testing.T) {
 func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -423,16 +759,16 @@ func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
 func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -448,16 +784,16 @@ func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -501,19 +837,19 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{GameConfig: fastRechargeGameConfig()})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	red := createPlayer(t, handler, room.ID)
-	blue := createPlayer(t, handler, room.ID)
+	red := issuePlayer(t, handler, room.ID)
+	blue := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
-	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, red.ID)
 	waitForAttachedClient(t, store, room.ID, blue.ID)
@@ -574,19 +910,19 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 		Map:        verticalDuelMap(),
 		GameConfig: fastRechargeGameConfig(),
 	})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	red := createPlayer(t, handler, room.ID)
-	blue := createPlayer(t, handler, room.ID)
+	red := issuePlayer(t, handler, room.ID)
+	blue := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
-	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, red.ID)
 	waitForAttachedClient(t, store, room.ID, blue.ID)
@@ -612,19 +948,19 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 		Map:        verticalDuelMap(),
 		GameConfig: fastRechargeGameConfig(),
 	})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	red := createPlayer(t, handler, room.ID)
-	blue := createPlayer(t, handler, room.ID)
+	red := issuePlayer(t, handler, room.ID)
+	blue := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	redConn := dialRoomPlayer(t, server.URL, room.ID, red.ID)
+	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
-	blueConn := dialRoomPlayer(t, server.URL, room.ID, blue.ID)
+	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, red.ID)
 	waitForAttachedClient(t, store, room.ID, blue.ID)
@@ -874,14 +1210,48 @@ func findSnapshotPlayer(t *testing.T, snapshot simulation.Snapshot, playerID sim
 
 func createPlayer(t *testing.T, handler http.Handler, roomID string) playerResponse {
 	t.Helper()
+	return issuePlayer(t, handler, roomID).playerResponse
+}
+
+func issuePlayer(t *testing.T, handler http.Handler, roomID string) issuedPlayer {
+	t.Helper()
 
 	rec := request(handler, http.MethodPost, "/rooms/"+roomID+"/players")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected create player status 201, got %d", rec.Code)
 	}
-	var player playerResponse
-	decodeResponse(t, rec, &player)
-	return player
+	var issued playerSessionResponse
+	decodeResponse(t, rec, &issued)
+	return issuedPlayer{
+		playerResponse: issued.Player,
+		SessionToken:   issued.SessionToken,
+		WebSocketPath:  issued.WebSocketPath,
+	}
+}
+
+func dialIssuedPlayer(t *testing.T, serverURL string, webSocketPath string) *websocket.Conn {
+	t.Helper()
+
+	conn, _, err := websocket.Dial(context.Background(), websocketURLForPath(serverURL, webSocketPath), nil)
+	if err != nil {
+		t.Fatal("dial issued websocket connection failed")
+	}
+	return conn
+}
+
+func assertWebSocketDialError(t *testing.T, serverURL string, webSocketPath string, status int, code string) {
+	t.Helper()
+
+	conn, resp, err := websocket.Dial(context.Background(), websocketURLForPath(serverURL, webSocketPath), nil)
+	if err == nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+		t.Fatalf("expected websocket dial to fail with status %d", status)
+	}
+	assertWebSocketErrorResponse(t, resp, status, code)
+}
+
+func websocketURLForPath(serverURL string, webSocketPath string) string {
+	return "ws" + serverURL[len("http"):] + webSocketPath
 }
 
 func startRoom(t *testing.T, handler http.Handler, roomID string) {
@@ -891,20 +1261,6 @@ func startRoom(t *testing.T, handler http.Handler, roomID string) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected start room status 200, got %d", rec.Code)
 	}
-}
-
-func dialRoomPlayer(t *testing.T, serverURL string, roomID string, playerID string) *websocket.Conn {
-	t.Helper()
-
-	conn, _, err := websocket.Dial(context.Background(), websocketURL(serverURL, roomID, playerID), nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	return conn
-}
-
-func websocketURL(serverURL string, roomID string, playerID string) string {
-	return "ws" + serverURL[len("http"):] + "/rooms/" + roomID + "/players/" + playerID
 }
 
 func writeText(t *testing.T, conn *websocket.Conn, text string) {
@@ -1083,6 +1439,7 @@ func assertWebSocketErrorResponse(t *testing.T, resp *http.Response, status int,
 		"player_already_connected": "player already connected",
 		"player_not_found":         "player not found",
 		"room_not_found":           "room not found",
+		"unauthorized":             "unauthorized",
 	}[code]
 	if body.Error.Message != wantMessage {
 		t.Fatalf("expected websocket error message %q, got %+v", wantMessage, body.Error)

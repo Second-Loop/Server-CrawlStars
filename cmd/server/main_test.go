@@ -1,17 +1,19 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
 func TestNewMuxServesDocsRoutes(t *testing.T) {
-	handler := newMux()
+	handler := mustNewMux(t, rooms.HandlerConfig{})
 
 	for _, tc := range []struct {
 		path        string
@@ -43,7 +45,7 @@ func TestNewMuxServesDocsRoutes(t *testing.T) {
 }
 
 func TestNewMuxServesMatchmakingJoin(t *testing.T) {
-	handler := newMux()
+	handler := mustNewMux(t, rooms.HandlerConfig{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
@@ -51,23 +53,32 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d with body %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected status 201, got %d", rec.Code)
 	}
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Fatalf("expected json content type, got %q", got)
 	}
-	if !strings.Contains(rec.Body.String(), `"webSocketPath":"/rooms/room-1/players/player-1"`) {
-		t.Fatalf("expected matchmaking connection info, got %s", rec.Body.String())
-	}
-
 	var joined struct {
 		Room struct {
+			ID         string             `json:"id"`
 			MaxPlayers int                `json:"maxPlayers"`
 			Map        simulation.MapData `json:"map"`
 		} `json:"room"`
+		Player struct {
+			ID string `json:"id"`
+		} `json:"player"`
+		SessionToken  string `json:"sessionToken"`
+		WebSocketPath string `json:"webSocketPath"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &joined); err != nil {
 		t.Fatalf("decode matchmaking response: %v", err)
+	}
+	assertRandomValue(t, joined.Room.ID, "room_", 16)
+	assertRandomValue(t, joined.Player.ID, "player_", 16)
+	assertRandomValue(t, joined.SessionToken, "", 32)
+	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
+	if joined.WebSocketPath != wantWebSocketPath {
+		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 	fixture, err := simulation.LoadDefaultMapFixture()
 	if err != nil {
@@ -78,5 +89,219 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	}
 	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
 		t.Fatalf("expected default fixture map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	}
+}
+
+func TestNewMuxUsesSecureDebugAPIDefault(t *testing.T) {
+	handler := mustNewMux(t, rooms.HandlerConfig{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/rooms", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestNewMuxWiresEnabledDebugAPI(t *testing.T) {
+	handler := mustNewMux(t, rooms.HandlerConfig{
+		EnableDebugAPI: true,
+		DebugAPIToken:  "server-debug-test-token",
+	})
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/rooms", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", unauthorized.Code)
+	}
+
+	authorizedRequest := httptest.NewRequest(http.MethodGet, "/rooms", nil)
+	authorizedRequest.Header.Set("Authorization", "Bearer server-debug-test-token")
+	authorized := httptest.NewRecorder()
+	handler.ServeHTTP(authorized, authorizedRequest)
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", authorized.Code)
+	}
+}
+
+func TestNewMuxRoutesRoomSecurityBeforeOuterServeMux(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        rooms.HandlerConfig
+		path          string
+		authorization string
+		wantStatus    int
+		wantCode      string
+	}{
+		{name: "default duplicate slash", path: "/rooms//", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "enabled duplicate slash without auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms//", wantStatus: http.StatusUnauthorized, wantCode: "unauthorized"},
+		{name: "enabled duplicate slash with auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms//", authorization: "Bearer server-debug-test-token", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+		{name: "default encoded slash", path: "/rooms%2Fmissing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "enabled encoded slash without auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms%2Fmissing", wantStatus: http.StatusUnauthorized, wantCode: "unauthorized"},
+		{name: "enabled encoded slash with auth", config: rooms.HandlerConfig{EnableDebugAPI: true, DebugAPIToken: "server-debug-test-token"}, path: "/rooms%2Fmissing", authorization: "Bearer server-debug-test-token", wantStatus: http.StatusNotFound, wantCode: "room_not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := mustNewMux(t, tt.config)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("expected application/json content type, got %q", got)
+			}
+			if location := rec.Header().Get("Location"); location != "" {
+				t.Fatalf("expected no redirect Location, got %q", location)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Error.Code != tt.wantCode {
+				t.Fatalf("expected error code %q, got %q", tt.wantCode, body.Error.Code)
+			}
+		})
+	}
+}
+
+func TestNewMuxRejectsEnabledDebugAPIWithoutToken(t *testing.T) {
+	handler, err := newMux(rooms.HandlerConfig{EnableDebugAPI: true})
+	if err == nil {
+		t.Fatal("expected debug API configuration error")
+	}
+	if handler != nil {
+		t.Fatal("expected no handler for invalid debug API configuration")
+	}
+}
+
+func TestLoadRoomHandlerConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		environment  map[string]string
+		wantEnabled  bool
+		wantToken    string
+		wantLimiter  bool
+		wantPrefixes []string
+		wantError    bool
+	}{
+		{name: "default", environment: map[string]string{}},
+		{name: "explicit false", environment: map[string]string{"ENABLE_DEBUG_API": "false", "DEBUG_API_TOKEN": "unused"}, wantToken: "unused"},
+		{name: "enabled", environment: map[string]string{"ENABLE_DEBUG_API": "true", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
+		{name: "enabled numeric", environment: map[string]string{"ENABLE_DEBUG_API": "1", "DEBUG_API_TOKEN": "configured-token"}, wantEnabled: true, wantToken: "configured-token"},
+		{name: "invalid flag", environment: map[string]string{"ENABLE_DEBUG_API": "sometimes"}, wantError: true},
+		{name: "enabled missing token", environment: map[string]string{"ENABLE_DEBUG_API": "true"}, wantError: true},
+		{name: "rate override", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "20.5"}, wantLimiter: true},
+		{name: "burst override", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "8"}, wantLimiter: true},
+		{name: "rate and burst override", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "2", "MATCHMAKING_JOIN_BURST": "3"}, wantLimiter: true},
+		{name: "trusted proxies", environment: map[string]string{"TRUSTED_PROXY_CIDRS": " 127.0.0.1/32, 2001:db8::1/64 "}, wantPrefixes: []string{"127.0.0.1/32", "2001:db8::/64"}},
+		{name: "zero rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "0"}, wantError: true},
+		{name: "negative rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "-1"}, wantError: true},
+		{name: "NaN rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "NaN"}, wantError: true},
+		{name: "infinite rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "+Inf"}, wantError: true},
+		{name: "invalid rate", environment: map[string]string{"MATCHMAKING_JOIN_RATE_PER_MINUTE": "fast", "DEBUG_API_TOKEN": "sensitive-debug-token"}, wantError: true},
+		{name: "zero burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "0"}, wantError: true},
+		{name: "negative burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "-1"}, wantError: true},
+		{name: "decimal burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "1.5"}, wantError: true},
+		{name: "overflow burst", environment: map[string]string{"MATCHMAKING_JOIN_BURST": "999999999999999999999999"}, wantError: true},
+		{name: "invalid CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "not-a-cidr"}, wantError: true},
+		{name: "bare trusted IP", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1"}, wantError: true},
+		{name: "empty middle CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1/32,,::1/128"}, wantError: true},
+		{name: "empty trailing CIDR", environment: map[string]string{"TRUSTED_PROXY_CIDRS": "127.0.0.1/32,"}, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := loadRoomHandlerConfig(func(name string) string {
+				return tt.environment[name]
+			})
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected configuration error")
+				}
+				if token := tt.environment["DEBUG_API_TOKEN"]; token != "" && strings.Contains(err.Error(), token) {
+					t.Fatal("expected configuration error to omit debug token")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load room handler config: %v", err)
+			}
+			if config.EnableDebugAPI != tt.wantEnabled {
+				t.Fatalf("expected debug enabled %t, got %t", tt.wantEnabled, config.EnableDebugAPI)
+			}
+			if config.DebugAPIToken != tt.wantToken {
+				t.Fatal("expected debug token to match environment")
+			}
+			if (config.JoinLimiter != nil) != tt.wantLimiter {
+				t.Fatalf("expected limiter configured %t", tt.wantLimiter)
+			}
+			if len(config.TrustedProxyPrefixes) != len(tt.wantPrefixes) {
+				t.Fatalf("expected %d trusted prefixes, got %d", len(tt.wantPrefixes), len(config.TrustedProxyPrefixes))
+			}
+			for index, want := range tt.wantPrefixes {
+				if got := config.TrustedProxyPrefixes[index].String(); got != want {
+					t.Fatalf("expected trusted prefix %q, got %q", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadRoomHandlerConfigWiresRateOverrides(t *testing.T) {
+	config, err := loadRoomHandlerConfig(func(name string) string {
+		return map[string]string{
+			"MATCHMAKING_JOIN_RATE_PER_MINUTE": "10",
+			"MATCHMAKING_JOIN_BURST":           "2",
+		}[name]
+	})
+	if err != nil {
+		t.Fatalf("load room handler config: %v", err)
+	}
+	handler := mustNewMux(t, config)
+
+	for attempt, wantStatus := range []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests} {
+		req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+		req.RemoteAddr = "198.51.100.10:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != wantStatus {
+			t.Fatalf("attempt %d: expected status %d, got %d", attempt+1, wantStatus, rec.Code)
+		}
+	}
+}
+
+func mustNewMux(t *testing.T, config rooms.HandlerConfig) http.Handler {
+	t.Helper()
+
+	handler, err := newMux(config)
+	if err != nil {
+		t.Fatalf("create server mux: %v", err)
+	}
+	return handler
+}
+
+func assertRandomValue(t *testing.T, value string, prefix string, wantBytes int) {
+	t.Helper()
+
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("expected random value to use the %q prefix", prefix)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		t.Fatalf("decode random value: %v", err)
+	}
+	if len(decoded) != wantBytes {
+		t.Fatalf("expected %d decoded bytes, got %d", wantBytes, len(decoded))
 	}
 }

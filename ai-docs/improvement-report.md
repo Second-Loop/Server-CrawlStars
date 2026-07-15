@@ -45,6 +45,8 @@
 
 ## P0-2. player 세션 토큰 도입 (WebSocket 인증)
 
+- 상태: SL-81 Stack 3에서 구현됨
+
 - 문제:
   - player ID가 `player-1`, `player-2`로 순차 발급되고 WebSocket 연결(`/rooms/{roomID}/players/{playerID}`)에 인증이 없다.
   - 상대보다 먼저 해당 playerID로 연결하면 타인 캐릭터를 조종할 수 있다.
@@ -55,8 +57,15 @@
 - 수용 기준:
   - 토큰 없이/잘못된 토큰으로 연결 시 거부되는 테스트.
   - openapi.yaml, asyncapi.yaml, api-reference.md 갱신.
+- 반영 결과:
+  - Room/player ID를 16 random bytes 기반 opaque ID로 바꾸고, 32 random bytes player session token을 발급한다.
+  - Raw token은 발급 응답의 `sessionToken`과 tokenized `webSocketPath`에만 내보내며 private room state에는 SHA-256 digest만 저장한다.
+  - WebSocket은 정확히 한 개의 non-empty `token` query를 검증하고 room 404, player 404, token 401, live connection/reservation 409 순서를 유지한다.
+  - Room/Player/Ready/Snapshot/GameEnd public payload에는 raw token이나 digest를 넣지 않는다.
 
 ## P1-1. debug API 인증 게이트
+
+- 상태: SL-81 Stack 3에서 구현됨
 
 - 문제:
   - `DELETE /rooms`(전체 삭제), `DELETE /rooms/{id}`, `POST /rooms/{id}/start`, `POST /rooms/{id}/players`가 무인증으로 프로덕션 바이너리에 포함된다.
@@ -65,6 +74,10 @@
   - `DEBUG_API_TOKEN` 헤더 인증 또는 `ENABLE_DEBUG_API=true`일 때만 라우트 등록.
 - 수용 기준:
   - 게이트 꺼진 상태에서 debug 라우트가 404/401을 반환하는 테스트.
+- 반영 결과:
+  - Debug REST와 method fallback은 기본 비활성화 상태에서 `404 not_found`를 반환한다.
+  - `ENABLE_DEBUG_API=true`일 때는 `Authorization: Bearer <DEBUG_API_TOKEN>`이 정확히 하나 있어야 하며, 잘못된 credential은 route dispatch보다 먼저 `401 unauthorized`를 반환한다.
+  - WebSocket GET은 debug Bearer 대상이 아니고 player session query token으로 별도 인증한다.
 
 ## P1-2. Store 전역 락 분리 + cleanup janitor 분리
 
@@ -134,12 +147,19 @@
 
 ## P3-1. 배포/기타 하드닝 묶음
 
+- 상태: IP rate-limit 항목만 SL-81 Stack 3에서 구현됨. Release checksum 검증과 WebSocket heartbeat는 미완료.
+
 - 문제와 권장 (개별 소형 이슈로 쪼개도 됨):
   - `scripts/deploy/pull-latest.sh`가 `SHA256SUMS`를 다운로드 후 검증하지 않는다 → `sha256sum -c` 추가.
   - `/matchmaking/join` 스팸 6회로 room cap이 차서 매치메이킹이 마비된다 → IP 기반 rate limit.
   - WebSocket ping/pong이 없어 유령 연결이 `len(clients) > 0` 조건으로 room TTL cleanup을 막을 수 있다 → heartbeat 도입.
 - 수용 기준:
   - 각 항목별 회귀 테스트 또는 배포 검증 절차.
+- 반영 결과:
+  - `/matchmaking/join` 앞에 기본 10 requests/minute, burst 4의 process-local per-IP token bucket을 둔다.
+  - 거부 시 `429 rate_limited`와 최소 1초 정수 `Retry-After`를 반환한다.
+  - `CF-Connecting-IP`는 immediate peer가 `TRUSTED_PROXY_CIDRS` 안에 있을 때만 사용하고 `X-Forwarded-For`는 무시한다.
+  - `SHA256SUMS` 검증과 WebSocket ping/pong은 이 완료 표시에 포함하지 않는다.
 
 ---
 

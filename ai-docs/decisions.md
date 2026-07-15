@@ -128,6 +128,8 @@
 - Matching queue, persistence, scheduler, runner, production room orchestration은 여전히 제외됩니다.
 - Debug API response shape는 정식 gameplay contract로 승격되기 전까지 `ai-docs/api-docs.md`의 E1 debug note를 따라야 합니다.
 
+후속 반영 (SL-81 Stack 3): 기존 E1 범위 설명은 당시 결정을 보존합니다. 현재 debug REST와 method fallback은 기본적으로 `404 not_found`이며, 활성화하면 모든 debug operation에 Bearer credential을 요구합니다. 올바른 credential 뒤에만 기존 2xx/404/405/409/500 route 결과를 평가합니다.
+
 ## ADR-0010: E1 WebSocket은 Room-Local Tick Loop와 Snapshot Broadcast로 제한
 
 상태: 승인됨
@@ -143,6 +145,8 @@
 - SL-42 tick loop는 room-local gameplay loop이며, reusable scheduler/runner framework가 아닙니다.
 - AsyncAPI/OpenAPI spec file 생성과 hosted docs는 별도 implementation issue에서 다룹니다.
 
+후속 반영 (SL-81 Stack 3): WebSocket path는 그대로 두고 정확히 한 개의 non-empty `token` query로 player session을 인증합니다. Room/player/token/duplicate 검증 순서는 404/404/401/409이며, 409는 live connection과 in-flight reservation을 모두 포함합니다. Debug Bearer는 WebSocket GET에 적용하지 않습니다.
+
 ## ADR-0011: E1 Room Cleanup은 Store 진입점 TTL로 제한
 
 상태: 승인됨
@@ -156,6 +160,8 @@
 - Room cleanup은 API/WS/tick activity 시점에 수행되며 별도 scheduler나 persistent storage를 요구하지 않습니다.
 - Public debug API exposure risk는 room cap, per-room player cap, TTL로 낮춥니다.
 - Invalid input regression은 error message와 이후 snapshot stream을 함께 검증합니다.
+
+후속 반영 (SL-81 Stack 3): Token credential은 room/player session이 남아 있는 동안 재사용할 수 있지만 room lifetime을 연장하지 않습니다. Matchmaking pre-start 연결이 실제로 끊기면 room이 취소되고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback하므로 같은 발급 경로로 재시도할 수 있습니다.
 
 ## ADR-0012: E1 API Docs는 Server-Hosted UI와 Raw Spec으로 제공
 
@@ -187,6 +193,8 @@
 - Active room cap, room TTL cleanup, fixture max player cap은 기존 in-memory store boundary를 따릅니다.
 - Production matching queue, persistence, auth, dashboard, scheduler/runner/orchestration은 여전히 제외됩니다.
 - SL-58 이후 matchmaking join은 2명째 참가 시 즉시 simulation을 start하지 않고 WebSocket ready와 server 내부 countdown 이후 start합니다.
+
+후속 반영 (SL-81 Stack 3): 당시 `player-*`와 response shape 문구는 역사적 결정을 보존합니다. 현재 join은 opaque room/player ID와 `sessionToken`, tokenized `webSocketPath`를 발급하며, 기본 10 requests/minute·burst 4의 IP별 token bucket을 store보다 먼저 평가합니다. 여기서 제외한 `auth`는 account/persistence auth이며 transport credential은 추가됐습니다.
 
 ## ADR-0014: E1 Projectile Movement는 Existing Projectile Tick으로 처리
 
@@ -232,6 +240,8 @@
 - `internal/simulation`은 match lifecycle을 모르는 transport-independent gameplay core로 남습니다.
 - AsyncAPI는 Ready event, ready ACK, starting signal, gameplay snapshot 예시를 OpenAPI 수준으로 자세히 기록해야 합니다.
 - Start 이후 disconnect policy, bot replacement, ping/pong timeout은 여전히 별도 issue 범위입니다.
+
+후속 반영 (SL-81 Stack 3): 당시 REST response shape 유지 문구는 SL-58 변경 범위를 뜻합니다. 현재는 `sessionToken`이 추가됐고 Ready/Snapshot/GameEnd payload 자체는 계속 secret-free입니다. Pre-start 실제 disconnect가 room을 취소하는 기존 규칙 때문에 그 이후 같은 token으로 reconnect할 수는 없습니다.
 
 ## ADR-0017: SL-30 Gameplay Config는 client 공유용과 server runtime용을 분리
 
@@ -326,3 +336,27 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 기본 player는 4회 연속 공격할 수 있고, 30 tick마다 최대 4까지 1 charge를 회복합니다.
 - Zero 방향, 소진된 charge, dead player input은 projectile을 만들지 않으며 snapshot `PressedAttack`도 `false`입니다.
 - `State.Step(inputs) -> Snapshot` transport boundary와 REST/WebSocket schema는 그대로 유지됩니다.
+
+## ADR-0023: SL-81 Transport Credential과 Trusted Client IP 경계
+
+상태: 승인됨
+
+맥락: Sequential room/player ID와 무인증 WebSocket은 다른 player connection 선점이 가능했고, public Cloudflare Tunnel 뒤의 debug REST는 destructive operation을 보호하지 않았습니다. `/matchmaking/join`은 room cap만 있어 단일 client의 반복 요청을 충분히 제한하지 못했습니다. 이 단계는 account identity, persistence, production matchmaking queue를 도입하지 않고 transport 경계만 보호해야 합니다.
+
+결정:
+
+- Room/player ID는 16 random bytes를 Raw URL Base64로 인코딩한 22자 payload에 `room_`/`player_` prefix를 붙입니다.
+- Player session token은 32 random bytes를 같은 방식으로 인코딩한 43자 opaque credential입니다. Raw 값은 발급 JSON의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 나타나고, client가 WebSocket `token` query로 다시 보냅니다. Private room state에는 SHA-256 digest만 저장합니다.
+- WebSocket은 정확히 한 개의 non-empty token을 요구합니다. 실패 우선순위는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409입니다. 정상 extra query key는 허용하지만 malformed query pair는 전체 query를 401로 거부합니다.
+- Token은 일회용이 아니며 room/player session이 존재하는 동안 credential을 재사용할 수 있습니다. Matchmaking matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed HTTP-to-WebSocket upgrade는 reservation만 rollback해 재시도할 수 있습니다.
+- Debug REST와 관련 method fallback은 기본 `404 not_found`입니다. 활성화 시 정확히 하나의 `Authorization: Bearer <DEBUG_API_TOKEN>`을 요구하고, missing/wrong/multiple credential은 route dispatch보다 먼저 `401 unauthorized`입니다. 올바른 credential 뒤에 기존 route 결과를 평가합니다. WebSocket GET은 이 guard에서 제외하고 player session token으로 인증합니다.
+- Matchmaking join은 store보다 먼저 process-local per-IP token bucket을 평가합니다. 기본값은 10 requests/minute, burst 4이며 bucket이 비면 429가 409/500보다 우선합니다. 허용된 요청은 store에서 409/500으로 끝나도 quota를 소비합니다. 429는 `rate_limited` JSON과 최소 1초 정수 `Retry-After`를 반환합니다.
+- `CF-Connecting-IP`는 immediate peer가 `TRUSTED_PROXY_CIDRS`에 속하고 header가 정확히 하나의 valid IP일 때만 client IP로 사용합니다. 그 외에는 peer IP로 fallback하며 `X-Forwarded-For`는 항상 무시합니다.
+- `sessionToken`, tokenized `webSocketPath`, inbound token query, `DEBUG_API_TOKEN`은 모두 secret-bearing surface입니다. Raw 값과 전체 query 문자열을 log, telemetry, 문서 예시에 기록하지 않습니다.
+
+결과:
+
+- Public Room/Player/list/detail/Ready/Snapshot/GameEnd payload에는 raw token이나 digest가 없습니다.
+- Debug route는 운영에서 명시적으로 켜고 secret을 설정하기 전까지 노출되지 않습니다.
+- Cloudflare Tunnel peer trust를 빠뜨리거나 CF header가 invalid하면 public client가 loopback peer bucket을 공유합니다. 이는 spoofing을 막는 fallback이지만 가용성 영향을 주므로 deployment 설정과 검증이 필요합니다.
+- Account auth, persistence, multi-process/distributed rate limit, WebSocket heartbeat는 후속 issue입니다.

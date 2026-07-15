@@ -30,9 +30,16 @@ type playerResponse struct {
 	Slot int    `json:"slot"`
 }
 
+type playerSessionResponse struct {
+	Player        playerResponse `json:"player"`
+	SessionToken  string         `json:"sessionToken"`
+	WebSocketPath string         `json:"webSocketPath"`
+}
+
 type matchmakingJoinResponse struct {
 	Room          roomResponse   `json:"room"`
 	Player        playerResponse `json:"player"`
+	SessionToken  string         `json:"sessionToken"`
 	WebSocketPath string         `json:"webSocketPath"`
 }
 
@@ -153,8 +160,8 @@ func snapshotSummaryFromSnapshot(snapshot simulation.Snapshot) snapshotSummary {
 	}
 }
 
-func webSocketPath(roomID string, playerID string) string {
-	return "/rooms/" + roomID + "/players/" + playerID
+func webSocketPath(roomID string, playerID string, sessionToken string) string {
+	return "/rooms/" + roomID + "/players/" + playerID + "?token=" + sessionToken
 }
 
 func (r *room) matchSnapshotDeliveries(status MatchStatus, countdown int) []webSocketDelivery {

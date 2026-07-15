@@ -55,12 +55,13 @@ function renderOpenAPI(specText) {
 
 function renderAsyncAPI(specText) {
   const channelAddress = extractLineValue(specText, "    address:");
+  const redactedWebSocketPath = `${channelAddress}?token=<player-session-token>`;
   const schemas = parseAsyncAPISchemas(specText);
 
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Ready 이벤트, ready ACK, starting signal, gameplay snapshot 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, ready ACK, starting signal, gameplay snapshot 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -68,8 +69,8 @@ function renderAsyncAPI(specText) {
         <article class="operation">
           <div class="method">WS</div>
           <div>
-            <h3>${escapeHTML(channelAddress)}</h3>
-            <p>REST에서 받은 room ID와 player ID로 연결합니다. Matchmaking room은 두 client가 모두 연결되면 <code>Type: Ready</code> 이벤트로 map과 spawn 정보를 보냅니다.</p>
+            <h3>${escapeHTML(redactedWebSocketPath)}</h3>
+            <p>REST에서 받은 room ID, player ID, <code>sessionToken</code>으로 연결합니다. <code>token</code> query는 정확히 한 번 전달하며 다른 일반 query key는 허용합니다.</p>
           </div>
         </article>
       </section>
@@ -78,7 +79,7 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>1. join</h3>
-            <p><code>POST /matchmaking/join</code> 응답의 <code>webSocketPath</code>로 연결합니다. REST <code>room.status</code>는 아직 <code>waiting</code>입니다.</p>
+            <p><code>POST /matchmaking/join</code> 응답은 <code>{ room, player, sessionToken, webSocketPath }</code>입니다. 같은 raw secret이 <code>sessionToken</code>과 tokenized <code>webSocketPath</code>에 나타나며, path를 client 내부에서만 사용해 연결합니다.</p>
           </article>
           <article>
             <h3>2. Ready</h3>
@@ -95,6 +96,27 @@ function renderAsyncAPI(specText) {
           <article>
             <h3>5. started</h3>
             <p>Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 <code>Snapshot.status: started</code>와 gameplay snapshot을 보냅니다.</p>
+          </article>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>연결 보안</h2>
+        <div class="grid">
+          <article>
+            <h3>Session token</h3>
+            <p>Token은 일회용이 아니며 room/player session이 남아 있을 때 재사용합니다. 다만 matchmaking pre-start 연결이 실제로 끊기면 room이 취소되고, failed upgrade는 같은 경로로 재시도할 수 있습니다.</p>
+          </article>
+          <article>
+            <h3>실패 순서</h3>
+            <p>Handshake는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409 순서로 거부합니다. 다른 query pair가 malformed여도 401입니다.</p>
+          </article>
+          <article>
+            <h3>Logging</h3>
+            <p><code>sessionToken</code>, tokenized <code>webSocketPath</code>, inbound query는 모두 secret-bearing surface입니다. Raw token과 전체 query 문자열은 log에 남기지 않고 예시는 항상 가립니다.</p>
+          </article>
+          <article>
+            <h3>Public payload</h3>
+            <p>공개 Room/Player, Ready, Snapshot, GameEnd payload에는 raw token이나 digest가 없습니다.</p>
           </article>
         </div>
       </section>
@@ -140,7 +162,7 @@ function renderAsyncAPI(specText) {
   },
   "Players": [
     {
-      "Id": "player-1",
+      "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
       "Team": "red",
       "Slot": 0,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }

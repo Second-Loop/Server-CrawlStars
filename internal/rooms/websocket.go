@@ -5,14 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
 
+type clientReservation struct {
+	room     *room
+	playerID string
+}
+
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
-	if err := s.reserveClient(roomID, playerID); err != nil {
+	query, queryErr := url.ParseQuery(r.URL.RawQuery)
+	var tokens []string
+	if queryErr == nil {
+		tokens = query["token"]
+	}
+	reservation, err := s.reserveClient(roomID, playerID, tokens)
+	if err != nil {
 		status := http.StatusConflict
 		code := "player_already_connected"
 		if errors.Is(err, ErrRoomNotFound) {
@@ -23,16 +35,24 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 			status = http.StatusNotFound
 			code = "player_not_found"
 		}
+		if errors.Is(err, ErrUnauthorized) {
+			status = http.StatusUnauthorized
+			code = "unauthorized"
+		}
 		writeError(w, status, code, err.Error())
 		return
 	}
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		s.releaseClient(roomID, playerID)
+		s.rollbackClientReservation(reservation)
 		return
 	}
-	s.attachClient(roomID, playerID, conn)
+	if !s.attachClient(reservation, conn) {
+		s.rollbackClientReservation(reservation)
+		_ = conn.Close(websocket.StatusGoingAway, "room unavailable")
+		return
+	}
 	defer func() {
 		s.releaseClient(roomID, playerID)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
@@ -85,39 +105,70 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 	}
 }
 
-func (s *Store) reserveClient(roomID string, playerID string) error {
+func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (*clientReservation, error) {
 	s.cleanupExpired()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return nil, ErrRoomNotFound
+	}
 	room, ok := s.rooms[roomID]
 	if !ok {
-		return ErrRoomNotFound
+		return nil, ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
-		return ErrPlayerNotFound
+		return nil, ErrPlayerNotFound
+	}
+	if len(tokens) != 1 || tokens[0] == "" || !room.authenticatePlayer(playerID, tokens[0]) {
+		return nil, ErrUnauthorized
 	}
 	if _, ok := room.clients[playerID]; ok {
-		return ErrPlayerAlreadyConnected
+		return nil, ErrPlayerAlreadyConnected
 	}
-	room.clients[playerID] = nil
-	room.lastActivityAt = s.clock.Now()
-	room.disconnectedAt = time.Time{}
-	return nil
+	if _, ok := room.reservations[playerID]; ok {
+		return nil, ErrPlayerAlreadyConnected
+	}
+	reservation := &clientReservation{
+		room:     room,
+		playerID: playerID,
+	}
+	room.reservations[playerID] = reservation
+	return reservation, nil
 }
 
-func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Conn) {
+func (s *Store) rollbackClientReservation(reservation *clientReservation) {
+	if reservation == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, ok := s.rooms[reservation.room.ID]
+	if !ok || room != reservation.room || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+		return
+	}
+	delete(room.reservations, reservation.playerID)
+}
+
+func (s *Store) attachClient(reservation *clientReservation, conn *websocket.Conn) bool {
 	var deliveries []webSocketDelivery
 
 	s.mu.Lock()
 
-	room, ok := s.rooms[roomID]
-	if !ok {
+	if s.closed || reservation == nil {
 		s.mu.Unlock()
-		return
+		return false
 	}
-	room.clients[playerID] = conn
+	room, ok := s.rooms[reservation.room.ID]
+	if !ok || room != reservation.room || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+		s.mu.Unlock()
+		return false
+	}
+	delete(room.reservations, reservation.playerID)
+	room.clients[reservation.playerID] = conn
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
 	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
@@ -131,6 +182,7 @@ func (s *Store) attachClient(roomID string, playerID string, conn *websocket.Con
 	s.mu.Unlock()
 
 	writeWebSocketDeliveries(deliveries)
+	return true
 }
 
 func (s *Store) releaseClient(roomID string, playerID string) {

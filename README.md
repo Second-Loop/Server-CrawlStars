@@ -7,9 +7,9 @@ Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버입
 ## 지금 되는 것
 
 - `GET /health`
-- `POST /matchmaking/join`
-- `/rooms` debug REST API
-- `WS /rooms/{roomID}/players/{playerID}`
+- `POST /matchmaking/join`과 IP별 token-bucket rate limit
+- 기본 비활성화된 `/rooms` debug REST API와 Bearer 보호
+- `WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>` session 인증
 - 30Hz room-local game loop
 - movement, wall collision, projectile movement, hit, HP/death snapshot
 - `client-config/game-config.json` client 공유 config artifact
@@ -17,7 +17,7 @@ Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버입
 - OpenAPI/AsyncAPI raw spec과 docs UI
 - GitHub Actions CI/CD와 Oracle VM pull deployment
 
-아직 production matchmaking, persistence, auth, respawn, score, bot replacement는 없습니다.
+아직 production matchmaking, persistence, account auth, respawn, score, bot replacement는 없습니다.
 
 ## 자주 쓰는 명령
 
@@ -33,10 +33,10 @@ make ci
 go run ./cmd/server
 curl http://127.0.0.1:8080/health
 curl -X POST http://127.0.0.1:8080/matchmaking/join
-curl -X DELETE http://127.0.0.1:8080/rooms
 ```
 
 서버는 기본적으로 `127.0.0.1:8080`에 bind합니다. 외부 bind가 필요할 때만 명시적으로 `SERVER_ADDR=:8080 go run ./cmd/server`를 사용합니다.
+Debug REST는 기본적으로 404이며, 활성화할 때는 `ENABLE_DEBUG_API=true`와 별도 `DEBUG_API_TOKEN`을 함께 설정해야 합니다. Secret 값과 player session token이 포함된 응답·query는 log나 문서에 붙여 넣지 않습니다.
 
 ## 문서 지도
 

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
+const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
@@ -55,18 +56,108 @@ assert(openAPIText.includes("operationId: clearRooms"), "api/openapi.yaml must d
 assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must document DELETE /rooms/{roomID}");
 assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
+assert(hasLine(openAPIText, "    DebugBearer:"), "api/openapi.yaml must define DebugBearer");
+assertNamedBlockContains(openAPIText, "    DebugBearer:", ["type: http", "scheme: bearer", "401 `unauthorized`", "404 `not_found`"]);
+assert(
+  countOccurrences(openAPIText, "- DebugBearer: []") === 7,
+  "api/openapi.yaml must apply DebugBearer to exactly seven debug operations",
+);
+
+const debugOperationIDs = [
+  "listRooms",
+  "createRoom",
+  "clearRooms",
+  "getRoom",
+  "deleteRoom",
+  "createRoomPlayer",
+  "startRoom",
+];
+for (const operationID of debugOperationIDs) {
+  const operation = extractOpenAPIOperation(openAPIText, operationID);
+  assert(operation.includes("- DebugBearer: []"), `${operationID} must require DebugBearer`);
+  assert(operation.includes('"401":'), `${operationID} must document 401`);
+  assert(operation.includes('"404":'), `${operationID} must document disabled-default 404 behavior`);
+  assert(operation.includes("기본 비활성화"), `${operationID} must say that debug API is disabled by default`);
+  assert(operation.includes("not_found"), `${operationID} disabled 404 must name not_found`);
+}
+
+for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"]) {
+  const operation = extractOpenAPIOperation(openAPIText, operationID);
+  assert(operation.includes('"500":'), `${operationID} must document 500 internal_error`);
+  assert(operation.includes("internal_error"), `${operationID} must name internal_error`);
+}
+
+const matchmakingJoinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+assert(matchmakingJoinOperation.includes('"429":'), "joinMatchmaking must document 429");
+assert(matchmakingJoinOperation.includes("Retry-After"), "joinMatchmaking 429 must document Retry-After");
+assert(matchmakingJoinOperation.includes("rate_limited"), "joinMatchmaking 429 must name rate_limited");
+assert(matchmakingJoinOperation.includes("store join보다 먼저"), "joinMatchmaking must document quota-before-store ordering");
+assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must document 429 precedence over 409/500");
+
+assertSchemaContains(openAPIText, "OpaqueRoomID", ['pattern: "^room_[A-Za-z0-9_-]{22}$"']);
+assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0-9_-]{22}$"']);
+assertSchemaContains(openAPIText, "PlayerSessionToken", ['pattern: "^[A-Za-z0-9_-]{43}$"']);
+assertSchemaContains(openAPIText, "PlayerSessionToken", ["sessionToken", "tokenized `webSocketPath`", "Failed upgrade"]);
+assertSchemaContains(openAPIText, "PlayerSessionResponse", ["required: [player, sessionToken, webSocketPath]"]);
+assertSchemaContains(openAPIText, "MatchmakingJoin", ["required: [room, player, sessionToken, webSocketPath]"]);
+assertSchemaContains(openAPIText, "APIError", ["unauthorized", "rate_limited", "internal_error"]);
+assert(
+  openAPIText.includes("?token=<player-session-token>"),
+  "api/openapi.yaml must show a redacted tokenized webSocketPath",
+);
+for (const schemaName of ["Room", "RoomList", "Player", "SnapshotSummary"]) {
+  assertNoSecretFields(extractYAMLSchema(openAPIText, schemaName), `OpenAPI ${schemaName}`);
+}
+assertNoSequentialIDs(openAPIText, "api/openapi.yaml");
+assertOpaqueIDExamples(openAPIText, "api/openapi.yaml");
 assertNoBacktickStartedPlainScalars(openAPIText, "api/openapi.yaml");
 assertNoColonSpacePlainScalars(openAPIText, "api/openapi.yaml");
 
 assert(hasLine(asyncAPIText, "asyncapi: 3.0.0"), "api/asyncapi.yaml must use AsyncAPI 3.0.0");
 assert(hasLine(asyncAPIText, "x-stability: e1-debug"), "api/asyncapi.yaml must mark x-stability: e1-debug");
 assert(hasLine(asyncAPIText, "    address: /rooms/{roomID}/players/{playerID}"), "api/asyncapi.yaml must document room player channel");
+assert(
+  !/^\s*address:.*\?/m.test(asyncAPIText),
+  "api/asyncapi.yaml channel address must remain path-only",
+);
+assert(hasLine(asyncAPIText, "        method: GET"), "api/asyncapi.yaml WebSocket binding must use GET");
+assert(hasLine(asyncAPIText, "          required: [token]"), "api/asyncapi.yaml WebSocket query must require token");
+assert(hasLine(asyncAPIText, '        bindingVersion: "0.1.0"'), "api/asyncapi.yaml must pin WebSocket bindingVersion 0.1.0");
+assert(!asyncAPIText.includes("additionalProperties: false"), "api/asyncapi.yaml must allow ordinary extra query keys");
+assertNamedBlockContains(asyncAPIText, "    playerSessionToken:", ["type: httpApiKey", "name: token", "in: query"]);
+const localServer = extractYAMLNamedBlock(asyncAPIText, "  local:");
+assert(
+  localServer.includes('$ref: "#/components/securitySchemes/playerSessionToken"'),
+  "api/asyncapi.yaml local server must reference playerSessionToken security",
+);
+assert(asyncAPIText.includes("재연결"), "api/asyncapi.yaml must document reconnect token reuse");
+assert(asyncAPIText.includes("raw token과 전체 query"), "api/asyncapi.yaml must prohibit raw token/query logging");
+assert(asyncAPIText.includes("pre-start cancel"), "api/asyncapi.yaml must bound reconnect by pre-start cancellation");
+assert(asyncAPIText.includes("failed upgrade"), "api/asyncapi.yaml must document failed-upgrade retry");
+assert(asyncAPIText.includes("malformed"), "api/asyncapi.yaml must document malformed query rejection");
+assert(asyncAPIText.includes("in-flight reservation"), "api/asyncapi.yaml must document reservation conflicts");
+assert(asyncAPIText.includes("secret-bearing surface"), "api/asyncapi.yaml must identify every secret-bearing surface");
 for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
+for (const schemaName of ["ReadyEventMessage", "SnapshotMessage", "Snapshot", "GameEndMessage", "ReadyPlayer", "PlayerData"]) {
+  assertNoSecretFields(extractYAMLSchema(asyncAPIText, schemaName), `AsyncAPI ${schemaName}`);
+}
+assertNoSequentialIDs(asyncAPIText, "api/asyncapi.yaml");
+assertOpaqueIDExamples(asyncAPIText, "api/asyncapi.yaml");
 assertNoBacktickStartedPlainScalars(asyncAPIText, "api/asyncapi.yaml");
 assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
+
+assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
+assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
+assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
+for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface"]) {
+  assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
+}
+for (const [text, name] of [[openAPIText, "api/openapi.yaml"], [asyncAPIText, "api/asyncapi.yaml"], [docsBuildText, "docs UI"]]) {
+  assertNoRawSessionTokenExamples(text, name);
+}
 
 assert(clientGameConfig.version === 1, "client-config/game-config.json must use version 1");
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
@@ -91,6 +182,90 @@ assert(serverGameConfig.map?.maxPlayers === 6, "server-config/game-config.json m
 
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);
+}
+
+function countOccurrences(text, needle) {
+  return text.split(needle).length - 1;
+}
+
+function extractOpenAPIOperation(text, operationID) {
+  const lines = text.split(/\r?\n/);
+  const operationLine = lines.findIndex((line) => line === `      operationId: ${operationID}`);
+  assert(operationLine >= 0, `api/openapi.yaml is missing operationId ${operationID}`);
+
+  let start = operationLine;
+  while (start >= 0 && !/^    (get|post|put|patch|delete):$/.test(lines[start])) {
+    start -= 1;
+  }
+  assert(start >= 0, `api/openapi.yaml cannot locate operation ${operationID}`);
+
+  let end = start + 1;
+  while (end < lines.length && !/^( {0,4})\S/.test(lines[end])) {
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function extractYAMLSchema(text, schemaName) {
+  const schemasMarker = "\n  schemas:\n";
+  const schemasStart = text.indexOf(schemasMarker);
+  assert(schemasStart >= 0, "YAML is missing components schemas");
+  return extractYAMLNamedBlock(text.slice(schemasStart + 1), `    ${schemaName}:`);
+}
+
+function extractYAMLNamedBlock(text, marker) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === marker);
+  assert(start >= 0, `YAML is missing ${marker.trim()}`);
+  const indent = marker.length - marker.trimStart().length;
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line.trim() !== "" && line.length - line.trimStart().length <= indent) {
+      break;
+    }
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function assertSchemaContains(text, schemaName, markers) {
+  const schema = extractYAMLSchema(text, schemaName);
+  for (const marker of markers) {
+    assert(schema.includes(marker), `${schemaName} must include ${marker}`);
+  }
+}
+
+function assertNamedBlockContains(text, blockMarker, markers) {
+  const block = extractYAMLNamedBlock(text, blockMarker);
+  for (const marker of markers) {
+    assert(block.includes(marker), `${blockMarker.trim()} must include ${marker}`);
+  }
+}
+
+function assertNoSecretFields(block, name) {
+  assert(
+    !/(?:sessionToken|digest|PlayerSessionToken|PlayerSessionResponse)/.test(block) && !/^\s+token:/m.test(block),
+    `${name} must not expose token or digest fields`,
+  );
+}
+
+function assertNoSequentialIDs(text, name) {
+  assert(!/\b(?:room|player)-\d+\b/.test(text), `${name} must use opaque room/player examples`);
+}
+
+function assertOpaqueIDExamples(text, name) {
+  const exampleLines = text.split(/\r?\n/).filter((line) => /\bexample:|^\s+(?:-\s+)?(?:Id|PlayerId):/.test(line));
+  const opaqueIDs = exampleLines.flatMap((line) => [...line.matchAll(/\b(room|player)_([A-Za-z0-9_-]+)/g)]);
+  assert(opaqueIDs.length > 0, `${name} must include opaque ID examples`);
+  for (const [, prefix, payload] of opaqueIDs) {
+    assert(payload.length === 22, `${name} ${prefix}_ example must have a 22-character payload`);
+  }
+}
+
+function assertNoRawSessionTokenExamples(text, name) {
+  assert(!/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/.test(text), `${name} must not contain a raw 43-character session token example`);
 }
 
 function assertNoBacktickStartedPlainScalars(text, name) {

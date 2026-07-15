@@ -27,18 +27,26 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
+`GET /health`, docs, `POST /matchmaking/join`은 public surface입니다. 일곱 Room debug operation은 기본 비활성화되어 `404 not_found`를 반환합니다. 활성화한 환경에서는 모두 다음 header가 필요합니다.
+
+```text
+Authorization: Bearer <DEBUG_API_TOKEN>
+```
+
+Debug guard 우선순위는 `disabled 404 not_found` → `enabled + missing/wrong/multiple credential 401 unauthorized` → `authenticated route result`입니다. 올바른 credential 뒤에야 2xx, `room_not_found` 404, 405, 409, 500을 평가합니다. WebSocket GET은 이 Bearer guard 대상이 아니고 player session query token으로 인증합니다.
+
 ### `POST /matchmaking/join`
 
-Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유 waiting room이 없으면 새 room을 만듭니다. 같은 room에 두 번째 player가 들어오면 REST 응답 shape는 유지하되 room은 ready/start 전까지 `waiting`으로 남습니다.
+Waiting room에 player를 배정하고 player session credential이 포함된 WebSocket path를 돌려줍니다. 여유 waiting room이 없으면 새 room을 만듭니다. 같은 room에 두 번째 player가 들어와도 room은 ready/start 전까지 `waiting`으로 남습니다.
 
 ```json
 {
   "room": {
-    "id": "room-1",
+    "id": "room_AbCdEfGhIjKlMnOpQrStUv",
     "status": "waiting",
     "players": [
       {
-        "id": "player-1",
+        "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
         "team": "red",
         "slot": 0
       }
@@ -65,13 +73,31 @@ Waiting room에 player를 배정하고 WebSocket path를 돌려줍니다. 여유
     }
   },
   "player": {
-    "id": "player-1",
+    "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
     "team": "red",
     "slot": 0
   },
-  "webSocketPath": "/rooms/room-1/players/player-1"
+  "sessionToken": "<player-session-token>",
+  "webSocketPath": "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
 }
 ```
+
+Room/player ID는 16 random bytes를 Raw URL Base64로 인코딩한 22자 payload에 `room_`/`player_` prefix를 붙입니다. Session token은 32 random bytes를 같은 방식으로 인코딩한 43자 opaque value입니다. Raw token은 발급 JSON의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 같은 secret으로 나타나고, 이후 inbound WebSocket query로 다시 전달됩니다. 서버 private state에는 SHA-256 digest만 저장합니다.
+
+`sessionToken`, tokenized `webSocketPath`, inbound query는 모두 secret-bearing surface입니다. Raw 값이나 전체 query 문자열을 log, telemetry, 문서에 남기지 않습니다. Public Room/Player/list/detail/Ready/Snapshot/GameEnd payload에는 raw token이나 digest가 없습니다.
+
+Join 요청은 `client IP resolve → quota 평가/소비 → store join` 순서입니다. 기본 limiter는 process-local per-IP token bucket이며 10 requests/minute, burst 4입니다. Bucket이 비면 store 상태보다 먼저 429를 반환하므로 429가 room cap 409와 `internal_error` 500보다 우선합니다. Store에서 409/500으로 끝난 허용 요청도 quota 1개를 이미 소비합니다. POST가 아닌 method의 405는 quota를 소비하지 않습니다.
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 6
+
+{"error":{"code":"rate_limited","message":"rate limit exceeded"}}
+```
+
+`Retry-After`는 필요한 대기 시간을 올림한 최소 1초의 delta-seconds 정수입니다.
+
+Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY_CIDRS`에 속하고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 신뢰합니다. Header가 없거나 malformed/multiple이면 요청을 거부하지 않고 peer IP bucket으로 fallback합니다. `X-Forwarded-For`는 항상 무시합니다. Cloudflare Tunnel loopback peer를 trust하지 않으면 public client가 하나의 loopback bucket을 공유할 수 있으므로 배포 설정은 `ai-docs/deployment.md`를 따릅니다.
 
 시뮬레이션 시작 트리거:
 
@@ -89,11 +115,11 @@ Room response:
 
 ```json
 {
-  "id": "room-1",
+  "id": "room_AbCdEfGhIjKlMnOpQrStUv",
   "status": "waiting",
   "players": [
     {
-      "id": "player-1",
+      "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
       "team": "red",
       "slot": 0
     }
@@ -127,6 +153,20 @@ Room response:
 
 `latestSnapshot`은 마지막으로 생성된 snapshot의 요약입니다. 아직 room이 started 전이거나 첫 tick 전이면 `tick: 0`입니다.
 
+`POST /rooms/{roomID}/players`의 인증된 debug 응답도 matchmaking과 같은 player session을 발급합니다.
+
+```json
+{
+  "player": {
+    "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
+    "team": "red",
+    "slot": 0
+  },
+  "sessionToken": "<player-session-token>",
+  "webSocketPath": "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
+}
+```
+
 Error response:
 
 ```json
@@ -146,12 +186,15 @@ Error response:
 - `room_has_no_players`
 - `method_not_allowed`
 - `not_found`
+- `unauthorized`
+- `rate_limited`
+- `internal_error`
 - `player_not_found` (WebSocket upgrade 전 검증에서 반환)
 - `player_already_connected` (WebSocket upgrade 전 검증에서 반환)
 
 ### 409 room cap 회복
 
-Active room cap은 5개입니다. 테스트 중 `room_cap_reached`가 나오면 debug API로 room을 비울 수 있습니다.
+Active room cap은 5개입니다. 테스트 중 `room_cap_reached`가 나오면 debug API를 명시적으로 활성화하고 올바른 Bearer credential로 room을 비울 수 있습니다.
 
 ```text
 DELETE /rooms
@@ -170,11 +213,21 @@ DELETE /rooms/{roomID}
 
 ## WebSocket
 
+AsyncAPI channel address 자체는 query를 제외한 path-only 값입니다.
+
 ```text
 WS /rooms/{roomID}/players/{playerID}
 ```
 
-연결 전에 room과 player가 REST로 발급되어 있어야 합니다. 같은 room/player의 중복 연결은 거부합니다.
+실제 연결은 path에 정확히 한 개의 non-empty token query를 붙입니다.
+
+```text
+WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
+```
+
+연결 전에 room/player/session이 REST로 발급되어 있어야 합니다. 정상적인 다른 query key는 허용하지만 어느 query pair든 malformed하면 전체 query를 fail-closed 401로 처리합니다. 검증 순서는 room 404 → player 404 → token 401 → live connection 또는 in-flight reservation 409입니다. Wrong token은 reservation 충돌보다 먼저 401입니다.
+
+Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking의 matched/loading/starting 단계에서 실제 연결이 끊기면 pre-start cancel로 room이 삭제되어 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. HTTP-to-WebSocket upgrade 자체가 실패하면 reservation만 rollback하고 room을 취소하지 않으므로 같은 발급 path로 재시도할 수 있습니다.
 
 Client input:
 
@@ -209,7 +262,7 @@ Ready event:
   },
   "Players": [
     {
-      "Id": "player-1",
+      "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
       "Team": "red",
       "Slot": 0,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
@@ -274,7 +327,7 @@ GameEnd event:
 ```json
 {
   "Type": "GameEnd",
-  "PlayerId": "player-1",
+  "PlayerId": "player_VuTsRqPoNmLkJiHgFeDcBa",
   "Result": "Win"
 }
 ```
@@ -307,7 +360,7 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 ## 수동 검증 시나리오
 
 1. `POST /matchmaking/join`을 두 번 호출합니다.
-2. 두 응답의 `webSocketPath`로 WebSocket을 엽니다.
+2. 두 응답의 secret-bearing `webSocketPath`를 client 내부에서만 사용해 WebSocket을 엽니다. Raw path/query를 log에 남기지 않습니다.
 3. 두 연결이 같은 `Type: "Ready"` event를 받아야 합니다.
 4. Ready event의 `Map.map` row는 숫자 배열이어야 하고, `Players[].SpawnPosition`이 있어야 합니다.
 5. 두 client가 `{"Type":"ready"}`를 보내면 `starting` 신호를 1번 받고, 중간 countdown broadcast 없이 5초 뒤 `started`를 받아야 합니다.
@@ -322,4 +375,4 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 
 ## 제약
 
-이 API는 development surface입니다. Auth, rate limit, production matchmaking, persistence, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.
+이 API는 development surface입니다. Player session 인증, debug Bearer guard, matchmaking rate limit은 구현되어 있습니다. Account auth, production matchmaking, persistence, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.

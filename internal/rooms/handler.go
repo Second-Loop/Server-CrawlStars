@@ -1,38 +1,126 @@
 package rooms
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
+type HandlerConfig struct {
+	EnableDebugAPI       bool
+	DebugAPIToken        string
+	JoinLimiter          *IPRateLimiter
+	TrustedProxyPrefixes []netip.Prefix
+}
+
 func Handler(store *Store) http.Handler {
+	handler, err := HandlerWithConfig(store, HandlerConfig{})
+	if err != nil {
+		panic(err)
+	}
+	return handler
+}
+
+func HandlerWithConfig(store *Store, config HandlerConfig) (http.Handler, error) {
+	if config.EnableDebugAPI && strings.TrimSpace(config.DebugAPIToken) == "" {
+		return nil, fmt.Errorf("debug API token is required when debug API is enabled")
+	}
 	if store == nil {
 		store = NewStore(5)
 	}
 
-	router := newRouter(store)
+	debugAPIEnabled := config.EnableDebugAPI
+	debugTokenDigest := sha256.Sum256([]byte(config.DebugAPIToken))
+	joinLimiter := config.JoinLimiter
+	if joinLimiter == nil {
+		joinLimiter = NewIPRateLimiter(DefaultJoinRatePerMinute, DefaultJoinBurst, nil)
+	}
+	trustedProxyPrefixes := append([]netip.Prefix(nil), config.TrustedProxyPrefixes...)
+	debugGuard := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !authorizeDebugRequest(w, r, debugAPIEnabled, debugTokenDigest) {
+				return
+			}
+			next(w, r)
+		}
+	}
+	router := newRouterWithDebugGuard(store, debugGuard, joinLimiter, trustedProxyPrefixes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "//") {
 			if strings.HasPrefix(r.URL.Path, "/rooms//") {
+				if !authorizeDebugRequest(w, r, debugAPIEnabled, debugTokenDigest) {
+					return
+				}
 				writeRoomNotFound(w)
 				return
 			}
 			writeRouteNotFound(w)
 			return
 		}
-		router.ServeHTTP(w, requestWithDecodedPathSegments(r))
-	})
+
+		decodedRequest := requestWithDecodedPathSegments(r)
+		router.ServeHTTP(w, decodedRequest)
+	}), nil
+}
+
+func authorizeDebugRequest(w http.ResponseWriter, r *http.Request, enabled bool, expectedTokenDigest [sha256.Size]byte) bool {
+	if !enabled {
+		writeRouteNotFound(w)
+		return false
+	}
+
+	authorization := r.Header.Values("Authorization")
+	const bearerPrefix = "Bearer "
+	if len(authorization) != 1 || len(authorization[0]) <= len(bearerPrefix) ||
+		!strings.EqualFold(authorization[0][:len(bearerPrefix)], bearerPrefix) {
+		writeUnauthorized(w)
+		return false
+	}
+	candidateDigest := sha256.Sum256([]byte(authorization[0][len(bearerPrefix):]))
+	if subtle.ConstantTimeCompare(candidateDigest[:], expectedTokenDigest[:]) != 1 {
+		writeUnauthorized(w)
+		return false
+	}
+	return true
 }
 
 func newRouter(store *Store) *http.ServeMux {
-	mux := http.NewServeMux()
+	return newRouterWithDebugGuard(store, func(handler http.HandlerFunc) http.HandlerFunc {
+		return handler
+	}, NewIPRateLimiter(DefaultJoinRatePerMinute, DefaultJoinBurst, nil), nil)
+}
 
-	mux.HandleFunc("POST /matchmaking/join", func(w http.ResponseWriter, _ *http.Request) {
+func newRouterWithDebugGuard(
+	store *Store,
+	debugGuard func(http.HandlerFunc) http.HandlerFunc,
+	joinLimiter *IPRateLimiter,
+	trustedProxyPrefixes []netip.Prefix,
+) *http.ServeMux {
+	mux := http.NewServeMux()
+	debugHandleFunc := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pattern, debugGuard(handler))
+	}
+
+	mux.HandleFunc("POST /matchmaking/join", func(w http.ResponseWriter, r *http.Request) {
+		allowed, retryAfter := joinLimiter.Allow(clientIP(r, trustedProxyPrefixes))
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(retryAfter), 10))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
+			return
+		}
 		joined, err := store.joinMatchmaking()
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
@@ -41,27 +129,31 @@ func newRouter(store *Store) *http.ServeMux {
 	mux.HandleFunc("HEAD /matchmaking/join", writeMethodNotAllowed)
 	mux.HandleFunc("/matchmaking/join", writeMethodNotAllowed)
 
-	mux.HandleFunc("GET /rooms", func(w http.ResponseWriter, _ *http.Request) {
+	debugHandleFunc("GET /rooms", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, store.listRooms())
 	})
-	mux.HandleFunc("HEAD /rooms", writeMethodNotAllowed)
-	mux.HandleFunc("POST /rooms", func(w http.ResponseWriter, _ *http.Request) {
+	debugHandleFunc("HEAD /rooms", writeMethodNotAllowed)
+	debugHandleFunc("POST /rooms", func(w http.ResponseWriter, _ *http.Request) {
 		created, err := store.createRoom()
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusCreated, created)
 	})
-	mux.HandleFunc("DELETE /rooms", func(w http.ResponseWriter, _ *http.Request) {
+	debugHandleFunc("DELETE /rooms", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, store.clearRooms())
 	})
-	mux.HandleFunc("/rooms", writeMethodNotAllowed)
-	mux.HandleFunc("/rooms/{$}", func(w http.ResponseWriter, _ *http.Request) {
+	debugHandleFunc("/rooms", writeMethodNotAllowed)
+	debugHandleFunc("/rooms/{$}", func(w http.ResponseWriter, _ *http.Request) {
 		writeRoomNotFound(w)
 	})
 
-	mux.HandleFunc("GET /rooms/{roomID}", func(w http.ResponseWriter, r *http.Request) {
+	debugHandleFunc("GET /rooms/{roomID}", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID") {
 			return
 		}
@@ -73,8 +165,8 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		writeJSON(w, http.StatusOK, found)
 	})
-	mux.HandleFunc("HEAD /rooms/{roomID}", pathMethodNotAllowed("roomID"))
-	mux.HandleFunc("DELETE /rooms/{roomID}", func(w http.ResponseWriter, r *http.Request) {
+	debugHandleFunc("HEAD /rooms/{roomID}", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("DELETE /rooms/{roomID}", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID") {
 			return
 		}
@@ -86,15 +178,19 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		writeJSON(w, http.StatusOK, deleted)
 	})
-	mux.HandleFunc("/rooms/{roomID}", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("/rooms/{roomID}", pathMethodNotAllowed("roomID"))
 
-	mux.HandleFunc("POST /rooms/{roomID}/players", func(w http.ResponseWriter, r *http.Request) {
+	debugHandleFunc("POST /rooms/{roomID}/players", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID") {
 			return
 		}
 		roomID := r.PathValue("roomID")
 		player, err := store.addPlayer(roomID)
 		if err != nil {
+			if errors.Is(err, ErrInternal) {
+				writeInternalError(w)
+				return
+			}
 			status := http.StatusNotFound
 			code := "room_not_found"
 			if errors.Is(err, ErrRoomFull) {
@@ -106,10 +202,10 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		writeJSON(w, http.StatusCreated, player)
 	})
-	mux.HandleFunc("HEAD /rooms/{roomID}/players", pathMethodNotAllowed("roomID"))
-	mux.HandleFunc("/rooms/{roomID}/players", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("HEAD /rooms/{roomID}/players", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("/rooms/{roomID}/players", pathMethodNotAllowed("roomID"))
 
-	mux.HandleFunc("POST /rooms/{roomID}/start", func(w http.ResponseWriter, r *http.Request) {
+	debugHandleFunc("POST /rooms/{roomID}/start", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID") {
 			return
 		}
@@ -127,8 +223,8 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		writeJSON(w, http.StatusOK, started)
 	})
-	mux.HandleFunc("HEAD /rooms/{roomID}/start", pathMethodNotAllowed("roomID"))
-	mux.HandleFunc("/rooms/{roomID}/start", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("HEAD /rooms/{roomID}/start", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("/rooms/{roomID}/start", pathMethodNotAllowed("roomID"))
 
 	mux.HandleFunc("GET /rooms/{roomID}/players/{playerID}", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID", "playerID") {
@@ -136,8 +232,8 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		store.handleWebSocket(w, r, r.PathValue("roomID"), r.PathValue("playerID"))
 	})
-	mux.HandleFunc("HEAD /rooms/{roomID}/players/{playerID}", pathMethodNotAllowed("roomID", "playerID"))
-	mux.HandleFunc("/rooms/{roomID}/players/{playerID}", pathMethodNotAllowed("roomID", "playerID"))
+	debugHandleFunc("HEAD /rooms/{roomID}/players/{playerID}", pathMethodNotAllowed("roomID", "playerID"))
+	debugHandleFunc("/rooms/{roomID}/players/{playerID}", pathMethodNotAllowed("roomID", "playerID"))
 
 	mux.HandleFunc("GET /rooms/{roomID}/players/{$}", func(w http.ResponseWriter, r *http.Request) {
 		if rejectSlashPathValues(w, r, "roomID") {
@@ -145,8 +241,8 @@ func newRouter(store *Store) *http.ServeMux {
 		}
 		store.handleWebSocket(w, r, r.PathValue("roomID"), "")
 	})
-	mux.HandleFunc("HEAD /rooms/{roomID}/players/{$}", pathMethodNotAllowed("roomID"))
-	mux.HandleFunc("/rooms/{roomID}/players/{$}", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("HEAD /rooms/{roomID}/players/{$}", pathMethodNotAllowed("roomID"))
+	debugHandleFunc("/rooms/{roomID}/players/{$}", pathMethodNotAllowed("roomID"))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeRouteNotFound(w)
@@ -223,6 +319,14 @@ func writeRoomNotFound(w http.ResponseWriter) {
 
 func writeRouteNotFound(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "not_found", "route not found")
+}
+
+func writeInternalError(w http.ResponseWriter) {
+	writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func writeUnauthorized(w http.ResponseWriter) {
+	writeError(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

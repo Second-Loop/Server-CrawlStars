@@ -1,17 +1,219 @@
 package rooms
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
 )
+
+func TestStoreCreatesOpaqueIDsAndSessionSecrets(t *testing.T) {
+	random := bytes.NewReader(bytes.Join([][]byte{
+		bytes.Repeat([]byte{0x01}, 16),
+		bytes.Repeat([]byte{0x02}, 16),
+		bytes.Repeat([]byte{0x03}, 32),
+		bytes.Repeat([]byte{0x04}, 16),
+		bytes.Repeat([]byte{0x05}, 32),
+		bytes.Repeat([]byte{0x06}, 16),
+	}, nil))
+	store := NewStoreWithConfig(5, StoreConfig{Random: random})
+	defer store.Close()
+
+	firstRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create first room: %v", err)
+	}
+	firstPlayer, err := store.addPlayer(firstRoom.ID)
+	if err != nil {
+		t.Fatalf("add first player: %v", err)
+	}
+	secondPlayer, err := store.addPlayer(firstRoom.ID)
+	if err != nil {
+		t.Fatalf("add second player: %v", err)
+	}
+	secondRoom, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create second room: %v", err)
+	}
+
+	assertOpaqueID(t, firstRoom.ID, "room_", 16)
+	assertOpaqueID(t, secondRoom.ID, "room_", 16)
+	assertOpaqueID(t, firstPlayer.Player.ID, "player_", 16)
+	assertOpaqueID(t, secondPlayer.Player.ID, "player_", 16)
+	if firstRoom.ID == secondRoom.ID {
+		t.Fatalf("expected distinct room IDs, got %q", firstRoom.ID)
+	}
+	if firstPlayer.Player.ID == secondPlayer.Player.ID {
+		t.Fatalf("expected distinct player IDs, got %q", firstPlayer.Player.ID)
+	}
+	assertOpaqueID(t, firstPlayer.SessionToken, "", 32)
+	assertOpaqueID(t, secondPlayer.SessionToken, "", 32)
+	if firstPlayer.SessionToken == secondPlayer.SessionToken {
+		t.Fatal("expected distinct player session tokens")
+	}
+
+	wantDigest := sha256.Sum256([]byte(firstPlayer.SessionToken))
+	store.mu.Lock()
+	storedRoom := store.rooms[firstRoom.ID]
+	storedSession := storedRoom.sessions[firstPlayer.Player.ID]
+	store.mu.Unlock()
+	if storedSession.digest != wantDigest {
+		t.Fatal("expected only the issued session digest in room state")
+	}
+}
+
+func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
+	random := bytes.NewReader(bytes.Join([][]byte{
+		bytes.Repeat([]byte{0x11}, 16),
+		bytes.Repeat([]byte{0x12}, 16),
+		bytes.Repeat([]byte{0x13}, 32),
+	}, nil))
+	store := NewStoreWithConfig(5, StoreConfig{Random: random})
+	defer store.Close()
+	handler := debugHandler(t, store)
+
+	room := createRoom(t, handler)
+	rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/players")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create player status 201, got %d", rec.Code)
+	}
+	var issued playerSessionResponse
+	decodeResponse(t, rec, &issued)
+	assertOpaqueID(t, issued.Player.ID, "player_", 16)
+	assertOpaqueID(t, issued.SessionToken, "", 32)
+	wantPath := "/rooms/" + room.ID + "/players/" + issued.Player.ID + "?token=" + issued.SessionToken
+	if issued.WebSocketPath != wantPath {
+		t.Fatal("expected websocket path to match the issued room, player, and session")
+	}
+
+	store.mu.Lock()
+	storedRoom := store.rooms[room.ID]
+	ready := readyEventMessage{
+		Type:    "Ready",
+		Map:     mapResponseFromSimulation(store.gameConfig.Map),
+		Players: readyEventPlayers(storedRoom.Players, store.gameConfig),
+	}
+	snapshot := storedRoom.matchSnapshotMessage(MatchStatusMatched, 0)
+	store.mu.Unlock()
+
+	responses := map[string][]byte{
+		"room list":   request(handler, http.MethodGet, "/rooms").Body.Bytes(),
+		"room detail": request(handler, http.MethodGet, "/rooms/"+room.ID).Body.Bytes(),
+		"Ready":       mustMarshalTestJSON(t, ready),
+		"snapshot":    mustMarshalTestJSON(t, snapshot),
+	}
+	for name, payload := range responses {
+		if bytes.Contains(payload, []byte(issued.SessionToken)) {
+			t.Fatalf("expected %s to omit the raw session token", name)
+		}
+		if bytes.Contains(payload, []byte("sessionToken")) || bytes.Contains(payload, []byte("digest")) {
+			t.Fatalf("expected %s to omit session fields", name)
+		}
+	}
+}
+
+func TestHandlerSessionSecretFailureIsAtomic(t *testing.T) {
+	t.Run("reader error", func(t *testing.T) {
+		readerErr := errors.New("entropy source private detail")
+		store := NewStoreWithConfig(5, StoreConfig{Random: iotest.ErrReader(readerErr)})
+		defer store.Close()
+
+		rec := request(debugHandler(t, store), http.MethodPost, "/rooms")
+		if strings.Contains(rec.Body.String(), readerErr.Error()) {
+			t.Fatalf("expected response to omit reader error details, got %s", rec.Body.String())
+		}
+		assertInternalError(t, rec)
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected no partial room, got %d", got)
+		}
+	})
+
+	t.Run("room ID short read", func(t *testing.T) {
+		store := NewStoreWithConfig(5, StoreConfig{Random: bytes.NewReader(make([]byte, 15))})
+		defer store.Close()
+		handler := debugHandler(t, store)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms"))
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected no partial room, got %d", got)
+		}
+	})
+
+	t.Run("player token short read", func(t *testing.T) {
+		random := bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{0x21}, 16),
+			bytes.Repeat([]byte{0x22}, 16),
+			bytes.Repeat([]byte{0x23}, 31),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+		handler := debugHandler(t, store)
+		room := createRoom(t, handler)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms/"+room.ID+"/players"))
+		assertRoomHasPlayerAndSessionCount(t, store, room.ID, 0)
+	})
+
+	t.Run("matchmaking token short read", func(t *testing.T) {
+		random := bytes.NewReader(bytes.Join([][]byte{
+			bytes.Repeat([]byte{0x31}, 16),
+			bytes.Repeat([]byte{0x32}, 16),
+			bytes.Repeat([]byte{0x33}, 31),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+
+		assertInternalError(t, request(debugHandler(t, store), http.MethodPost, "/matchmaking/join"))
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected failed matchmaking to leave no room, got %d", got)
+		}
+	})
+}
+
+func TestStoreOpaqueIDCollisionExhaustionIsAtomic(t *testing.T) {
+	t.Run("room ID", func(t *testing.T) {
+		candidate := bytes.Repeat([]byte{0x41}, 16)
+		store := NewStoreWithConfig(5, StoreConfig{Random: bytes.NewReader(bytes.Repeat(candidate, 9))})
+		defer store.Close()
+		handler := debugHandler(t, store)
+
+		_ = createRoom(t, handler)
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms"))
+		if got := len(store.listRooms().Rooms); got != 1 {
+			t.Fatalf("expected one original room after collision exhaustion, got %d", got)
+		}
+	})
+
+	t.Run("player ID", func(t *testing.T) {
+		roomID := bytes.Repeat([]byte{0x51}, 16)
+		playerID := bytes.Repeat([]byte{0x52}, 16)
+		token := bytes.Repeat([]byte{0x53}, 32)
+		random := bytes.NewReader(bytes.Join([][]byte{
+			roomID,
+			playerID,
+			token,
+			bytes.Repeat(playerID, 8),
+		}, nil))
+		store := NewStoreWithConfig(5, StoreConfig{Random: random})
+		defer store.Close()
+		handler := debugHandler(t, store)
+		room := createRoom(t, handler)
+		_ = createPlayer(t, handler, room.ID)
+
+		assertInternalError(t, request(handler, http.MethodPost, "/rooms/"+room.ID+"/players"))
+		assertRoomHasPlayerAndSessionCount(t, store, room.ID, 1)
+	})
+}
 
 func TestStoreReturnsTypedErrors(t *testing.T) {
 	t.Run("active room cap from create", func(t *testing.T) {
@@ -56,7 +258,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if _, err := store.startRoom("missing"); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("start room: expected ErrRoomNotFound, got %v", err)
 		}
-		if err := store.reserveClient("missing", "player-1"); !errors.Is(err, ErrRoomNotFound) {
+		if _, err := store.reserveClient("missing", "player-1", nil); !errors.Is(err, ErrRoomNotFound) {
 			t.Fatalf("reserve client: expected ErrRoomNotFound, got %v", err)
 		}
 	})
@@ -100,7 +302,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create room: %v", err)
 		}
-		if err := store.reserveClient(room.ID, "missing"); !errors.Is(err, ErrPlayerNotFound) {
+		if _, err := store.reserveClient(room.ID, "missing", nil); !errors.Is(err, ErrPlayerNotFound) {
 			t.Fatalf("expected ErrPlayerNotFound, got %v", err)
 		}
 	})
@@ -117,10 +319,10 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("add player: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.ID); err != nil {
+		if _, err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); err != nil {
 			t.Fatalf("reserve first client: %v", err)
 		}
-		if err := store.reserveClient(room.ID, player.ID); !errors.Is(err, ErrPlayerAlreadyConnected) {
+		if _, err := store.reserveClient(room.ID, player.Player.ID, []string{player.SessionToken}); !errors.Is(err, ErrPlayerAlreadyConnected) {
 			t.Fatalf("expected ErrPlayerAlreadyConnected, got %v", err)
 		}
 	})
@@ -212,7 +414,7 @@ func TestHandlerRouteContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 			player := createPlayer(t, handler, room.ID)
 
@@ -272,7 +474,7 @@ func TestHandlerRouteEncodedWildcardContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 			player := createPlayer(t, handler, room.ID)
 
@@ -304,7 +506,7 @@ func TestHandlerRouteDotSegmentDetailContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			rec := request(Handler(store), tt.method, tt.path)
+			rec := request(debugHandler(t, store), tt.method, tt.path)
 			assertJSONRouteResponse(t, rec, tt.wantStatus, tt.wantCode)
 		})
 	}
@@ -340,7 +542,7 @@ func TestHandlerRouteNestedDotSegmentContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 
 			rec := request(handler, tt.method, tt.path(room))
@@ -378,7 +580,7 @@ func TestHandlerRouteEncodedSlashKnownRouteContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 
 			rec := request(handler, tt.method, tt.path(room))
@@ -416,7 +618,7 @@ func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 		{name: "room detail", method: http.MethodGet, path: "/rooms/" + room.ID, wantStatus: http.StatusOK, wantPattern: "GET /rooms/{roomID}", wantRoomID: room.ID},
 		{name: "player collection", method: http.MethodPost, path: "/rooms/" + room.ID + "/players", wantStatus: http.StatusCreated, wantPattern: "POST /rooms/{roomID}/players", wantRoomID: room.ID},
 		{name: "start", method: http.MethodPost, path: "/rooms/" + room.ID + "/start", wantStatus: http.StatusOK, wantPattern: "POST /rooms/{roomID}/start", wantRoomID: room.ID},
-		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.ID},
+		{name: "websocket head", method: http.MethodHead, path: "/rooms/" + room.ID + "/players/" + player.Player.ID, wantStatus: http.StatusMethodNotAllowed, wantPattern: "HEAD /rooms/{roomID}/players/{playerID}", wantRoomID: room.ID, wantPlayerID: player.Player.ID},
 	}
 
 	for _, tt := range tests {
@@ -425,7 +627,7 @@ func TestHandlerRoutePatternsPopulatePathValues(t *testing.T) {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
-				t.Fatalf("expected status %d, got %d with body %s", tt.wantStatus, rec.Code, rec.Body.String())
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
 			}
 			if req.Pattern != tt.wantPattern {
 				t.Fatalf("expected pattern %q, got %q", tt.wantPattern, req.Pattern)
@@ -471,7 +673,7 @@ func TestHandlerMethodContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 			player := createPlayer(t, handler, room.ID)
 
@@ -485,7 +687,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room cap from collection", func(t *testing.T) {
 		store := NewStore(1)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		_ = createRoom(t, handler)
 
 		rec := request(handler, http.MethodPost, "/rooms")
@@ -495,7 +697,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room cap from matchmaking", func(t *testing.T) {
 		store := NewStore(1)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		room := createRoom(t, handler)
 		for range store.matchCapacity() {
 			_ = createPlayer(t, handler, room.ID)
@@ -508,7 +710,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room full", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		room := createRoom(t, handler)
 		for range store.debugRoomCapacity() {
 			_ = createPlayer(t, handler, room.ID)
@@ -521,7 +723,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room has no players", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		room := createRoom(t, handler)
 
 		rec := request(handler, http.MethodPost, "/rooms/"+room.ID+"/start")
@@ -531,7 +733,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room not found from player collection", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		rec := request(handler, http.MethodPost, "/rooms/missing/players")
 		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
 	})
@@ -539,7 +741,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room not found from start", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		rec := request(handler, http.MethodPost, "/rooms/missing/start")
 		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
 	})
@@ -547,7 +749,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room detail not found", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		rec := request(handler, http.MethodGet, "/rooms/missing")
 		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
 	})
@@ -555,7 +757,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("room not found before websocket upgrade", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		rec := request(handler, http.MethodGet, "/rooms/missing/players/player-1")
 		assertJSONRouteResponse(t, rec, http.StatusNotFound, "room_not_found")
 	})
@@ -563,7 +765,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 	t.Run("player not found before websocket upgrade", func(t *testing.T) {
 		store := NewStore(5)
 		defer store.Close()
-		handler := Handler(store)
+		handler := debugHandler(t, store)
 		room := createRoom(t, handler)
 
 		rec := request(handler, http.MethodGet, "/rooms/"+room.ID+"/players/missing")
@@ -593,7 +795,7 @@ func TestHandlerTrailingSlashContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 
 			rec := request(handler, tt.method, tt.path(room))
@@ -625,7 +827,7 @@ func TestHandlerHeadContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewStore(5)
 			defer store.Close()
-			handler := Handler(store)
+			handler := debugHandler(t, store)
 			room := createRoom(t, handler)
 			player := createPlayer(t, handler, room.ID)
 
@@ -636,7 +838,7 @@ func TestHandlerHeadContract(t *testing.T) {
 }
 
 func TestHandlerListsAndCreatesRooms(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	listRec := request(handler, http.MethodGet, "/rooms")
 	if listRec.Code != http.StatusOK {
@@ -673,7 +875,7 @@ func TestHandlerListsAndCreatesRooms(t *testing.T) {
 }
 
 func TestHandlerReturnsRoomDetailWithLatestSnapshotSummary(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	createRec := request(handler, http.MethodPost, "/rooms")
 	var created roomResponse
@@ -695,7 +897,7 @@ func TestHandlerReturnsRoomDetailWithLatestSnapshotSummary(t *testing.T) {
 
 func TestHandlerRoomDetailShowsLatestSnapshotSummaryAfterTicks(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	defer store.Close()
 
 	room := createRoom(t, handler)
@@ -719,7 +921,7 @@ func TestHandlerRoomDetailShowsLatestSnapshotSummaryAfterTicks(t *testing.T) {
 }
 
 func TestHandlerRejectsRoomCreationAtCap(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	for i := 0; i < 5; i++ {
 		rec := request(handler, http.MethodPost, "/rooms")
@@ -736,7 +938,7 @@ func TestHandlerRejectsRoomCreationAtCap(t *testing.T) {
 }
 
 func TestHandlerClearsRoomsForDebugCapRecovery(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	for i := 0; i < 5; i++ {
 		rec := request(handler, http.MethodPost, "/rooms")
@@ -774,7 +976,7 @@ func TestHandlerClearsRoomsForDebugCapRecovery(t *testing.T) {
 func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	defer store.Close()
 
 	room := createRoom(t, handler)
@@ -802,7 +1004,7 @@ func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 }
 
 func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	rec := request(handler, http.MethodPost, "/matchmaking/join")
 	if rec.Code != http.StatusCreated {
@@ -820,9 +1022,10 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 	if joined.Player.ID == "" || joined.Player.Team != "red" || joined.Player.Slot != 0 {
 		t.Fatalf("unexpected player assignment: %+v", joined.Player)
 	}
-	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID
+	assertOpaqueID(t, joined.SessionToken, "", 32)
+	wantWebSocketPath := "/rooms/" + joined.Room.ID + "/players/" + joined.Player.ID + "?token=" + joined.SessionToken
 	if joined.WebSocketPath != wantWebSocketPath {
-		t.Fatalf("expected websocket path %q, got %q", wantWebSocketPath, joined.WebSocketPath)
+		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
 	if len(joined.Room.Players) != 1 || joined.Room.Players[0].ID != joined.Player.ID {
 		t.Fatalf("expected response room to contain joined player, got %+v", joined.Room.Players)
@@ -830,7 +1033,7 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 }
 
 func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	rec := request(handler, http.MethodPost, "/matchmaking/join")
 	if rec.Code != http.StatusCreated {
@@ -860,7 +1063,7 @@ func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.
 }
 
 func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	rec := request(handler, http.MethodPost, "/matchmaking/join")
 	if rec.Code != http.StatusCreated {
@@ -891,7 +1094,7 @@ func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T)
 func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	gameMap := customRoomMap()
 	store := newStore(5, newFakeClock(), StoreConfig{Map: gameMap})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	defer store.Close()
 
 	joined := joinMatchmaking(t, handler)
@@ -918,7 +1121,7 @@ func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 
 func TestStoreConfigFallsBackToStaticMapWhenMapIsEmpty(t *testing.T) {
 	store := newStore(5, newFakeClock(), StoreConfig{})
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	defer store.Close()
 
 	joined := joinMatchmaking(t, handler)
@@ -935,7 +1138,7 @@ func TestHandlerMatchmakingSecondJoinUsesSameRoomAndWaitsForReady(t *testing.T) 
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 
 	first := joinMatchmaking(t, handler)
 	second := joinMatchmaking(t, handler)
@@ -960,7 +1163,7 @@ func TestHandlerMatchmakingSecondJoinUsesSameRoomAndWaitsForReady(t *testing.T) 
 func TestHandlerMatchmakingDoesNotLateJoinStartedRooms(t *testing.T) {
 	store := NewStore(5)
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 
 	first := joinMatchmaking(t, handler)
 	second := joinMatchmaking(t, handler)
@@ -984,7 +1187,7 @@ func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 
 	first := joinMatchmaking(t, handler)
 	if first.Player.Team != "red" || first.Player.Slot != 0 {
@@ -1038,7 +1241,7 @@ func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{GameConfig: gameConfig})
 	defer store.Close()
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 
 	first := joinMatchmaking(t, handler)
 	second := joinMatchmaking(t, handler)
@@ -1074,7 +1277,7 @@ func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 }
 
 func TestHandlerIssuesPlayersWithTeamAndSlot(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 	room := createRoom(t, handler)
 
 	tests := []struct {
@@ -1096,7 +1299,7 @@ func TestHandlerIssuesPlayersWithTeamAndSlot(t *testing.T) {
 }
 
 func TestHandlerRejectsPlayerJoinWhenRoomFull(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 	room := createRoom(t, handler)
 
 	for i := 0; i < simulation.StaticMapFixture().MaxPlayers; i++ {
@@ -1111,7 +1314,7 @@ func TestHandlerRejectsPlayerJoinWhenRoomFull(t *testing.T) {
 }
 
 func TestHandlerStartRequiresAtLeastOnePlayer(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 	room := createRoom(t, handler)
 
 	emptyStart := request(handler, http.MethodPost, "/rooms/"+room.ID+"/start")
@@ -1136,7 +1339,7 @@ func TestHandlerStartRequiresAtLeastOnePlayer(t *testing.T) {
 }
 
 func TestHandlerReturnsJSONErrors(t *testing.T) {
-	handler := Handler(NewStore(5))
+	handler := debugHandler(t, NewStore(5))
 
 	rec := request(handler, http.MethodGet, "/rooms/missing")
 	if rec.Code != http.StatusNotFound {
@@ -1151,7 +1354,7 @@ func TestHandlerReturnsJSONErrors(t *testing.T) {
 func TestStoreCleansUpWaitingRoomAfterIdleTTL(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 
 	room := createRoom(t, handler)
 
@@ -1171,16 +1374,16 @@ func TestStoreCleansUpWaitingRoomAfterIdleTTL(t *testing.T) {
 func TestStoreCleansUpHardLifetimeExpiredRoom(t *testing.T) {
 	fakeClock := newFakeClockAt(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC))
 	store := NewStoreWithClock(5, fakeClock)
-	handler := Handler(store)
+	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
 	room := createRoom(t, handler)
-	player := createPlayer(t, handler, room.ID)
+	player := issuePlayer(t, handler, room.ID)
 	startRoom(t, handler, room.ID)
 
-	conn := dialRoomPlayer(t, server.URL, room.ID, player.ID)
+	conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, player.ID)
 
@@ -1237,9 +1440,24 @@ func customRoomMap() simulation.MapData {
 
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+testDebugAPIToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func debugHandler(t *testing.T, store *Store) http.Handler {
+	t.Helper()
+
+	handler, err := HandlerWithConfig(store, HandlerConfig{
+		EnableDebugAPI: true,
+		DebugAPIToken:  testDebugAPIToken,
+		JoinLimiter:    NewIPRateLimiter(1, 10_000, nil),
+	})
+	if err != nil {
+		t.Fatalf("create debug handler: %v", err)
+	}
+	return handler
 }
 
 func decodeResponse(t *testing.T, rec *httptest.ResponseRecorder, target any) {
@@ -1263,11 +1481,63 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 	}
 }
 
+func assertOpaqueID(t *testing.T, value string, prefix string, wantBytes int) {
+	t.Helper()
+
+	if !strings.HasPrefix(value, prefix) {
+		t.Fatalf("expected opaque value to use the %q prefix", prefix)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		t.Fatalf("decode opaque value: %v", err)
+	}
+	if len(decoded) != wantBytes {
+		t.Fatalf("expected %d decoded bytes, got %d", wantBytes, len(decoded))
+	}
+}
+
+func assertInternalError(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", rec.Code)
+	}
+	var body errorResponse
+	decodeResponse(t, rec, &body)
+	if body.Error.Code != "internal_error" || body.Error.Message != "internal server error" {
+		t.Fatalf("expected generic internal error, got %+v", body)
+	}
+}
+
+func assertRoomHasPlayerAndSessionCount(t *testing.T, store *Store, roomID string, want int) {
+	t.Helper()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	room := store.rooms[roomID]
+	if room == nil {
+		t.Fatalf("expected room %q", roomID)
+	}
+	if len(room.Players) != want || len(room.sessions) != want {
+		t.Fatalf("expected %d players and sessions, got %d and %d", want, len(room.Players), len(room.sessions))
+	}
+}
+
+func mustMarshalTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return payload
+}
+
 func assertJSONRouteResponse(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 
 	if rec.Code != status {
-		t.Fatalf("expected status %d, got %d with body %s", status, rec.Code, rec.Body.String())
+		t.Fatalf("expected status %d, got %d", status, rec.Code)
 	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected application/json content type, got %q", got)
