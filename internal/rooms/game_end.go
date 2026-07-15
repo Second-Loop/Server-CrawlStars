@@ -15,7 +15,7 @@ func (r gameEndResult) String() string {
 }
 
 func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
-	switch gameConfig.Mode.ID {
+	switch gameConfig.SelectedMode.ID {
 	case simulation.GameModeDuel1v1:
 		return duelGameEndResults(snapshot.Players)
 	default:

@@ -3044,7 +3044,7 @@ func newFakeClock() *fakeClock {
 }
 
 func fastRechargeGameConfig() simulation.GameConfig {
-	config := simulation.StaticGameConfig()
+	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
 	config.Player.Types[0].AttackRechargeTicks = 1
 	return config
 }

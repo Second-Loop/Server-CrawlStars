@@ -1714,7 +1714,10 @@ func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T)
 
 func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	gameMap := customRoomMap()
-	store := newStore(5, newFakeClock(), StoreConfig{Map: gameMap})
+	store := newStore(5, newFakeClock(), StoreConfig{
+		Map:        gameMap,
+		GameConfig: singleModeGameConfig(simulation.DefaultGameModeConfig()),
+	})
 	handler := debugHandler(t, store)
 	defer store.Close()
 
@@ -1847,8 +1850,7 @@ func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
 }
 
 func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
-	gameConfig := simulation.StaticGameConfig()
-	gameConfig.Mode = simulation.GameModeConfig{
+	mode := simulation.GameModeConfig{
 		ID:              "test_quartet",
 		PlayersPerMatch: 4,
 		Teams: []simulation.TeamConfig{
@@ -1860,6 +1862,7 @@ func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 			FriendlyFire: false,
 		},
 	}
+	gameConfig := singleModeGameConfig(mode)
 
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{GameConfig: gameConfig})
@@ -2064,6 +2067,16 @@ func customRoomMap() simulation.MapData {
 			{simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall, simulation.TileWall},
 		},
 	}
+}
+
+func singleModeGameConfig(mode simulation.GameModeConfig) simulation.GameConfig {
+	config := simulation.StaticGameConfig()
+	config.ModeCatalog = simulation.GameModeCatalogConfig{
+		Default: mode.ID,
+		Catalog: []simulation.GameModeConfig{mode},
+	}
+	config.SelectedMode = mode
+	return config
 }
 
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {
