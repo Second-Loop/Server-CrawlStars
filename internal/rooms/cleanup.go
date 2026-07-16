@@ -371,7 +371,8 @@ type clientObservation struct {
 }
 
 // removeRoomLocked marks a room unavailable and detaches resources for closing.
-// The caller must hold room.mu and must release it before touching Store.mu.
+// The caller must hold room.mu. If Store.mu is also needed, it must already be
+// held before room.mu; callers must never acquire Store.mu while holding room.mu.
 func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 	if room.removed {
 		return nil, false
