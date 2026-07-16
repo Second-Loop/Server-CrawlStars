@@ -1603,6 +1603,211 @@ func TestClientReservationCannotAttachAfterStoreClose(t *testing.T) {
 	store.rollbackClientReservation(reservation)
 }
 
+func TestEndingRoomRejectsEveryMutation(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	joined, err := store.joinMatchmaking(simulation.GameModeSolo)
+	if err != nil {
+		t.Fatalf("join solo matchmaking: %v", err)
+	}
+	currentReservation, err := store.reserveClient(joined.Room.ID, joined.Player.ID, []string{joined.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve current client: %v", err)
+	}
+	currentSession, attached := store.attachClientSession(currentReservation, newFakeClientConn(false))
+	if !attached {
+		t.Fatal("attach current client")
+	}
+	reserved, err := store.addPlayer(joined.Room.ID)
+	if err != nil {
+		t.Fatalf("add reserved player: %v", err)
+	}
+	reservation, err := store.reserveClient(joined.Room.ID, reserved.Player.ID, []string{reserved.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve future client: %v", err)
+	}
+	room := store.lookupRoom(joined.Room.ID)
+	room.mu.Lock()
+	if !room.canAcceptMatchmakingLocked(store.debugRoomCapacity()) {
+		room.mu.Unlock()
+		t.Fatal("expected room to accept matchmaking before ending")
+	}
+	room.ending = true
+	if room.canAcceptMatchmakingLocked(store.debugRoomCapacity()) {
+		room.mu.Unlock()
+		t.Fatal("expected ending room to reject matchmaking")
+	}
+	room.mu.Unlock()
+
+	if _, err := store.addPlayer(joined.Room.ID); !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected ending room add to fail with ErrRoomNotFound, got %v", err)
+	}
+	if _, err := store.startRoom(joined.Room.ID); !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected ending room start to fail with ErrRoomNotFound, got %v", err)
+	}
+	if _, err := store.reserveClient(joined.Room.ID, reserved.Player.ID, []string{reserved.SessionToken}); !errors.Is(err, ErrRoomNotFound) {
+		t.Fatalf("expected ending room reservation to fail with ErrRoomNotFound, got %v", err)
+	}
+	if _, attached := store.attachClientSession(reservation, newFakeClientConn(false)); attached {
+		t.Fatal("expected pre-created reservation not to attach after room starts ending")
+	}
+
+	store.setInput(joined.Room.ID, joined.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}}, currentSession)
+	room.mu.Lock()
+	_, hasPendingInput := room.pendingInputs[joined.Player.ID]
+	stepCalls := 0
+	room.Status = RoomStatusStarted
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		stepCalls++
+		return simulation.Snapshot{}
+	})
+	room.mu.Unlock()
+	if hasPendingInput {
+		t.Fatal("expected ending room not to accept current-session input")
+	}
+
+	store.tickRoomState(room)
+	if stepCalls != 0 {
+		t.Fatalf("expected ending room tick not to call Step, got %d calls", stepCalls)
+	}
+}
+
+func TestFinalizedPlayerRejectsReserveAndInput(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+	if !attached {
+		t.Fatal("attach client")
+	}
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.claimFinalizedGameEndResults(map[string]gameEndResult{issued.Player.ID: gameEndResultLose})
+	room.mu.Unlock()
+
+	if _, err := store.reserveClient(created.ID, issued.Player.ID, []string{"wrong"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected wrong token to remain unauthorized, got %v", err)
+	}
+	if _, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken}); !errors.Is(err, ErrPlayerNotFound) {
+		t.Fatalf("expected finalized player to be unavailable, got %v", err)
+	}
+	store.setInput(created.ID, issued.Player.ID, inputMessage{MoveDir: simulation.Vector2{X: 1}}, session)
+	room.mu.Lock()
+	_, hasPendingInput := room.pendingInputs[issued.Player.ID]
+	room.mu.Unlock()
+	if hasPendingInput {
+		t.Fatal("expected finalized player input to be ignored")
+	}
+}
+
+func TestAttachRejectsReservationWhenFinalizationWinsConcurrentBoundary(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+	if err != nil {
+		t.Fatalf("reserve client: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+
+	room.mu.Lock()
+	started := make(chan struct{})
+	done := make(chan bool, 1)
+	go func() {
+		close(started)
+		_, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+		done <- attached
+	}()
+	<-started
+	room.claimFinalizedGameEndResults(map[string]gameEndResult{issued.Player.ID: gameEndResultLose})
+	room.mu.Unlock()
+	select {
+	case attached := <-done:
+		if attached {
+			t.Fatal("attach won after finalization owned room.mu")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("attach did not finish after finalization released room.mu")
+	}
+	store.rollbackClientReservation(reservation)
+	room.mu.Lock()
+	_, reserved := room.reservations[issued.Player.ID]
+	room.mu.Unlock()
+	if reserved {
+		t.Fatal("expected rejected reservation rollback to remove reservation")
+	}
+}
+
+func TestAttachRejectsEndingAndStaleReservations(t *testing.T) {
+	t.Run("ending room", func(t *testing.T) {
+		store := NewStoreWithClock(5, newFakeClock())
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		reservation, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		room := store.lookupRoom(created.ID)
+		room.mu.Lock()
+		room.ending = true
+		room.mu.Unlock()
+
+		if _, attached := store.attachClientSession(reservation, newFakeClientConn(false)); attached {
+			t.Fatal("expected ending room reservation not to attach")
+		}
+	})
+
+	t.Run("replaced reservation pointer", func(t *testing.T) {
+		store := NewStoreWithClock(5, newFakeClock())
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		issued, err := store.addPlayer(created.ID)
+		if err != nil {
+			t.Fatalf("add player: %v", err)
+		}
+		stale, err := store.reserveClient(created.ID, issued.Player.ID, []string{issued.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve client: %v", err)
+		}
+		room := store.lookupRoom(created.ID)
+		room.mu.Lock()
+		room.reservations[issued.Player.ID] = &clientReservation{room: room, playerID: issued.Player.ID}
+		room.mu.Unlock()
+
+		if _, attached := store.attachClientSession(stale, newFakeClientConn(false)); attached {
+			t.Fatal("expected replaced reservation pointer not to attach")
+		}
+	})
+}
+
 func TestClientAttachReleasesStoreLockBeforeRoomStateWork(t *testing.T) {
 	baseClock := newFakeClock()
 	clock := &blockingNextNowClock{

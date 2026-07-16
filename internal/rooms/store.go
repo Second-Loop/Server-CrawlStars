@@ -76,25 +76,29 @@ type room struct {
 	calculateGameEnd gameEndCalculator
 	mu               sync.Mutex
 
-	removed         bool
-	Status          RoomStatus
-	Players         []playerResponse
-	matchStatus     MatchStatus
-	readyPlayers    map[string]bool
-	sessions        map[string]playerSession
-	countdown       int
-	state           simulationStepper
-	pendingInputs   map[string]simulation.InputCommand
-	clients         map[string]*clientSession
-	reservations    map[string]*clientReservation
-	latestSnapshot  snapshotSummary
-	createdAt       time.Time
-	lastActivityAt  time.Time
-	disconnectedAt  time.Time
-	ticker          ticker
-	stop            chan struct{}
-	countdownTicker ticker
-	countdownStop   chan struct{}
+	removed                 bool
+	ending                  bool
+	Status                  RoomStatus
+	Players                 []playerResponse
+	matchStatus             MatchStatus
+	readyPlayers            map[string]bool
+	sessions                map[string]playerSession
+	countdown               int
+	state                   simulationStepper
+	pendingInputs           map[string]simulation.InputCommand
+	clients                 map[string]*clientSession
+	reservations            map[string]*clientReservation
+	finalizedGameEndResults map[string]gameEndResult
+	gameEndCleanupDone      chan struct{}
+	gameEndCleanupOnce      sync.Once
+	latestSnapshot          snapshotSummary
+	createdAt               time.Time
+	lastActivityAt          time.Time
+	disconnectedAt          time.Time
+	ticker                  ticker
+	stop                    chan struct{}
+	countdownTicker         ticker
+	countdownStop           chan struct{}
 }
 
 type simulationStepper interface {
@@ -278,6 +282,10 @@ func (s *Store) clearRooms() clearRoomsResponse {
 	for _, room := range registered {
 		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
+		if room.ending {
+			room.mu.Unlock()
+			continue
+		}
 		playerIDs, removed := resources.removeRoomLocked(room)
 		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
@@ -305,6 +313,10 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 
 	var resources roomResources
 	room.mu.Lock()
+	if room.ending {
+		room.mu.Unlock()
+		return clearRoomsResponse{}, false
+	}
 	playerIDs, removed := resources.removeRoomLocked(room)
 	clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations, -1)
 	room.mu.Unlock()
@@ -436,7 +448,7 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 	}
 
 	room.mu.Lock()
-	if room.removed {
+	if room.removed || room.ending {
 		room.mu.Unlock()
 		s.releasePlayerID(credentials.id)
 		return playerSessionResponse{}, ErrRoomNotFound
@@ -565,7 +577,7 @@ func matchmakingJoinResponseFrom(room roomResponse, issued playerSessionResponse
 }
 
 func (r *room) canAcceptMatchmakingLocked(debugCapacity int) bool {
-	return !r.removed &&
+	return !r.removed && !r.ending &&
 		r.Status == RoomStatusWaiting &&
 		r.matchStatus == "" &&
 		len(r.Players) < debugCapacity &&
@@ -595,7 +607,7 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 		return roomResponse{}, ErrRoomNotFound
 	}
 	room.mu.Lock()
-	if room.removed {
+	if room.removed || room.ending {
 		room.mu.Unlock()
 		return roomResponse{}, ErrRoomNotFound
 	}
@@ -671,16 +683,18 @@ func boundedWebSocketLogAttrs(attrs []any, allowedKeys map[string]bool, allowedC
 func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *room {
 	now := s.clock.Now()
 	room := &room{
-		ID:               roomID,
-		gameConfig:       gameConfig,
-		calculateGameEnd: calculateGameEndResults,
-		Status:           RoomStatusWaiting,
-		sessions:         make(map[string]playerSession),
-		pendingInputs:    make(map[string]simulation.InputCommand),
-		clients:          make(map[string]*clientSession),
-		reservations:     make(map[string]*clientReservation),
-		createdAt:        now,
-		lastActivityAt:   now,
+		ID:                      roomID,
+		gameConfig:              gameConfig,
+		calculateGameEnd:        calculateGameEndResults,
+		Status:                  RoomStatusWaiting,
+		sessions:                make(map[string]playerSession),
+		pendingInputs:           make(map[string]simulation.InputCommand),
+		clients:                 make(map[string]*clientSession),
+		reservations:            make(map[string]*clientReservation),
+		finalizedGameEndResults: make(map[string]gameEndResult),
+		gameEndCleanupDone:      make(chan struct{}),
+		createdAt:               now,
+		lastActivityAt:          now,
 	}
 	return room
 }

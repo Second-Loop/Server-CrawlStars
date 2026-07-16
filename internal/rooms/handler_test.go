@@ -1595,6 +1595,50 @@ func TestStoreRemovedRoomRejectsNewStateAccess(t *testing.T) {
 	}
 }
 
+func TestEndingRoomRejectsHardTTLAndDebugRemoval(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+	room.mu.Lock()
+	room.ending = true
+	room.createdAt = clock.Now().Add(-defaultHardRoomLifetime)
+	room.mu.Unlock()
+
+	if deleted := store.cleanupExpired(clock.Now()); deleted != 0 {
+		t.Fatalf("expected ending room to survive hard TTL cleanup, got %d deletions", deleted)
+	}
+	if cleared := store.clearRooms(); cleared.Deleted != 0 {
+		t.Fatalf("expected debug clear to preserve ending room, got %d deletions", cleared.Deleted)
+	}
+	if _, deleted := store.deleteRoom(created.ID); deleted {
+		t.Fatal("expected debug delete to preserve ending room")
+	}
+	if got := store.lookupRoom(created.ID); got != room {
+		t.Fatal("expected ending room to remain registered")
+	}
+	room.mu.Lock()
+	removed := room.removed
+	room.mu.Unlock()
+	if removed {
+		t.Fatal("expected ending room not to be marked removed")
+	}
+	store.mu.RLock()
+	_, playerIDRetained := store.playerIDs[issued.Player.ID]
+	store.mu.RUnlock()
+	if !playerIDRetained {
+		t.Fatal("expected ending room player ID to remain reserved")
+	}
+}
+
 func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)

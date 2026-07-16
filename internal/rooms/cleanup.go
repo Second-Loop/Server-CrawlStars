@@ -267,6 +267,9 @@ func (s *Store) cleanupExpired(now time.Time) int {
 
 // isExpired requires r.mu because TTL eligibility depends on room-owned state.
 func (r *room) isExpired(now time.Time) bool {
+	if r.ending {
+		return false
+	}
 	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
 		return true
 	}

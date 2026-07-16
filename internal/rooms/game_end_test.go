@@ -197,6 +197,65 @@ func TestCustomModeFallsBackToPlayerSurvival(t *testing.T) {
 	)
 }
 
+func TestRoomClaimsFinalizedGameEndResultOnlyOnce(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+
+	room.mu.Lock()
+	firstClaim := room.claimFinalizedGameEndResults(map[string]gameEndResult{
+		"player-1": gameEndResultLose,
+	})
+	secondClaim := room.claimFinalizedGameEndResults(map[string]gameEndResult{
+		"player-1": gameEndResultDraw,
+		"player-2": gameEndResultWin,
+	})
+	ledger := make(map[string]gameEndResult, len(room.finalizedGameEndResults))
+	for playerID, result := range room.finalizedGameEndResults {
+		ledger[playerID] = result
+	}
+	room.mu.Unlock()
+
+	if want := map[string]gameEndResult{"player-1": gameEndResultLose}; !reflect.DeepEqual(firstClaim, want) {
+		t.Fatalf("expected first claim %+v, got %+v", want, firstClaim)
+	}
+	if want := map[string]gameEndResult{"player-2": gameEndResultWin}; !reflect.DeepEqual(secondClaim, want) {
+		t.Fatalf("expected only the new player claim %+v, got %+v", want, secondClaim)
+	}
+	if want := map[string]gameEndResult{
+		"player-1": gameEndResultLose,
+		"player-2": gameEndResultWin,
+	}; !reflect.DeepEqual(ledger, want) {
+		t.Fatalf("expected immutable finalized result ledger %+v, got %+v", want, ledger)
+	}
+}
+
+func TestRoomSignalsGameEndCleanupOnlyOnce(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+	if room.gameEndCleanupDone == nil {
+		t.Fatal("expected new room to initialize GameEnd cleanup completion")
+	}
+
+	room.signalGameEndCleanupDone()
+	room.signalGameEndCleanupDone()
+
+	select {
+	case <-room.gameEndCleanupDone:
+	default:
+		t.Fatal("expected GameEnd cleanup completion to be closed")
+	}
+}
+
 func TestDuelGameEndResultsReturnNilWhenNoPlayersAreDead(t *testing.T) {
 	results := calculateGameEndResults(simulation.StaticGameConfig(), simulation.Snapshot{
 		Players: []simulation.PlayerData{

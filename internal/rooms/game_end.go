@@ -20,6 +20,38 @@ func (r *room) gameEndResults(snapshot simulation.Snapshot) map[string]gameEndRe
 	return r.calculateGameEnd(r.gameConfig, snapshot)
 }
 
+// claimFinalizedGameEndResults requires r.mu. It records the first result for
+// each player and returns only results that became final in this call.
+func (r *room) claimFinalizedGameEndResults(results map[string]gameEndResult) map[string]gameEndResult {
+	var claimed map[string]gameEndResult
+	for playerID, result := range results {
+		if r.hasFinalizedGameEndResult(playerID) {
+			continue
+		}
+		if r.finalizedGameEndResults == nil {
+			r.finalizedGameEndResults = make(map[string]gameEndResult)
+		}
+		r.finalizedGameEndResults[playerID] = result
+		if claimed == nil {
+			claimed = make(map[string]gameEndResult)
+		}
+		claimed[playerID] = result
+	}
+	return claimed
+}
+
+// hasFinalizedGameEndResult requires r.mu.
+func (r *room) hasFinalizedGameEndResult(playerID string) bool {
+	_, finalized := r.finalizedGameEndResults[playerID]
+	return finalized
+}
+
+func (r *room) signalGameEndCleanupDone() {
+	r.gameEndCleanupOnce.Do(func() {
+		close(r.gameEndCleanupDone)
+	})
+}
+
 func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
 	switch gameConfig.SelectedMode.ID {
 	case simulation.GameModeDuel1v1:

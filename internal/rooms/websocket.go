@@ -575,7 +575,7 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	}
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if room.removed {
+	if room.removed || room.ending {
 		return nil, ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
@@ -583,6 +583,9 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	}
 	if len(tokens) != 1 || tokens[0] == "" || !room.authenticatePlayer(playerID, tokens[0]) {
 		return nil, ErrUnauthorized
+	}
+	if room.hasFinalizedGameEndResult(playerID) {
+		return nil, ErrPlayerNotFound
 	}
 	if _, ok := room.clients[playerID]; ok {
 		return nil, ErrPlayerAlreadyConnected
@@ -635,7 +638,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	}
 	room := reservation.room
 	room.mu.Lock()
-	if room.removed || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	if room.removed || room.ending || room.hasFinalizedGameEndResult(reservation.playerID) || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		room.mu.Unlock()
 		s.mu.Unlock()
 		return nil, false
@@ -746,7 +749,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 	}
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if room.removed || !room.hasPlayer(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
+	if room.removed || room.ending || !room.hasPlayer(playerID) || room.hasFinalizedGameEndResult(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
 		return
 	}
 	room.lastActivityAt = s.clock.Now()
@@ -894,7 +897,7 @@ func (s *Store) tickRoomState(room *room) {
 	gameEnded := false
 
 	room.mu.Lock()
-	if room.removed || room.Status != RoomStatusStarted || room.state == nil {
+	if room.removed || room.ending || room.Status != RoomStatusStarted || room.state == nil {
 		room.mu.Unlock()
 		return
 	}
