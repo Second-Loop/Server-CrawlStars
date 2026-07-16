@@ -327,7 +327,7 @@ func TestGameEndUsesRoomConfig(t *testing.T) {
 		},
 	}
 
-	results := room.gameEndResults(snapshot)
+	results := room.calculateGameEndResults(snapshot)
 
 	if !reflect.DeepEqual(capturedConfig, roomConfig) {
 		t.Fatalf("expected calculator to receive room config %+v, got %+v", roomConfig, capturedConfig)

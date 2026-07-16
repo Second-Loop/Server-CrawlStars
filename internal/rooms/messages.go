@@ -268,6 +268,31 @@ func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDe
 	return deliveries
 }
 
+// snapshotSessionsWithoutFinalizedGameEnd requires r.mu. A finalized player
+// receives the result snapshot through its terminal handoff instead of the
+// replaceable gameplay snapshot queue.
+func (r *room) snapshotSessionsWithoutFinalizedGameEnd() []*clientSession {
+	sessions := make([]*clientSession, 0, len(r.clients))
+	for playerID, session := range r.clients {
+		if session != nil && !r.hasFinalizedGameEndResult(playerID) {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
+}
+
+// clientSessions requires r.mu and captures the terminal close barrier before
+// ending prevents any new attachment.
+func (r *room) clientSessions() []*clientSession {
+	sessions := make([]*clientSession, 0, len(r.clients))
+	for _, session := range r.clients {
+		if session != nil {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
+}
+
 func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfig) []simulation.PlayerData {
 	playerIDs := make([]simulation.PlayerID, 0, len(players))
 	for _, player := range players {

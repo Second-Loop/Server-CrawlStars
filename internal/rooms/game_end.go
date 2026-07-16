@@ -16,7 +16,7 @@ func (r gameEndResult) String() string {
 	return string(r)
 }
 
-func (r *room) gameEndResults(snapshot simulation.Snapshot) map[string]gameEndResult {
+func (r *room) calculateGameEndResults(snapshot simulation.Snapshot) map[string]gameEndResult {
 	return r.calculateGameEnd(r.gameConfig, snapshot)
 }
 
@@ -56,9 +56,11 @@ func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulati
 	switch gameConfig.SelectedMode.ID {
 	case simulation.GameModeDuel1v1:
 		return duelGameEndResults(snapshot.Players)
+	case simulation.GameModeSolo:
+		return soloGameEndResults(snapshot.Players)
+	case simulation.GameModeTeam:
+		return teamGameEndResults(gameConfig.SelectedMode, snapshot.Players)
 	default:
-		// Non-duel mode rules are not active yet. Keep the current player-survival
-		// result rule for debug/custom rooms until a mode-specific issue defines it.
 		return playerSurvivalGameEndResults(snapshot.Players)
 	}
 }

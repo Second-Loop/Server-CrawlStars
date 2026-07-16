@@ -294,6 +294,20 @@ func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason 
 	return true
 }
 
+func (s *clientSession) isTerminalOrDone() bool {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.terminal {
+		return true
+	}
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *clientSession) writeLoop() {
 	defer close(s.writerDone)
 	for {
@@ -888,13 +902,11 @@ func (s *Store) tickRoom(roomID string) {
 }
 
 func (s *Store) tickRoomState(room *room) {
-	var resources roomResources
+	var terminalResources roomResources
 	var deliveries []webSocketDelivery
 	var snapshotSessions []*clientSession
-	var snapshotPayload []byte
-	var snapshotMarshalErr error
-	var clientTransitions []clientObservationTransition
-	gameEnded := false
+	var terminalSessions []*clientSession
+	terminal := false
 
 	room.mu.Lock()
 	if room.removed || room.ending || room.Status != RoomStatusStarted || room.state == nil {
@@ -912,59 +924,61 @@ func (s *Store) tickRoomState(room *room) {
 	stepDuration := s.wallNow().Sub(stepStarted)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
-
-	for _, session := range room.clients {
-		if session != nil {
-			snapshotSessions = append(snapshotSessions, session)
-		}
-	}
-	results := room.gameEndResults(snapshot)
-	var playerIDs []string
-	if len(results) > 0 {
-		snapshotPayload, snapshotMarshalErr = marshalMessage(message)
-		if snapshotMarshalErr == nil {
-			deliveries = append(deliveries, room.gameEndDeliveries(results)...)
-		}
-		for playerID, session := range room.clients {
-			if session != nil {
-				resources.clientObservations = append(resources.clientObservations, clientObservation{
-					roomID: room.ID, playerID: playerID, session: session,
-				})
-			}
-		}
-		clientTransitions = s.clientObservationTransitionsLocked(resources.clientObservations, -1)
-		room.clients = nil
-		playerIDs, gameEnded = resources.removeRoomLocked(room)
-	} else {
-		enqueueSnapshotMessage(snapshotSessions, message)
+	results := room.calculateGameEndResults(snapshot)
+	claimed := room.claimFinalizedGameEndResults(results)
+	snapshotSessions = room.snapshotSessionsWithoutFinalizedGameEnd()
+	deliveries = room.gameEndDeliveries(claimed)
+	terminalSessions = room.clientSessions()
+	terminal = shouldEndGame(room.gameConfig, snapshot)
+	if terminal {
+		room.ending = true
+		terminalResources.detachGameplayLocked(room)
 	}
 	room.mu.Unlock()
-	s.observation.observeTick(stepDuration)
-	s.publishDisconnectedClients(clientTransitions)
 
-	if gameEnded {
-		if s.deleteRoomIfSame(room.ID, room) {
-			s.releasePlayerIDs(playerIDs)
-			s.logRoomEvent("room_ended", room.ID)
-		}
-	}
-	if gameEnded {
-		if snapshotMarshalErr != nil {
-			closeClientSessions(snapshotSessions, "message marshal failed")
-			resources.close(defaultGameEndCloseMsg)
+	terminalResources.stop()
+	s.observation.observeTick(stepDuration)
+
+	snapshotPayload, snapshotMarshalErr := marshalMessage(message)
+	if snapshotMarshalErr != nil {
+		if terminal {
+			closeClientSessions(terminalSessions, "message marshal failed")
+			s.scheduleGameEndCleanup(room, terminalSessions)
 			return
 		}
 		for _, delivery := range deliveries {
-			gameEndPayload, err := marshalMessage(delivery.message)
-			if err != nil {
-				delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
-				continue
-			}
-			delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, defaultGameEndCloseMsg)
+			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
 		}
-		resources.close(defaultGameEndCloseMsg)
 		return
 	}
+	for _, session := range snapshotSessions {
+		session.enqueueSnapshot(snapshotPayload)
+	}
+
+	closeReason := defaultPlayerEliminatedCloseMsg
+	if terminal {
+		closeReason = defaultGameEndCloseMsg
+	}
+	delivered := make(map[*clientSession]struct{}, len(deliveries))
+	for _, delivery := range deliveries {
+		delivered[delivery.session] = struct{}{}
+		gameEndPayload, err := marshalMessage(delivery.message)
+		if err != nil {
+			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
+			continue
+		}
+		delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, closeReason)
+	}
+	if !terminal {
+		return
+	}
+	for _, session := range terminalSessions {
+		if _, ok := delivered[session]; ok || session.isTerminalOrDone() {
+			continue
+		}
+		session.close(websocket.StatusNormalClosure, defaultGameEndCloseMsg)
+	}
+	s.scheduleGameEndCleanup(room, terminalSessions)
 }
 
 type webSocketDelivery struct {

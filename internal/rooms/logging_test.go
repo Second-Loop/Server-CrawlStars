@@ -245,6 +245,7 @@ func TestRoomEndedAndExpiredLogOnlySuccessfulDelete(t *testing.T) {
 		room.mu.Unlock()
 
 		store.tickRoomState(room)
+		waitForGameEndCleanup(t, room)
 		store.tickRoomState(room)
 
 		assertLogEventCount(t, logs, "room_ended", 1)

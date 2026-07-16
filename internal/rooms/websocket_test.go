@@ -42,6 +42,18 @@ type issuedPlayer struct {
 	WebSocketPath string
 }
 
+type modeTickHarness struct {
+	store         *Store
+	clock         *fakeClock
+	room          *room
+	joined        []matchmakingJoinResponse
+	connections   []*fakeClientConn
+	sessions      []*clientSession
+	closeReleases []func()
+	writeReleases []func()
+	writeRelease  map[int]func()
+}
+
 type countingJSONMessage struct {
 	calls *atomic.Int32
 }
@@ -1058,7 +1070,7 @@ func TestTerminalDeliveryDoesNotLetRoomResourcesCloseRaceWriter(t *testing.T) {
 	}
 }
 
-func TestStoreCloseStopsTerminalSessionAfterRoomLeavesRegistry(t *testing.T) {
+func TestStoreCloseTakesOverTerminalSessionBeforeCloseBarrierCompletes(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	created, err := store.createRoom()
@@ -1101,11 +1113,14 @@ func TestStoreCloseStopsTerminalSessionAfterRoomLeavesRegistry(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected terminal snapshot write to start")
 	}
-	if got := store.lookupRoom(created.ID); got != nil {
-		t.Fatal("expected terminal room to leave the Store registry before shutdown")
+	if got := store.lookupRoom(created.ID); got != room {
+		t.Fatal("expected terminal room to remain registered before close barrier completion")
 	}
 
 	store.Close()
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected Store.Close takeover to detach the terminal room")
+	}
 	select {
 	case <-session.done:
 	default:
@@ -1126,7 +1141,7 @@ func TestStoreCloseStopsTerminalSessionAfterRoomLeavesRegistry(t *testing.T) {
 	}
 }
 
-func TestStoreCloseWaitsForTerminalSessionAlreadyBlockingInConnectionClose(t *testing.T) {
+func TestStoreCloseDetachesAndWaitsForTerminalSessionBlockingInConnectionClose(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
 	created, err := store.createRoom()
@@ -1176,8 +1191,8 @@ func TestStoreCloseWaitsForTerminalSessionAlreadyBlockingInConnectionClose(t *te
 	case <-time.After(time.Second):
 		t.Fatal("expected terminal writer to enter connection close")
 	}
-	if got := store.lookupRoom(created.ID); got != nil {
-		t.Fatal("expected terminal room to leave the Store registry")
+	if got := store.lookupRoom(created.ID); got != room {
+		t.Fatal("expected terminal room to remain registered during blocked connection close")
 	}
 
 	storeCloseDone := make(chan struct{})
@@ -1189,6 +1204,9 @@ func TestStoreCloseWaitsForTerminalSessionAlreadyBlockingInConnectionClose(t *te
 	case <-storeCloseDone:
 		t.Fatal("expected Store.Close to wait for terminal connection close")
 	case <-time.After(100 * time.Millisecond):
+	}
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected Store.Close takeover to detach room before waiting for connection close")
 	}
 
 	releaseBlockedClose()
@@ -1263,6 +1281,112 @@ func TestTerminalSnapshotMarshalFailureClosesWithoutWritingSnapshotOrGameEnd(t *
 	}
 	if got := conn.closeCount.Load(); got != 1 {
 		t.Fatalf("expected marshal failure to close connection once, got %d", got)
+	}
+}
+
+func TestTickRoomSoloIntermediateLoseKeepsSurvivorsRunning(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, map[int]bool{0: true}, 0, 1)
+	harness.setSnapshots(t,
+		harness.snapshot(1, 0),
+		harness.snapshot(2, 0),
+	)
+
+	harness.store.tickRoomState(harness.room)
+	firstSurvivorSnapshot := readFakeGameplaySnapshot(t, harness.connections[1])
+	harness.store.tickRoomState(harness.room)
+	secondSurvivorSnapshot := readFakeGameplaySnapshot(t, harness.connections[1])
+
+	harness.room.mu.Lock()
+	ledger := len(harness.room.finalizedGameEndResults)
+	loserResult := harness.room.finalizedGameEndResults[harness.playerID(0)]
+	ending := harness.room.ending
+	latestTick := harness.room.latestSnapshot.Tick
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	harness.room.mu.Unlock()
+
+	if ledger != 1 || loserResult != gameEndResultLose {
+		t.Fatalf("expected one finalized Lose result, ledger=%d result=%q", ledger, loserResult)
+	}
+	if ending {
+		t.Fatal("expected an intermediate Solo loss not to end the room")
+	}
+	if latestTick != 2 {
+		t.Fatalf("expected simulation to keep ticking through tick 2, got %d", latestTick)
+	}
+	if got := gameplayTicker.StopCount(); got != 0 {
+		t.Fatalf("expected intermediate loss not to stop gameplay ticker, got %d stops", got)
+	}
+	if firstSurvivorSnapshot.Snapshot.Tick != 1 || secondSurvivorSnapshot.Snapshot.Tick != 2 {
+		t.Fatalf("expected survivor snapshots through ticks 1 and 2, got %d and %d",
+			firstSurvivorSnapshot.Snapshot.Tick, secondSurvivorSnapshot.Snapshot.Tick)
+	}
+
+	harness.releaseWrite(0)
+	loserSnapshot := readFakeGameplaySnapshot(t, harness.connections[0])
+	loserGameEnd := readFakeGameEnd(t, harness.connections[0])
+	if loserSnapshot.Snapshot.Tick != 1 {
+		t.Fatalf("expected loser terminal snapshot at tick 1, got %d", loserSnapshot.Snapshot.Tick)
+	}
+	assertGameEnd(t, loserGameEnd, harness.playerID(0), gameEndResultLose.String())
+	select {
+	case <-harness.sessions[0].closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected intermediate loser connection to close")
+	}
+	if _, reason := harness.connections[0].closeMetadata(); reason != defaultPlayerEliminatedCloseMsg {
+		t.Fatalf("expected eliminated-player close reason %q, got %q", defaultPlayerEliminatedCloseMsg, reason)
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != harness.room {
+		t.Fatal("expected Solo room to remain registered after an intermediate loss")
+	}
+}
+
+func TestTerminalCloseBarrierRetainsRegistryAndPlayerIDs(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
+	harness.room.mu.Lock()
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	harness.room.mu.Unlock()
+	closeStarted, releaseClose := harness.blockClose(t, 5)
+
+	harness.store.tickRoomState(harness.room)
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal winner connection close to start")
+	}
+
+	if got := harness.store.lookupRoom(harness.room.ID); got != harness.room {
+		t.Fatal("expected terminal room to remain registered until every close completes")
+	}
+	harness.store.mu.RLock()
+	for index := range harness.joined {
+		if _, exists := harness.store.playerIDs[harness.playerID(index)]; !exists {
+			harness.store.mu.RUnlock()
+			t.Fatalf("expected player ID %s to remain reserved during close barrier", harness.playerID(index))
+		}
+	}
+	harness.store.mu.RUnlock()
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected cleanup completion to stay open during close barrier")
+	default:
+	}
+	if got := gameplayTicker.StopCount(); got != 1 {
+		t.Fatalf("expected terminal gameplay ticker to stop exactly once, got %d", got)
+	}
+
+	releaseClose()
+	waitForGameEndCleanup(t, harness.room)
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected room registry removal after terminal close barrier")
+	}
+	harness.store.mu.RLock()
+	defer harness.store.mu.RUnlock()
+	for index := range harness.joined {
+		if _, exists := harness.store.playerIDs[harness.playerID(index)]; exists {
+			t.Fatalf("expected player ID %s to be released after cleanup", harness.playerID(index))
+		}
 	}
 }
 
@@ -3337,6 +3461,8 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 
 	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Win")
 	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
+	acknowledgeWebSocketClose(t, redConn)
+	acknowledgeWebSocketClose(t, blueConn)
 	waitForRoomDeleted(t, store, room.ID)
 }
 
@@ -3380,6 +3506,8 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 
 	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Draw")
 	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Draw")
+	acknowledgeWebSocketClose(t, redConn)
+	acknowledgeWebSocketClose(t, blueConn)
 	waitForRoomDeleted(t, store, room.ID)
 }
 
@@ -3699,6 +3827,196 @@ func createStartedRoomInStore(t *testing.T, store *Store) roomResponse {
 	return started
 }
 
+func newModeTickHarness(
+	t *testing.T,
+	mode string,
+	observer Observer,
+	blockWrites map[int]bool,
+	connectedIndexes ...int,
+) *modeTickHarness {
+	t.Helper()
+
+	clock := newFakeClock()
+	store := newStore(5, clock, StoreConfig{Observer: observer})
+	harness := &modeTickHarness{store: store, clock: clock, writeRelease: make(map[int]func())}
+	t.Cleanup(func() {
+		for _, release := range harness.closeReleases {
+			release()
+		}
+		for _, release := range harness.writeReleases {
+			release()
+		}
+		for _, session := range harness.sessions {
+			if session != nil {
+				session.close(websocket.StatusNormalClosure, "test cleanup")
+			}
+		}
+		store.Close()
+	})
+
+	selected, err := store.gameConfig.SelectMode(mode)
+	if err != nil {
+		t.Fatalf("select mode %q: %v", mode, err)
+	}
+	playerCount := selected.MatchPlayerCount()
+	harness.joined = make([]matchmakingJoinResponse, 0, playerCount)
+	for range playerCount {
+		joined, err := store.joinMatchmaking(mode)
+		if err != nil {
+			t.Fatalf("join %q matchmaking: %v", mode, err)
+		}
+		if len(harness.joined) > 0 && joined.Room.ID != harness.joined[0].Room.ID {
+			t.Fatalf("expected all mode players in room %s, got %s", harness.joined[0].Room.ID, joined.Room.ID)
+		}
+		harness.joined = append(harness.joined, joined)
+	}
+	roomID := harness.joined[0].Room.ID
+	if _, err := store.startRoom(roomID); err != nil {
+		t.Fatalf("start mode room: %v", err)
+	}
+	harness.room = store.lookupRoom(roomID)
+	harness.connections = make([]*fakeClientConn, playerCount)
+	harness.sessions = make([]*clientSession, playerCount)
+	seen := make(map[int]bool, len(connectedIndexes))
+	for _, index := range connectedIndexes {
+		if index < 0 || index >= playerCount {
+			t.Fatalf("connected player index %d outside [0,%d)", index, playerCount)
+		}
+		if seen[index] {
+			t.Fatalf("duplicate connected player index %d", index)
+		}
+		seen[index] = true
+		joined := harness.joined[index]
+		reservation, err := store.reserveClient(roomID, joined.Player.ID, []string{joined.SessionToken})
+		if err != nil {
+			t.Fatalf("reserve mode player %d: %v", index, err)
+		}
+		conn := newFakeClientConn(blockWrites[index])
+		if blockWrites[index] {
+			var once sync.Once
+			release := func() { once.Do(func() { close(conn.allowWrite) }) }
+			harness.writeReleases = append(harness.writeReleases, release)
+			harness.writeRelease[index] = release
+		}
+		session, attached := store.attachClientSession(reservation, conn)
+		if !attached {
+			t.Fatalf("attach mode player %d", index)
+		}
+		harness.connections[index] = conn
+		harness.sessions[index] = session
+	}
+	return harness
+}
+
+func (h *modeTickHarness) playerID(index int) string {
+	return h.joined[index].Player.ID
+}
+
+func (h *modeTickHarness) snapshot(tick simulation.Tick, deadIndexes ...int) simulation.Snapshot {
+	h.room.mu.Lock()
+	players := simulationPlayers(h.room.Players, h.room.gameConfig)
+	h.room.mu.Unlock()
+	dead := make(map[int]bool, len(deadIndexes))
+	for _, index := range deadIndexes {
+		dead[index] = true
+	}
+	for index := range players {
+		players[index].HP = simulation.DefaultPlayerHP
+		if dead[index] {
+			players[index].HP = 0
+			players[index].IsDead = true
+		}
+	}
+	return simulation.Snapshot{Tick: tick, Players: players}
+}
+
+func (h *modeTickHarness) setSnapshots(t *testing.T, snapshots ...simulation.Snapshot) {
+	t.Helper()
+	if len(snapshots) == 0 {
+		t.Fatal("expected at least one mode snapshot")
+	}
+	var mu sync.Mutex
+	next := 0
+	h.room.mu.Lock()
+	h.room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		mu.Lock()
+		defer mu.Unlock()
+		if next >= len(snapshots) {
+			t.Errorf("mode step called more than %d times", len(snapshots))
+			return snapshots[len(snapshots)-1]
+		}
+		snapshot := snapshots[next]
+		next++
+		return snapshot
+	})
+	h.room.mu.Unlock()
+}
+
+func (h *modeTickHarness) blockClose(t *testing.T, index int) (<-chan struct{}, func()) {
+	t.Helper()
+	conn := h.connections[index]
+	if conn == nil {
+		t.Fatalf("mode player %d is not connected", index)
+	}
+	started := make(chan struct{})
+	allow := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(allow) }) }
+	conn.closeStarted = started
+	conn.closeBlock = allow
+	h.closeReleases = append(h.closeReleases, release)
+	t.Cleanup(release)
+	return started, release
+}
+
+func (h *modeTickHarness) releaseWrite(index int) {
+	if release := h.writeRelease[index]; release != nil {
+		release()
+	}
+}
+
+func waitForGameEndCleanup(t *testing.T, room *room) {
+	t.Helper()
+	select {
+	case <-room.gameEndCleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected GameEnd cleanup to complete")
+	}
+}
+
+func readFakeGameplaySnapshot(t *testing.T, conn *fakeClientConn) snapshotMessage {
+	t.Helper()
+	select {
+	case payload := <-conn.writes:
+		var message snapshotMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode fake gameplay snapshot: %v", err)
+		}
+		if message.Type != "snapshot" {
+			t.Fatalf("expected fake gameplay snapshot, got %q", message.Type)
+		}
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("expected fake gameplay snapshot")
+		return snapshotMessage{}
+	}
+}
+
+func readFakeGameEnd(t *testing.T, conn *fakeClientConn) gameEndMessage {
+	t.Helper()
+	select {
+	case payload := <-conn.writes:
+		var message gameEndMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode fake GameEnd: %v", err)
+		}
+		return message
+	case <-time.After(time.Second):
+		t.Fatal("expected fake GameEnd")
+		return gameEndMessage{}
+	}
+}
+
 type countingTicker struct {
 	ticks     chan time.Time
 	stopCount atomic.Int32
@@ -3747,6 +4065,7 @@ type fakeTicker struct {
 	duration time.Duration
 	ticks    chan time.Time
 	stopped  bool
+	stops    int
 }
 
 func newFakeClock() *fakeClock {
@@ -3808,7 +4127,14 @@ func (t *fakeTicker) Stop() {
 		return
 	}
 	t.stopped = true
+	t.stops++
 	t.clock.stopCount++
+}
+
+func (t *fakeTicker) StopCount() int {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	return t.stops
 }
 
 func (c *fakeClock) Tick() {
@@ -4428,6 +4754,17 @@ func readGameEndMessage(t *testing.T, conn *websocket.Conn) gameEndMessage {
 		t.Fatalf("decode game end message: %v", err)
 	}
 	return message
+}
+
+func acknowledgeWebSocketClose(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err := conn.Read(ctx)
+	if status := websocket.CloseStatus(err); status != websocket.StatusNormalClosure {
+		t.Fatalf("expected normal GameEnd close frame, status=%d err=%v", status, err)
+	}
 }
 
 func readWebSocketPayload(t *testing.T, conn *websocket.Conn) []byte {

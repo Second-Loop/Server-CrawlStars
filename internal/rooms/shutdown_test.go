@@ -503,7 +503,7 @@ func TestStoreShutdownForceClosesBlockingHandshakeAtDeadline(t *testing.T) {
 	assertShutdownChannelClosed(t, lifecycleDone, "forced session lifecycleDone")
 }
 
-func TestStoreShutdownForceClosesTerminalSessionAlreadyInsideClose(t *testing.T) {
+func TestStoreShutdownForceDetachesTerminalRoomAlreadyInsideClose(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	allowClose := make(chan struct{})
 	var releaseClose sync.Once
@@ -558,8 +558,8 @@ func TestStoreShutdownForceClosesTerminalSessionAlreadyInsideClose(t *testing.T)
 
 	store.tickRoom(created.ID)
 	waitShutdownSignal(t, conn.closeStarted, "terminal connection close entry")
-	if got := store.lookupRoom(created.ID); got != nil {
-		t.Fatal("expected terminal room to leave registry before shutdown")
+	if got := store.lookupRoom(created.ID); got != room {
+		t.Fatal("expected terminal room to remain registered while close barrier is blocked")
 	}
 	store.mu.RLock()
 	activeBeforeShutdown := len(store.activeSessions)
@@ -577,6 +577,9 @@ func TestStoreShutdownForceClosesTerminalSessionAlreadyInsideClose(t *testing.T)
 	}
 	if got := conn.forceCount.Load(); got != 1 {
 		t.Fatalf("expected one force close for terminal session, got %d", got)
+	}
+	if got := store.lookupRoom(created.ID); got != nil {
+		t.Fatal("expected shutdown takeover to detach the terminal room")
 	}
 	assertShutdownChannelClosed(t, session.closeDone, "terminal session closeDone")
 	assertShutdownChannelClosed(t, session.writerDone, "terminal session writerDone")
