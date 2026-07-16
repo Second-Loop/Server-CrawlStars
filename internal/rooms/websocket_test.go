@@ -1341,6 +1341,203 @@ func TestTickRoomSoloIntermediateLoseKeepsSurvivorsRunning(t *testing.T) {
 	}
 }
 
+func TestTickRoomSoloPriorLoseRemainsLoseAndOnlyRemainingPlayersDraw(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t,
+		harness.snapshot(1, 0),
+		harness.snapshot(2, 0, 1, 2, 3, 4, 5),
+	)
+
+	harness.store.tickRoomState(harness.room)
+	for index := 1; index < len(harness.connections); index++ {
+		snapshot := readFakeGameplaySnapshot(t, harness.connections[index])
+		if snapshot.Snapshot.Tick != 1 {
+			t.Fatalf("expected Solo survivor %d snapshot at tick 1, got %d", index, snapshot.Snapshot.Tick)
+		}
+	}
+	loserSnapshot := readFakeGameplaySnapshot(t, harness.connections[0])
+	if loserSnapshot.Snapshot.Tick != 1 {
+		t.Fatalf("expected prior loser snapshot at tick 1, got %d", loserSnapshot.Snapshot.Tick)
+	}
+	assertGameEnd(t, readFakeGameEnd(t, harness.connections[0]), harness.playerID(0), gameEndResultLose.String())
+	select {
+	case <-harness.sessions[0].closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected prior loser to detach before the terminal Solo tick")
+	}
+
+	harness.store.tickRoomState(harness.room)
+	for index := 1; index < len(harness.connections); index++ {
+		snapshot := readFakeGameplaySnapshot(t, harness.connections[index])
+		if snapshot.Snapshot.Tick != 2 {
+			t.Fatalf("expected remaining Solo player %d terminal snapshot at tick 2, got %d", index, snapshot.Snapshot.Tick)
+		}
+		assertGameEnd(t, readFakeGameEnd(t, harness.connections[index]), harness.playerID(index), gameEndResultDraw.String())
+		select {
+		case <-harness.sessions[index].closeDone:
+		case <-time.After(time.Second):
+			t.Fatalf("expected remaining Solo player %d to close", index)
+		}
+	}
+	waitForGameEndCleanup(t, harness.room)
+
+	select {
+	case payload := <-harness.connections[0].writes:
+		t.Fatalf("expected prior loser to receive no new terminal event, got %s", payload)
+	default:
+	}
+	if got := harness.connections[0].closeCount.Load(); got != 1 {
+		t.Fatalf("expected prior loser to close once, got %d closes", got)
+	}
+	harness.room.mu.Lock()
+	ledger := make(map[string]gameEndResult, len(harness.room.finalizedGameEndResults))
+	for playerID, result := range harness.room.finalizedGameEndResults {
+		ledger[playerID] = result
+	}
+	harness.room.mu.Unlock()
+	if len(ledger) != len(harness.joined) {
+		t.Fatalf("expected six immutable Solo results, got %+v", ledger)
+	}
+	if got := ledger[harness.playerID(0)]; got != gameEndResultLose {
+		t.Fatalf("expected prior loser result to remain Lose, got %q", got)
+	}
+	for index := 1; index < len(harness.joined); index++ {
+		if got := ledger[harness.playerID(index)]; got != gameEndResultDraw {
+			t.Fatalf("expected remaining Solo player %d result Draw, got %q", index, got)
+		}
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected Solo room registry to be empty after cleanup")
+	}
+	harness.store.mu.RLock()
+	roomCount := len(harness.store.rooms)
+	playerIDCount := len(harness.store.playerIDs)
+	harness.store.mu.RUnlock()
+	if roomCount != 0 || playerIDCount != 0 {
+		t.Fatalf("expected empty room and player ID registries, rooms=%d playerIDs=%d", roomCount, playerIDCount)
+	}
+}
+
+func TestTickRoomTeamPartialDeathKeepsMatchRunning(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeTeam, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(11, 0))
+	harness.room.mu.Lock()
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	harness.room.mu.Unlock()
+
+	harness.store.tickRoomState(harness.room)
+	for index, conn := range harness.connections {
+		snapshot := readFakeGameplaySnapshot(t, conn)
+		if snapshot.Snapshot.Tick != 11 {
+			t.Fatalf("expected Team player %d snapshot at tick 11, got %d", index, snapshot.Snapshot.Tick)
+		}
+		if harness.sessions[index].isTerminalOrDone() {
+			t.Fatalf("expected partial Team death not to finalize player %d", index)
+		}
+		select {
+		case payload := <-conn.writes:
+			t.Fatalf("expected no Team GameEnd after partial death, player=%d payload=%s", index, payload)
+		default:
+		}
+	}
+	harness.room.mu.Lock()
+	ledgerCount := len(harness.room.finalizedGameEndResults)
+	ending := harness.room.ending
+	harness.room.mu.Unlock()
+	if ledgerCount != 0 || ending {
+		t.Fatalf("expected partial Team death to keep running, ledger=%d ending=%t", ledgerCount, ending)
+	}
+	if got := gameplayTicker.StopCount(); got != 0 {
+		t.Fatalf("expected partial Team death not to stop gameplay, got %d stops", got)
+	}
+}
+
+func TestTickRoomTeamRedEliminationSendsLoseAndWin(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeTeam, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(21, 0, 2, 4))
+	harness.room.mu.Lock()
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	harness.room.mu.Unlock()
+
+	harness.store.tickRoomState(harness.room)
+	for index, conn := range harness.connections {
+		snapshot := readFakeGameplaySnapshot(t, conn)
+		if snapshot.Snapshot.Tick != 21 {
+			t.Fatalf("expected Team terminal snapshot at tick 21, player=%d tick=%d", index, snapshot.Snapshot.Tick)
+		}
+		wantResult := gameEndResultWin
+		if harness.joined[index].Player.Team == string(simulation.TeamRed) {
+			wantResult = gameEndResultLose
+		}
+		assertGameEnd(t, readFakeGameEnd(t, conn), harness.playerID(index), wantResult.String())
+		select {
+		case <-harness.sessions[index].closeDone:
+		case <-time.After(time.Second):
+			t.Fatalf("expected Team player %d to close", index)
+		}
+	}
+	waitForGameEndCleanup(t, harness.room)
+
+	harness.room.mu.Lock()
+	ledger := make(map[string]gameEndResult, len(harness.room.finalizedGameEndResults))
+	for playerID, result := range harness.room.finalizedGameEndResults {
+		ledger[playerID] = result
+	}
+	harness.room.mu.Unlock()
+	if len(ledger) != len(harness.joined) {
+		t.Fatalf("expected six Team elimination results, got %+v", ledger)
+	}
+	for index, joined := range harness.joined {
+		wantResult := gameEndResultWin
+		if joined.Player.Team == string(simulation.TeamRed) {
+			wantResult = gameEndResultLose
+		}
+		if got := ledger[harness.playerID(index)]; got != wantResult {
+			t.Fatalf("expected Team player %d result %q, got %q", index, wantResult, got)
+		}
+	}
+	if got := gameplayTicker.StopCount(); got != 1 {
+		t.Fatalf("expected Team elimination to stop gameplay once, got %d stops", got)
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected Team room cleanup after every terminal close")
+	}
+}
+
+func TestTickRoomTeamSameTickEliminationDraws(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeTeam, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(31, 0, 1, 2, 3, 4, 5))
+
+	harness.store.tickRoomState(harness.room)
+	for index, conn := range harness.connections {
+		snapshot := readFakeGameplaySnapshot(t, conn)
+		if snapshot.Snapshot.Tick != 31 {
+			t.Fatalf("expected same-tick Team Draw snapshot at tick 31, player=%d tick=%d", index, snapshot.Snapshot.Tick)
+		}
+		assertGameEnd(t, readFakeGameEnd(t, conn), harness.playerID(index), gameEndResultDraw.String())
+		select {
+		case <-harness.sessions[index].closeDone:
+		case <-time.After(time.Second):
+			t.Fatalf("expected drawn Team player %d to close", index)
+		}
+	}
+	waitForGameEndCleanup(t, harness.room)
+
+	harness.room.mu.Lock()
+	defer harness.room.mu.Unlock()
+	if harness.room.latestSnapshot.Tick != 31 {
+		t.Fatalf("expected terminal Team tick 31 to be retained, got %d", harness.room.latestSnapshot.Tick)
+	}
+	if len(harness.room.finalizedGameEndResults) != len(harness.joined) {
+		t.Fatalf("expected six same-tick Team Draw results, got %+v", harness.room.finalizedGameEndResults)
+	}
+	for index := range harness.joined {
+		if got := harness.room.finalizedGameEndResults[harness.playerID(index)]; got != gameEndResultDraw {
+			t.Fatalf("expected Team player %d Draw, got %q", index, got)
+		}
+	}
+}
+
 func TestTerminalCloseBarrierRetainsRegistryAndPlayerIDs(t *testing.T) {
 	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
 	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
@@ -3448,6 +3645,10 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, red.ID)
 	waitForAttachedClient(t, store, room.ID, blue.ID)
+	internalRoom := store.lookupRoom(room.ID)
+	if internalRoom == nil {
+		t.Fatal("expected Duel room before terminal tick")
+	}
 
 	for hitCount := 0; hitCount < 10; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
@@ -3463,7 +3664,10 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
 	acknowledgeWebSocketClose(t, redConn)
 	acknowledgeWebSocketClose(t, blueConn)
-	waitForRoomDeleted(t, store, room.ID)
+	waitForGameEndCleanup(t, internalRoom)
+	if got := store.lookupRoom(room.ID); got != nil {
+		t.Fatal("expected Duel room removal after GameEnd cleanup")
+	}
 }
 
 func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
@@ -3488,6 +3692,10 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
 	waitForAttachedClient(t, store, room.ID, red.ID)
 	waitForAttachedClient(t, store, room.ID, blue.ID)
+	internalRoom := store.lookupRoom(room.ID)
+	if internalRoom == nil {
+		t.Fatal("expected Duel room before terminal tick")
+	}
 
 	for hitCount := 0; hitCount < 10; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
@@ -3508,7 +3716,10 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Draw")
 	acknowledgeWebSocketClose(t, redConn)
 	acknowledgeWebSocketClose(t, blueConn)
-	waitForRoomDeleted(t, store, room.ID)
+	waitForGameEndCleanup(t, internalRoom)
+	if got := store.lookupRoom(room.ID); got != nil {
+		t.Fatal("expected drawn Duel room removal after GameEnd cleanup")
+	}
 }
 
 func TestStoreTicksRoomsInParallel(t *testing.T) {
