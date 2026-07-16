@@ -1460,6 +1460,7 @@ func TestTickRoomTeamRedEliminationSendsLoseAndWin(t *testing.T) {
 	harness.room.mu.Unlock()
 
 	harness.store.tickRoomState(harness.room)
+	wireResultCounts := make(map[string]int)
 	for index, conn := range harness.connections {
 		snapshot := readFakeGameplaySnapshot(t, conn)
 		if snapshot.Snapshot.Tick != 21 {
@@ -1469,7 +1470,9 @@ func TestTickRoomTeamRedEliminationSendsLoseAndWin(t *testing.T) {
 		if harness.joined[index].Player.Team == string(simulation.TeamRed) {
 			wantResult = gameEndResultLose
 		}
-		assertGameEnd(t, readFakeGameEnd(t, conn), harness.playerID(index), wantResult.String())
+		message := readFakeGameEnd(t, conn)
+		assertGameEnd(t, message, harness.playerID(index), wantResult.String())
+		wireResultCounts[message.Result]++
 		select {
 		case <-harness.sessions[index].closeDone:
 		case <-time.After(time.Second):
@@ -1477,6 +1480,9 @@ func TestTickRoomTeamRedEliminationSendsLoseAndWin(t *testing.T) {
 		}
 	}
 	waitForGameEndCleanup(t, harness.room)
+	if wireResultCounts[gameEndResultLose.String()] != 3 || wireResultCounts[gameEndResultWin.String()] != 3 {
+		t.Fatalf("expected three Team Lose and three Win payloads, got %+v", wireResultCounts)
+	}
 
 	harness.room.mu.Lock()
 	ledger := make(map[string]gameEndResult, len(harness.room.finalizedGameEndResults))
