@@ -297,6 +297,8 @@ Client input:
 
 서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. 각 player는 server-only 4 attack charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. `PressedAttack: true`여도 player가 사망했거나 방향이 zero이거나 charge가 소진됐으면 공격을 거부합니다.
 
+같은 tick의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이 순서는 room의 pending input map 순회 순서와 무관한 input 결정성 기준이며 projectile hit target의 순서와는 별개입니다.
+
 Ready event:
 
 ```json
@@ -351,6 +353,8 @@ Server snapshot:
 
 Snapshot의 `Players[].PressedAttack`은 input echo가 아니라 방향, 생존 상태, 남은 charge를 검증한 뒤 서버가 해당 tick의 공격을 승인했는지 나타내는 transient 결과입니다.
 
+Projectile hit은 room이 시작할 때 고정한 selected mode rules를 사용합니다. 모든 mode에서 owner와 이미 사망한 player를 제외하고, Solo는 나머지 live player를 모두 적으로 봅니다. 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과하고 enemy만 hit합니다. 같은 tick에 여러 eligible target이 겹치면 player의 join/배정 순서에서 첫 target만 피해를 받고 projectile이 destroy됩니다.
+
 Starting signal:
 
 ```json
@@ -398,7 +402,7 @@ GameEnd event:
 
 Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
 단, match lifecycle field인 `Snapshot.status`와 `Snapshot.countdown`은 REST `room.status`와 맞춰 lowercase입니다. `starting`의 `countdown`은 client fake timer 기준값이며, server는 중간 countdown 값을 broadcast하지 않습니다.
-HP가 0인 player가 생기면 server는 같은 tick의 snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Solo/team도 현재 같은 player-survival fallback을 사용하며 mode별 elimination rule은 아직 없습니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다. Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking이 active room cap에 닿았을 때만 즉시 cleanup을 한 번 수행하고 생성도 한 번만 재시도합니다.
+HP가 0인 player가 생기면 server는 같은 tick의 death snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. SL-88은 기존 player-survival fallback을 보존하므로 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Death snapshot 이후 Solo/Team elimination과 mode별 GameEnd 규칙은 SL-89 범위입니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다. Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking이 active room cap에 닿았을 때만 즉시 cleanup을 한 번 수행하고 생성도 한 번만 재시도합니다.
 
 ## 현재 gameplay 값
 

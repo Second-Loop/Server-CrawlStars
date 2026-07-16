@@ -134,6 +134,7 @@ Tile collision은 circle-vs-tile 기하와 boundary 계산을 공유하고 entit
 Attack/projectile:
 
 - zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화합니다.
+- 같은 tick의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다.
 - player는 4 attack charge로 시작하고, 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다.
 - `PressedAttack = true`, 정규화한 `AttackDir != zero`, 남은 charge가 모두 충족될 때만 charge 1개를 소비하고 projectile을 만듭니다.
 - snapshot의 `PressedAttack`은 그 tick에 서버가 공격을 승인했을 때만 `true`입니다.
@@ -144,11 +145,14 @@ Attack/projectile:
 
 Hit/death:
 
-- owner가 아닌 live player와 projectile circle이 겹치면 hit입니다.
+- Hit eligibility는 State가 소유한 room-local selected mode rules를 사용하며 owner와 이미 사망한 player는 항상 제외합니다.
+- Solo는 owner가 아닌 모든 live player를 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다.
+- 한 projectile이 여러 eligible target과 겹치면 `players`의 join/배정 순서에서 첫 target만 hit합니다. 이 target 순서는 input의 `PlayerID` 정렬과 별개입니다.
 - hit projectile은 destroyed가 됩니다.
 - target HP는 projectile damage만큼 감소합니다.
 - HP가 0 이하가 되면 `HP = 0`, `IsDead = true`입니다.
 - projectile 이동에서 먼저 사망한 player의 같은 tick input은 position, direction, projectile을 바꾸지 않으며 `PressedAttack = false`입니다.
+- Death snapshot 이후 elimination/GameEnd mode rule은 SL-89 범위이며, SL-88은 기존 player-survival fallback을 보존합니다.
 - respawn, score는 아직 없습니다.
 
 ## Room과 WebSocket
