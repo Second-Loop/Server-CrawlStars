@@ -1959,6 +1959,46 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 	}
 }
 
+func TestMatchmakingJoinRawJSONExposesHumanBotFlagAtBothLevels(t *testing.T) {
+	handler := debugHandler(t, NewStore(5))
+
+	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	payload := rec.Body.Bytes()
+
+	var responseObject map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &responseObject); err != nil {
+		t.Fatalf("decode matchmaking response: %v", err)
+	}
+	assertExactBotJSONKey(t, responseObject["player"], "isBot", "IsBot", false)
+
+	var roomObject map[string]json.RawMessage
+	if err := json.Unmarshal(responseObject["room"], &roomObject); err != nil {
+		t.Fatalf("decode matchmaking room: %v", err)
+	}
+	var roomPlayers []json.RawMessage
+	if err := json.Unmarshal(roomObject["players"], &roomPlayers); err != nil {
+		t.Fatalf("decode matchmaking room players: %v", err)
+	}
+	if len(roomPlayers) != 1 {
+		t.Fatalf("expected one nested room player, got %d", len(roomPlayers))
+	}
+	assertExactBotJSONKey(t, roomPlayers[0], "isBot", "IsBot", false)
+
+	var typed matchmakingJoinResponse
+	if err := json.Unmarshal(payload, &typed); err != nil {
+		t.Fatalf("decode typed matchmaking response: %v", err)
+	}
+	if len(typed.Room.Players) != 1 {
+		t.Fatalf("expected one typed room player, got %d", len(typed.Room.Players))
+	}
+	if typed.Player.ID == "" || typed.Player.ID != typed.Room.Players[0].ID {
+		t.Fatalf("expected top-level and nested player IDs to match, got %q and %q", typed.Player.ID, typed.Room.Players[0].ID)
+	}
+}
+
 func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.T) {
 	handler := debugHandler(t, NewStore(5))
 

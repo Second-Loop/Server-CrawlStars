@@ -47,6 +47,7 @@ type PlayerData struct {
 	ID            PlayerID `json:"Id"`
 	Team          Team     `json:"Team"`
 	Slot          int      `json:"Slot"`
+	IsBot         bool     `json:"IsBot"`
 	Pos           Vector2  `json:"Pos"`
 	MoveDir       Vector2  `json:"MoveDir"`
 	AttackDir     Vector2  `json:"AttackDir"`
