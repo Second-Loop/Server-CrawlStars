@@ -600,12 +600,16 @@ func TestShutdownIsForcedExceptionToGameEndCloseBarrier(t *testing.T) {
 	}, nil, 0, 1, 2, 3, 4, 5)
 	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
 	closeStarted, releaseClose := harness.blockClose(t, 5)
-	targetSession := harness.sessions[5]
+	lifecycleDone := make([]<-chan struct{}, len(harness.sessions))
 	harness.store.mu.RLock()
-	targetLifecycleDone := harness.store.activeSessions[targetSession]
+	for index, session := range harness.sessions {
+		lifecycleDone[index] = harness.store.activeSessions[session]
+	}
 	harness.store.mu.RUnlock()
-	if targetLifecycleDone == nil {
-		t.Fatal("expected terminal winner lifecycle registration")
+	for index, done := range lifecycleDone {
+		if done == nil {
+			t.Fatalf("expected terminal session %d lifecycle registration", index)
+		}
 	}
 	harness.connections[5].forceFn = func() error {
 		releaseClose()
@@ -615,8 +619,13 @@ func TestShutdownIsForcedExceptionToGameEndCloseBarrier(t *testing.T) {
 	harness.store.tickRoomState(harness.room)
 	waitShutdownSignal(t, closeStarted, "terminal winner connection close entry")
 	select {
-	case <-targetSession.closeDone:
+	case <-harness.sessions[5].closeDone:
 		t.Fatal("expected terminal closeDone to remain open at the GameEnd barrier")
+	default:
+	}
+	select {
+	case <-harness.room.gameEndCleanupWorkerDone:
+		t.Fatal("expected GameEnd cleanup worker to remain active while terminal close was blocked")
 	default:
 	}
 
@@ -630,7 +639,7 @@ func TestShutdownIsForcedExceptionToGameEndCloseBarrier(t *testing.T) {
 		return roomDetached && playerIDsReleased
 	})
 	select {
-	case <-targetSession.closeDone:
+	case <-harness.sessions[5].closeDone:
 		t.Fatal("expected Shutdown to detach registry ownership while terminal close remained blocked")
 	default:
 	}
@@ -657,8 +666,9 @@ func TestShutdownIsForcedExceptionToGameEndCloseBarrier(t *testing.T) {
 		assertShutdownChannelClosed(t, session.closeDone, fmt.Sprintf("terminal session %d closeDone", index))
 		assertShutdownChannelClosed(t, session.writerDone, fmt.Sprintf("terminal session %d writerDone", index))
 		assertShutdownChannelClosed(t, session.heartbeatDone, fmt.Sprintf("terminal session %d heartbeatDone", index))
+		assertShutdownChannelClosed(t, lifecycleDone[index], fmt.Sprintf("terminal session %d lifecycleDone", index))
 	}
-	assertShutdownChannelClosed(t, targetLifecycleDone, "terminal winner lifecycleDone")
+	assertShutdownChannelClosed(t, harness.room.gameEndCleanupWorkerDone, "GameEnd cleanup workerDone")
 	harness.store.mu.RLock()
 	activeSessions := len(harness.store.activeSessions)
 	rooms := len(harness.store.rooms)

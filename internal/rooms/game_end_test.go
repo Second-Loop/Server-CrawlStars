@@ -245,6 +245,9 @@ func TestRoomSignalsGameEndCleanupOnlyOnce(t *testing.T) {
 	if room.gameEndCleanupDone == nil {
 		t.Fatal("expected new room to initialize GameEnd cleanup completion")
 	}
+	if room.gameEndCleanupWorkerDone == nil {
+		t.Fatal("expected new room to initialize GameEnd cleanup worker completion")
+	}
 
 	room.signalGameEndCleanupDone()
 	room.signalGameEndCleanupDone()
@@ -253,6 +256,27 @@ func TestRoomSignalsGameEndCleanupOnlyOnce(t *testing.T) {
 	case <-room.gameEndCleanupDone:
 	default:
 		t.Fatal("expected GameEnd cleanup completion to be closed")
+	}
+}
+
+func TestRejectedGameEndCleanupWorkerLeavesWorkerCompletionOpen(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	room := store.lookupRoom(created.ID)
+
+	store.stopLaunchingRoomWorkers()
+	if store.scheduleGameEndCleanup(room, nil) {
+		t.Fatal("expected GameEnd cleanup worker launch to be rejected")
+	}
+
+	select {
+	case <-room.gameEndCleanupWorkerDone:
+		t.Fatal("expected rejected worker launch to leave completion open")
+	default:
 	}
 }
 

@@ -307,6 +307,7 @@ func (r *roomResources) detachGameplayLocked(room *room) {
 
 func (s *Store) scheduleGameEndCleanup(room *room, sessions []*clientSession) bool {
 	return s.launchRoomWorker(func() {
+		defer room.signalGameEndCleanupWorkerDone()
 		for _, session := range uniqueClientSessions(sessions) {
 			<-session.closeDone
 		}

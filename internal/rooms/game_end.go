@@ -52,6 +52,12 @@ func (r *room) signalGameEndCleanupDone() {
 	})
 }
 
+func (r *room) signalGameEndCleanupWorkerDone() {
+	r.gameEndCleanupWorkerOnce.Do(func() {
+		close(r.gameEndCleanupWorkerDone)
+	})
+}
+
 func calculateGameEndResults(gameConfig simulation.GameConfig, snapshot simulation.Snapshot) map[string]gameEndResult {
 	switch gameConfig.SelectedMode.ID {
 	case simulation.GameModeDuel1v1:
