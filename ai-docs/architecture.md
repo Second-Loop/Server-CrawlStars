@@ -252,7 +252,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
 - Solo 중간 탈락은 해당 session만 terminal close하고 room과 ticker를 유지합니다.
 - Room terminal decision은 `ending`을 예약하고 ticker를 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 이 상태에서는 새 mutation과 추가 tick을 받지 않습니다.
-- Normal GameEnd cleanup은 captured session의 `closeDone`을 모두 기다린 뒤 room registry, connected/active observer, player ID, `room_ended` log, 남은 resources를 정리합니다. Cleanup success signal은 모든 정상 작업이 성공한 마지막에만 닫습니다.
+- 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 `closeDone`을 모두 기다립니다. Current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 room registry, active-room observer, player ID, `room_ended` log, 남은 resources를 정리합니다. Cleanup success signal은 모든 정상 작업이 성공한 마지막에만 닫습니다.
 - Hard TTL janitor와 debug clear/delete는 ending room을 제거하지 않습니다.
 - Shutdown은 close barrier의 forced-teardown 예외입니다. Registry/player ID를 먼저 detach할 수 있지만 cleanup worker와 session lifecycle을 join하며 normal cleanup signal과 `room_ended` log는 만들지 않습니다.
 - Store당 하나의 30초 janitor가 TTL을 검사하며, `Store.Close`는 room에서 이미 분리된 terminal session까지 포함해 connection close, writer, heartbeat 종료를 기다립니다.

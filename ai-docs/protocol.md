@@ -353,7 +353,7 @@ Store는 30초 janitor ticker 하나로 registry snapshot을 짧게 얻은 뒤 r
 
 현재 WebSocket close는 connection과 pending input을 제거합니다. Matchmaking start 전 close는 match cancel로 처리해 room과 남은 connection을 정리합니다.
 
-Normal GameEnd cleanup은 terminal decision에서 captured한 모든 session의 `closeDone`을 기다립니다. `closeDone` 뒤 registry를 분리하고 connected/active observer를 반영한 다음 player ID를 release하고 `room_ended` log와 남은 room resource close를 수행합니다. `cleanup success signal`은 이 정상 작업이 모두 성공한 마지막에만 닫습니다. Callback panic, stale ownership, 이미 제거된 room은 성공으로 표시하지 않습니다. Closing 중인 ending room은 hard TTL과 debug `DELETE /rooms`/`DELETE /rooms/{roomID}`가 제거하지 않습니다.
+각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 `closeDone`을 모두 기다립니다. 따라서 current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 registry를 분리하고 active-room observer를 반영한 다음 player ID를 release하고 `room_ended` log와 남은 room resource close를 수행합니다. `cleanup success signal`은 이 정상 작업이 모두 성공한 마지막에만 닫습니다. Callback panic, stale ownership, 이미 제거된 room은 성공으로 표시하지 않습니다. Closing 중인 ending room은 hard TTL과 debug `DELETE /rooms`/`DELETE /rooms/{roomID}`가 제거하지 않습니다.
 
 `Shutdown`은 forced-teardown 예외입니다. Store quiescing을 소유하므로 terminal `closeDone` 전에 room registry와 player ID를 detach할 수 있고 deadline에는 transport를 force-close할 수 있습니다. 그래도 GameEnd cleanup worker와 session의 close/writer/heartbeat/lifecycle을 모두 join한 뒤 반환합니다. Forced takeover는 normal GameEnd cleanup signal을 닫지 않고 `room_ended`를 기록하지 않습니다.
 
