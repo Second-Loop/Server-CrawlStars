@@ -296,6 +296,75 @@ func TestStoreShutdownWaitsForSharedMutationGate(t *testing.T) {
 	}
 }
 
+func TestStoreShutdownWaitsForAddBotsMutationGate(t *testing.T) {
+	store := NewStore(5)
+	random := newShutdownBarrierReader(0x43)
+	t.Cleanup(func() {
+		random.release()
+		store.Close()
+	})
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := store.addPlayer(created.ID); err != nil {
+		t.Fatalf("add human: %v", err)
+	}
+	store.mu.Lock()
+	store.random = random
+	store.mu.Unlock()
+
+	addResult := make(chan error, 1)
+	go func() {
+		_, addErr := store.addBots(created.ID, 1)
+		addResult <- addErr
+	}()
+	waitShutdownSignal(t, random.entered, "addBots random read")
+	if store.mutationMu.TryLock() {
+		store.mutationMu.Unlock()
+		t.Fatal("expected addBots to retain the shared mutation gate")
+	}
+
+	shutdownResult := startStoreShutdown(store, context.Background())
+	waitShutdownCondition(t, "Shutdown mutation writer pending", func() bool {
+		if !store.mutationMu.TryRLock() {
+			return true
+		}
+		store.mutationMu.RUnlock()
+		return false
+	})
+	select {
+	case shutdownErr := <-shutdownResult:
+		t.Fatalf("Shutdown returned before addBots reader release: %v", shutdownErr)
+	case <-time.After(25 * time.Millisecond):
+		// Writer pending + no return proves Shutdown is waiting on mutationMu.
+	}
+
+	// addBots owns Store.mu while random is blocked. Do not read store.closed
+	// here: a locked read would deadlock and an unlocked read would race.
+	random.release()
+	select {
+	case addErr := <-addResult:
+		if addErr != nil {
+			t.Fatalf("in-flight addBots: %v", addErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for addBots")
+	}
+	if err := waitStoreShutdown(t, shutdownResult); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	store.mu.RLock()
+	rooms := len(store.rooms)
+	playerIDs := len(store.playerIDs)
+	activeSessions := len(store.activeSessions)
+	store.mu.RUnlock()
+	if rooms != 0 || playerIDs != 0 || activeSessions != 0 {
+		t.Fatalf("Shutdown leaked state: rooms=%d playerIDs=%d activeSessions=%d", rooms, playerIDs, activeSessions)
+	}
+}
+
 func TestStartHandlerReturnsInternalErrorAfterStoreQuiesces(t *testing.T) {
 	clock := newBlockingStopClock()
 	store := NewStoreWithClock(5, clock)

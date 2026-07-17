@@ -467,6 +467,85 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 	return issued, nil
 }
 
+func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	if !s.beginMutation() {
+		return nil, ErrInternal
+	}
+	defer s.endMutation()
+
+	room := s.lookupRoom(roomID)
+	if room == nil {
+		return nil, ErrRoomNotFound
+	}
+	room.mu.Lock()
+	precheckErr := botAppendErrorLocked(room, count)
+	room.mu.Unlock()
+	if precheckErr != nil {
+		return nil, precheckErr
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrInternal
+	}
+	if s.rooms[roomID] != room {
+		s.mu.Unlock()
+		return nil, ErrRoomNotFound
+	}
+	ids, err := s.reserveBotIDsLocked(count)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+
+	rollbackIDs := func() {
+		for _, id := range ids {
+			delete(s.playerIDs, id)
+		}
+	}
+	room.mu.Lock()
+	if s.rooms[roomID] != room {
+		room.mu.Unlock()
+		rollbackIDs()
+		s.mu.Unlock()
+		return nil, ErrRoomNotFound
+	}
+	if err := botAppendErrorLocked(room, count); err != nil {
+		room.mu.Unlock()
+		rollbackIDs()
+		s.mu.Unlock()
+		return nil, err
+	}
+	bots := make([]playerResponse, 0, count)
+	for _, id := range ids {
+		bots = append(bots, s.appendParticipantLocked(room, id, true))
+	}
+	s.markRoomMatchedIfFullLocked(room)
+	s.mu.Unlock()
+
+	deliveries := s.advanceMatchLoadingLocked(room)
+	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
+	closeClientSessions(failedSessions, "control delivery failed")
+	return bots, nil
+}
+
+func botAppendErrorLocked(room *room, count int) error {
+	if room.removed || room.ending {
+		return ErrRoomNotFound
+	}
+	capacity := room.gameConfig.MatchPlayerCount()
+	if room.Status != RoomStatusWaiting || room.matchStatus != "" ||
+		count > capacity-len(room.Players) {
+		return ErrRoomFull
+	}
+	return nil
+}
+
 func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error) {
 	if !s.beginMutation() {
 		return matchmakingJoinResponse{}, ErrInternal
@@ -738,6 +817,22 @@ func (s *Store) issuePlayerCredentialsLocked() (playerCredentials, error) {
 	}, nil
 }
 
+func (s *Store) reserveBotIDsLocked(count int) ([]string, error) {
+	ids := make([]string, 0, count)
+	for range count {
+		id, err := s.uniquePlayerIDLocked()
+		if err != nil {
+			for _, reserved := range ids {
+				delete(s.playerIDs, reserved)
+			}
+			return nil, err
+		}
+		s.playerIDs[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func (s *Store) releasePlayerID(playerID string) {
 	s.releasePlayerIDs([]string{playerID})
 }
@@ -754,6 +849,16 @@ func (s *Store) releasePlayerIDs(playerIDs []string) {
 }
 
 func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playerSessionResponse {
+	player := s.appendParticipantLocked(room, credentials.id, false)
+	room.sessions[player.ID] = credentials.session
+	return playerSessionResponse{
+		Player:        player,
+		SessionToken:  credentials.sessionToken,
+		WebSocketPath: webSocketPath(room.ID, player.ID, credentials.sessionToken),
+	}
+}
+
+func (s *Store) appendParticipantLocked(room *room, playerID string, isBot bool) playerResponse {
 	playerIndex := len(room.Players)
 	team, slot, ok := room.gameConfig.TeamForPlayerIndex(playerIndex)
 	if !ok {
@@ -761,19 +866,14 @@ func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playe
 		slot = playerIndex
 	}
 	player := playerResponse{
-		ID:   credentials.id,
-		Team: string(team),
-		Slot: slot,
-	}
-	issued := playerSessionResponse{
-		Player:        player,
-		SessionToken:  credentials.sessionToken,
-		WebSocketPath: webSocketPath(room.ID, player.ID, credentials.sessionToken),
+		ID:    playerID,
+		Team:  string(team),
+		Slot:  slot,
+		IsBot: isBot,
 	}
 	room.Players = append(room.Players, player)
-	room.sessions[player.ID] = credentials.session
 	room.lastActivityAt = s.clock.Now()
-	return issued
+	return player
 }
 
 func (s *Store) uniqueRoomIDLocked() (string, error) {

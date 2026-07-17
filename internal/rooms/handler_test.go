@@ -124,6 +124,61 @@ func TestHandlerIssuesSessionSecretWithoutPublicLeak(t *testing.T) {
 	}
 }
 
+func TestRoomDetailExposesHumanAndBotIdentity(t *testing.T) {
+	store := NewStore(5)
+	t.Cleanup(store.Close)
+	handler := debugHandler(t, store)
+
+	joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	bots, err := store.addBots(joined.Room.ID, 1)
+	if err != nil {
+		t.Fatalf("add bot: %v", err)
+	}
+	if len(bots) != 1 {
+		t.Fatalf("expected one bot, got %+v", bots)
+	}
+
+	recorder := request(handler, http.MethodGet, "/rooms/"+joined.Room.ID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("room detail status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var document struct {
+		Players []map[string]json.RawMessage `json:"players"`
+	}
+	decodeResponse(t, recorder, &document)
+	if len(document.Players) != 2 {
+		t.Fatalf("expected human and bot players, got %+v", document.Players)
+	}
+	wantIdentity := map[string]bool{
+		joined.Player.ID: false,
+		bots[0].ID:       true,
+	}
+	for index, player := range document.Players {
+		var playerID string
+		if err := json.Unmarshal(player["id"], &playerID); err != nil {
+			t.Fatalf("decode player %d id: %v", index, err)
+		}
+		wantBot, ok := wantIdentity[playerID]
+		if !ok {
+			t.Fatalf("unexpected room-detail player %q", playerID)
+		}
+		isBotPayload, ok := player["isBot"]
+		if !ok {
+			t.Fatalf("player %q omitted isBot: %+v", playerID, player)
+		}
+		var isBot bool
+		if err := json.Unmarshal(isBotPayload, &isBot); err != nil {
+			t.Fatalf("decode player %q isBot: %v", playerID, err)
+		}
+		if isBot != wantBot {
+			t.Fatalf("player %q isBot=%t, want %t", playerID, isBot, wantBot)
+		}
+		if _, leaked := player["IsBot"]; leaked {
+			t.Fatalf("player %q leaked wire key IsBot in room detail", playerID)
+		}
+	}
+}
+
 func TestHandlerSessionSecretFailureIsAtomic(t *testing.T) {
 	t.Run("reader error", func(t *testing.T) {
 		readerErr := errors.New("entropy source private detail")

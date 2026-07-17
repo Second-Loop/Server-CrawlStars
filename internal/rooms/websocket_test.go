@@ -3120,6 +3120,138 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 	}
 }
 
+func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		humanCount int
+		botCount   int
+	}{
+		{name: "duel", mode: simulation.GameModeDuel1v1, humanCount: 1, botCount: 1},
+		{name: "solo", mode: simulation.GameModeSolo, humanCount: 1, botCount: 5},
+		{name: "team", mode: simulation.GameModeTeam, humanCount: 2, botCount: 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" humans attach before bots", func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			defer store.Close()
+			handler := debugHandler(t, store)
+			server := httptest.NewServer(handler)
+			defer server.Close()
+
+			joined := make([]matchmakingJoinResponse, tt.humanCount)
+			connections := make([]*websocket.Conn, tt.humanCount)
+			for index := range joined {
+				joined[index] = joinMatchmakingWithMode(t, handler, tt.mode)
+				if index > 0 && joined[index].Room.ID != joined[0].Room.ID {
+					t.Fatalf("human %d joined room %q, want %q", index, joined[index].Room.ID, joined[0].Room.ID)
+				}
+				connections[index] = dialIssuedPlayer(t, server.URL, joined[index].WebSocketPath)
+				defer connections[index].Close(websocket.StatusNormalClosure, "")
+				waitForAttachedClient(t, store, joined[0].Room.ID, joined[index].Player.ID)
+			}
+
+			bots, err := store.addBots(joined[0].Room.ID, tt.botCount)
+			if err != nil {
+				t.Fatalf("add %s bots: %v", tt.mode, err)
+			}
+			if len(bots) != tt.botCount {
+				t.Fatalf("expected %d bots, got %+v", tt.botCount, bots)
+			}
+			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusLoading, tt.humanCount, 0)
+
+			readyEvents := make([]readyEventMessage, len(connections))
+			for index, conn := range connections {
+				readyEvents[index] = readReadyEventMessage(t, conn)
+				if index > 0 {
+					assertMatchingReadyEvents(t, readyEvents[0], readyEvents[index])
+				}
+			}
+			room := store.lookupRoom(joined[0].Room.ID)
+			if room == nil {
+				t.Fatal("expected bot-filled room")
+			}
+			room.mu.Lock()
+			config := room.gameConfig
+			room.mu.Unlock()
+			if len(readyEvents[0].Players) != config.MatchPlayerCount() {
+				t.Fatalf("Ready players=%d, want %d", len(readyEvents[0].Players), config.MatchPlayerCount())
+			}
+			wantIDs := make([]string, 0, config.MatchPlayerCount())
+			for _, human := range joined {
+				wantIDs = append(wantIDs, human.Player.ID)
+			}
+			for _, bot := range bots {
+				wantIDs = append(wantIDs, bot.ID)
+			}
+			for index, player := range readyEvents[0].Players {
+				wantTeam, wantSlot, ok := config.TeamForPlayerIndex(index)
+				if !ok {
+					t.Fatalf("missing selected-mode assignment for index %d", index)
+				}
+				wantBot := index >= tt.humanCount
+				if player.ID != wantIDs[index] || player.Team != string(wantTeam) || player.Slot != wantSlot || player.IsBot != wantBot {
+					t.Fatalf("Ready player %d want ID=%q team=%q slot=%d bot=%t, got %+v", index, wantIDs[index], wantTeam, wantSlot, wantBot, player)
+				}
+			}
+
+			for index, conn := range connections {
+				writeWSJSON(t, conn, readyMessage{Type: "ready"})
+				wantStatus := MatchStatusLoading
+				if index == len(connections)-1 {
+					wantStatus = MatchStatusStarting
+				}
+				waitForMatchLifecycleState(t, store, joined[0].Room.ID, wantStatus, tt.humanCount, index+1)
+				room.mu.Lock()
+				countdownTicker := room.countdownTicker
+				room.mu.Unlock()
+				if index < len(connections)-1 {
+					if countdownTicker != nil || fakeClock.TickerCount(time.Second) != 0 {
+						t.Fatalf("human ACK %d/%d started countdown early", index+1, len(connections))
+					}
+					continue
+				}
+				if countdownTicker == nil || fakeClock.TickerCount(time.Second) != 1 {
+					t.Fatalf("final human ACK did not create exactly one countdown ticker")
+				}
+			}
+		})
+	}
+
+	t.Run("duel bots fill before human attach", func(t *testing.T) {
+		fakeClock := newFakeClock()
+		store := NewStoreWithClock(5, fakeClock)
+		defer store.Close()
+		handler := debugHandler(t, store)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+		bots, err := store.addBots(joined.Room.ID, 1)
+		if err != nil || len(bots) != 1 {
+			t.Fatalf("add bot before attach bots=%+v err=%v", bots, err)
+		}
+		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusMatched, 0, 0)
+
+		conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusLoading, 1, 0)
+		ready := readReadyEventMessage(t, conn)
+		if len(ready.Players) != 2 || ready.Players[0].IsBot || !ready.Players[1].IsBot {
+			t.Fatalf("unexpected bot-first Ready payload: %+v", ready.Players)
+		}
+
+		writeWSJSON(t, conn, readyMessage{Type: "ready"})
+		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarting, 1, 1)
+		if got := fakeClock.TickerCount(time.Second); got != 1 {
+			t.Fatalf("expected one countdown ticker, got %d", got)
+		}
+	})
+}
+
 func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.T) {
 	tests := []struct {
 		mode  string
