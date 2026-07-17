@@ -593,6 +593,89 @@ func TestStoreShutdownForceDetachesTerminalRoomAlreadyInsideClose(t *testing.T) 
 	}
 }
 
+func TestShutdownIsForcedExceptionToGameEndCloseBarrier(t *testing.T) {
+	logs := &lockedLogBuffer{}
+	harness := newModeTickHarnessWithConfig(t, simulation.GameModeSolo, StoreConfig{
+		Logger: jsonTestLogger(logs),
+	}, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
+	closeStarted, releaseClose := harness.blockClose(t, 5)
+	targetSession := harness.sessions[5]
+	harness.store.mu.RLock()
+	targetLifecycleDone := harness.store.activeSessions[targetSession]
+	harness.store.mu.RUnlock()
+	if targetLifecycleDone == nil {
+		t.Fatal("expected terminal winner lifecycle registration")
+	}
+	harness.connections[5].forceFn = func() error {
+		releaseClose()
+		return nil
+	}
+
+	harness.store.tickRoomState(harness.room)
+	waitShutdownSignal(t, closeStarted, "terminal winner connection close entry")
+	select {
+	case <-targetSession.closeDone:
+		t.Fatal("expected terminal closeDone to remain open at the GameEnd barrier")
+	default:
+	}
+
+	ctx := newShutdownManualDeadlineContext()
+	shutdownResult := startStoreShutdown(harness.store, ctx)
+	waitShutdownCondition(t, "forced Shutdown registry and player ID detach", func() bool {
+		harness.store.mu.RLock()
+		roomDetached := harness.store.rooms[harness.room.ID] == nil
+		playerIDsReleased := len(harness.store.playerIDs) == 0
+		harness.store.mu.RUnlock()
+		return roomDetached && playerIDsReleased
+	})
+	select {
+	case <-targetSession.closeDone:
+		t.Fatal("expected Shutdown to detach registry ownership while terminal close remained blocked")
+	default:
+	}
+	select {
+	case err := <-shutdownResult:
+		t.Fatalf("Shutdown returned before the blocked terminal close was forced: %v", err)
+	default:
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected forced Shutdown not to signal normal GameEnd cleanup")
+	default:
+	}
+	assertLogEventCount(t, logs, "room_ended", 0)
+
+	ctx.expire()
+	if err := waitStoreShutdown(t, shutdownResult); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected forced terminal Shutdown deadline, got %v", err)
+	}
+	if got := harness.connections[5].forceCount.Load(); got != 1 {
+		t.Fatalf("expected one forced terminal transport close, got %d", got)
+	}
+	for index, session := range harness.sessions {
+		assertShutdownChannelClosed(t, session.closeDone, fmt.Sprintf("terminal session %d closeDone", index))
+		assertShutdownChannelClosed(t, session.writerDone, fmt.Sprintf("terminal session %d writerDone", index))
+		assertShutdownChannelClosed(t, session.heartbeatDone, fmt.Sprintf("terminal session %d heartbeatDone", index))
+	}
+	assertShutdownChannelClosed(t, targetLifecycleDone, "terminal winner lifecycleDone")
+	harness.store.mu.RLock()
+	activeSessions := len(harness.store.activeSessions)
+	rooms := len(harness.store.rooms)
+	playerIDs := len(harness.store.playerIDs)
+	harness.store.mu.RUnlock()
+	if activeSessions != 0 || rooms != 0 || playerIDs != 0 {
+		t.Fatalf("expected forced Shutdown to drain registries, activeSessions=%d rooms=%d playerIDs=%d",
+			activeSessions, rooms, playerIDs)
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected forced Shutdown to leave normal GameEnd cleanup incomplete")
+	default:
+	}
+	assertLogEventCount(t, logs, "room_ended", 0)
+}
+
 func TestStoreShutdownCancellationForcesBeforeRoomTickerStopJoins(t *testing.T) {
 	clock := newBlockingStopClock()
 	store := NewStoreWithClock(5, clock)

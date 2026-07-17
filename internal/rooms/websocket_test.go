@@ -1593,6 +1593,53 @@ func TestTerminalCloseBarrierRetainsRegistryAndPlayerIDs(t *testing.T) {
 	}
 }
 
+func TestEndingRoomRejectsHardTTLAndDebugRemovalBeforeCloseDone(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
+	closeStarted, releaseClose := harness.blockClose(t, 5)
+
+	harness.store.tickRoomState(harness.room)
+	waitShutdownSignal(t, closeStarted, "terminal winner connection close entry")
+	harness.clock.Advance(defaultHardRoomLifetime)
+
+	if deleted := harness.store.cleanupExpired(harness.clock.Now()); deleted != 0 {
+		t.Fatalf("expected hard TTL cleanup to preserve the ending room, got %d deletions", deleted)
+	}
+	if cleared := harness.store.clearRooms(); cleared.Deleted != 0 {
+		t.Fatalf("expected debug clear to preserve the ending room, got %d deletions", cleared.Deleted)
+	}
+	if response, deleted := harness.store.deleteRoom(harness.room.ID); deleted || response.Deleted != 0 {
+		t.Fatalf("expected debug delete to preserve the ending room, deleted=%t response=%+v", deleted, response)
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != harness.room {
+		t.Fatal("expected the ending room to remain registered before closeDone")
+	}
+	harness.store.mu.RLock()
+	for index := range harness.joined {
+		if _, exists := harness.store.playerIDs[harness.playerID(index)]; !exists {
+			harness.store.mu.RUnlock()
+			t.Fatalf("expected player ID %s to remain reserved before closeDone", harness.playerID(index))
+		}
+	}
+	harness.store.mu.RUnlock()
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected normal GameEnd cleanup to remain incomplete before closeDone")
+	default:
+	}
+
+	releaseClose()
+	waitForGameEndCleanup(t, harness.room)
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected normal GameEnd cleanup to remove the room after closeDone")
+	}
+	harness.store.mu.RLock()
+	defer harness.store.mu.RUnlock()
+	if got := len(harness.store.playerIDs); got != 0 {
+		t.Fatalf("expected normal GameEnd cleanup to release every player ID, got %d", got)
+	}
+}
+
 func TestWebSocketControlOrderStartingBeforeCountdownCompletes(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -4052,9 +4099,20 @@ func newModeTickHarness(
 	connectedIndexes ...int,
 ) *modeTickHarness {
 	t.Helper()
+	return newModeTickHarnessWithConfig(t, mode, StoreConfig{Observer: observer}, blockWrites, connectedIndexes...)
+}
+
+func newModeTickHarnessWithConfig(
+	t *testing.T,
+	mode string,
+	config StoreConfig,
+	blockWrites map[int]bool,
+	connectedIndexes ...int,
+) *modeTickHarness {
+	t.Helper()
 
 	clock := newFakeClock()
-	store := newStore(5, clock, StoreConfig{Observer: observer})
+	store := newStore(5, clock, config)
 	harness := &modeTickHarness{store: store, clock: clock, writeRelease: make(map[int]func())}
 	t.Cleanup(func() {
 		for _, release := range harness.closeReleases {
