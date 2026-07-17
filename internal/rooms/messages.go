@@ -256,6 +256,10 @@ func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDe
 		if session == nil {
 			continue
 		}
+		if r.finalizedGameEndSessions == nil {
+			r.finalizedGameEndSessions = make(map[string]*clientSession)
+		}
+		r.finalizedGameEndSessions[player.ID] = session
 		deliveries = append(deliveries, webSocketDelivery{
 			session: session,
 			message: gameEndMessage{
@@ -282,15 +286,23 @@ func (r *room) snapshotSessionsWithoutFinalizedGameEnd() []*clientSession {
 }
 
 // clientSessions requires r.mu and captures the terminal close barrier before
-// ending prevents any new attachment.
+// ending prevents any new attachment. Sessions that received an earlier
+// finalized result stay in this barrier after releaseClient removes them from
+// the current-client map.
 func (r *room) clientSessions() []*clientSession {
-	sessions := make([]*clientSession, 0, len(r.clients))
+	current := make([]*clientSession, 0, len(r.clients))
 	for _, session := range r.clients {
 		if session != nil {
-			sessions = append(sessions, session)
+			current = append(current, session)
 		}
 	}
-	return sessions
+	finalized := make([]*clientSession, 0, len(r.finalizedGameEndSessions))
+	for _, session := range r.finalizedGameEndSessions {
+		if session != nil {
+			finalized = append(finalized, session)
+		}
+	}
+	return uniqueClientSessions(current, finalized)
 }
 
 func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfig) []simulation.PlayerData {

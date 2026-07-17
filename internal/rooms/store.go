@@ -89,6 +89,7 @@ type room struct {
 	clients                  map[string]*clientSession
 	reservations             map[string]*clientReservation
 	finalizedGameEndResults  map[string]gameEndResult
+	finalizedGameEndSessions map[string]*clientSession
 	gameEndCleanupDone       chan struct{}
 	gameEndCleanupOnce       sync.Once
 	gameEndCleanupWorkerDone chan struct{}
@@ -694,6 +695,7 @@ func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *
 		clients:                  make(map[string]*clientSession),
 		reservations:             make(map[string]*clientReservation),
 		finalizedGameEndResults:  make(map[string]gameEndResult),
+		finalizedGameEndSessions: make(map[string]*clientSession),
 		gameEndCleanupDone:       make(chan struct{}),
 		gameEndCleanupWorkerDone: make(chan struct{}),
 		createdAt:                now,

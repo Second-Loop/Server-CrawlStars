@@ -1418,6 +1418,93 @@ func TestTickRoomSoloPriorLoseRemainsLoseAndOnlyRemainingPlayersDraw(t *testing.
 	}
 }
 
+func TestTickRoomSoloTerminalCleanupWaitsForPriorEliminatedSessionClose(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t,
+		harness.snapshot(1, 0),
+		harness.snapshot(2, 0, 1, 2, 3, 4),
+	)
+	priorCloseStarted, releasePriorClose := harness.blockClose(t, 0)
+
+	harness.store.tickRoomState(harness.room)
+	select {
+	case <-priorCloseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected intermediate Solo loser transport close to start")
+	}
+
+	loserSnapshot := readFakeGameplaySnapshot(t, harness.connections[0])
+	if loserSnapshot.Snapshot.Tick != 1 {
+		t.Fatalf("expected intermediate Solo loser snapshot at tick 1, got %d", loserSnapshot.Snapshot.Tick)
+	}
+	assertGameEnd(t, readFakeGameEnd(t, harness.connections[0]), harness.playerID(0), gameEndResultLose.String())
+	harness.room.mu.Lock()
+	_, loserStillCurrent := harness.room.clients[harness.playerID(0)]
+	ending := harness.room.ending
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	harness.room.mu.Unlock()
+	if loserStillCurrent {
+		t.Fatal("expected intermediate Solo loser to leave the current-client map before transport close completes")
+	}
+	if ending {
+		t.Fatal("expected intermediate Solo loser not to end the room")
+	}
+	if got := gameplayTicker.StopCount(); got != 0 {
+		t.Fatalf("expected intermediate Solo loss to keep gameplay running, got %d ticker stops", got)
+	}
+	select {
+	case <-harness.sessions[0].closeDone:
+		t.Fatal("expected prior Solo loser closeDone to remain open while transport close is blocked")
+	default:
+	}
+
+	harness.store.tickRoomState(harness.room)
+	for index := 1; index < len(harness.sessions); index++ {
+		select {
+		case <-harness.sessions[index].closeDone:
+		case <-time.After(time.Second):
+			t.Fatalf("expected current terminal Solo session %d to close", index)
+		}
+	}
+	select {
+	case <-harness.sessions[0].closeDone:
+		t.Fatal("expected prior Solo loser closeDone to remain open after current terminal sessions close")
+	default:
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected terminal cleanup to wait for the prior eliminated session closeDone")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != harness.room {
+		t.Fatal("expected room registry to remain until the prior eliminated session closes")
+	}
+	harness.store.mu.RLock()
+	for index := range harness.joined {
+		if _, exists := harness.store.playerIDs[harness.playerID(index)]; !exists {
+			harness.store.mu.RUnlock()
+			t.Fatalf("expected player ID %s to remain reserved for the prior-session close barrier", harness.playerID(index))
+		}
+	}
+	harness.store.mu.RUnlock()
+
+	releasePriorClose()
+	select {
+	case <-harness.sessions[0].closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected prior Solo loser closeDone after releasing transport close")
+	}
+	waitForGameEndCleanup(t, harness.room)
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected terminal cleanup after the prior eliminated session closes")
+	}
+	harness.store.mu.RLock()
+	defer harness.store.mu.RUnlock()
+	if got := len(harness.store.playerIDs); got != 0 {
+		t.Fatalf("expected every player ID released after the full terminal close barrier, got %d", got)
+	}
+}
+
 func TestTickRoomTeamPartialDeathKeepsMatchRunning(t *testing.T) {
 	harness := newModeTickHarness(t, simulation.GameModeTeam, nil, nil, 0, 1, 2, 3, 4, 5)
 	harness.setSnapshots(t, harness.snapshot(11, 0))
