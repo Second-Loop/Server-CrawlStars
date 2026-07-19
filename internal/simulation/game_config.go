@@ -199,6 +199,11 @@ func validateGameModeConfig(mode GameModeConfig) error {
 	if mode.Rules.TeamBehavior == "" {
 		return fmt.Errorf("game config mode.rules.teamBehavior must not be empty")
 	}
+	switch mode.Rules.TeamBehavior {
+	case TeamBehaviorFreeForAll, TeamBehaviorTwoTeams:
+	default:
+		return fmt.Errorf("game config mode.rules.teamBehavior %q is not supported", mode.Rules.TeamBehavior)
+	}
 
 	totalTeamSize := 0
 	seenTeams := make(map[Team]bool, len(mode.Teams))

@@ -81,6 +81,8 @@ Input field는 Unity prototype 이름을 따릅니다.
 
 서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Player별 attack budget은 server-only이며 기본 4 charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 사망한 player의 input과 zero 방향 또는 소진된 charge의 공격 요청은 거부합니다.
 
+같은 tick의 input은 `PlayerID` 오름차순으로 stable sort해 적용합니다. AsyncAPI `ProjectileData` 설명은 selected mode rules에 따른 owner/dead 제외, Solo와 `friendlyFire=false` Team/Duel의 hit eligibility, join/배정 순서 target tie-break, death snapshot 이후 SL-89 경계를 함께 기록하며 wire field는 바꾸지 않습니다.
+
 Server message wrapper:
 
 ```json

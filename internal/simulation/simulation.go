@@ -2,6 +2,7 @@ package simulation
 
 import (
 	"math"
+	"sort"
 	"strconv"
 )
 
@@ -142,7 +143,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.rechargeAttackCharges()
 	s.moveProjectiles()
 
-	for _, input := range inputs {
+	for _, input := range orderedInputsByPlayerID(inputs) {
 		s.applyInput(input)
 	}
 
@@ -153,6 +154,17 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 		Players:     clonePlayers(s.players),
 		Projectiles: cloneProjectiles(s.projectiles),
 	}
+}
+
+func orderedInputsByPlayerID(inputs []InputCommand) []InputCommand {
+	if len(inputs) < 2 {
+		return inputs
+	}
+	ordered := append([]InputCommand(nil), inputs...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].PlayerID < ordered[j].PlayerID
+	})
+	return ordered
 }
 
 func StaticMapFixture() MapData {
@@ -324,7 +336,7 @@ func (s *State) moveProjectiles() {
 
 func (s *State) applyProjectileHit(projectile *ProjectileData) {
 	for i := range s.players {
-		if s.players[i].ID == projectile.OwnerID || s.players[i].IsDead {
+		if !s.canProjectileHit(*projectile, s.players[i]) {
 			continue
 		}
 		if !circlesOverlap(projectile.Pos, projectile.Radius, s.players[i].Pos, s.players[i].Radius) {
@@ -339,6 +351,35 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 		projectile.IsDestroyed = true
 		return
 	}
+}
+
+func (s *State) canProjectileHit(projectile ProjectileData, target PlayerData) bool {
+	if target.ID == projectile.OwnerID || target.IsDead {
+		return false
+	}
+
+	rules := s.gameConfig.SelectedMode.Rules
+	switch rules.TeamBehavior {
+	case TeamBehaviorFreeForAll:
+		return true
+	case TeamBehaviorTwoTeams:
+		if rules.FriendlyFire {
+			return true
+		}
+		ownerTeam, ok := s.playerTeam(projectile.OwnerID)
+		return ok && ownerTeam != target.Team
+	default:
+		return false
+	}
+}
+
+func (s *State) playerTeam(playerID PlayerID) (Team, bool) {
+	for i := range s.players {
+		if s.players[i].ID == playerID {
+			return s.players[i].Team, true
+		}
+	}
+	return "", false
 }
 
 func (s *State) newProjectile(owner PlayerData) ProjectileData {

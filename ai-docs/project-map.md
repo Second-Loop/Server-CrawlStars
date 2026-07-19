@@ -19,7 +19,7 @@
 - server-side movement/attack direction 검증과 player Wall/Water/boundary collision
 - player별 4 attack charge, 30 tick recharge
 - projectile 생성·이동, Wall/boundary destroy와 Bush/Water 통과
-- projectile hit, HP 감소, `IsDead` snapshot
+- selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP 감소, `IsDead` snapshot
 - dead player의 같은 tick input 차단
 - `duel_1v1` 2명과 `solo`/`team` 6명의 mode별 matchmaking pool
 - Duel 2 WebSocket, 2 Ready ACK, 1회 countdown/start regression
@@ -41,6 +41,7 @@
 
 아직 안 되는 것:
 
+- death snapshot 이후 Solo/Team elimination과 mode별 GameEnd rule (`SL-89`)
 - bot replacement와 별도 reconnect grace
 - respawn, score
 - production matchmaking queue, rating, account auth, persistence
@@ -72,7 +73,7 @@ internal/simulation
   transport를 모르는 gameplay core
   State.Step(inputs) -> Snapshot
   server runtime game config와 mode/team/spawn assignment model
-  map, input 검증, movement, attack charge, projectile, hit, HP/death rule
+  map, input 검증과 PlayerID 정렬, movement, attack charge, mode별 projectile hit, HP/death rule
 
 api
   openapi.yaml
@@ -156,7 +157,7 @@ WebSocket input:
 }
 ```
 
-한 tick 안에 같은 player가 여러 input을 보내면 마지막 input만 사용합니다. 잘못된 JSON은 `invalid_input` error message를 보내고 snapshot stream은 유지합니다.
+한 tick 안에 같은 player가 여러 input을 보내면 마지막 input만 사용합니다. Room이 pending input map에서 만든 batch는 `State.Step`이 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 잘못된 JSON은 `invalid_input` error message를 보내고 snapshot stream은 유지합니다.
 
 ### 6. Tick 처리
 
@@ -164,7 +165,7 @@ Started room의 tick 흐름:
 
 1. pending input을 복사합니다.
 2. pending input map을 비웁니다.
-3. `room.state.Step(inputs)`를 호출합니다.
+3. `room.state.Step(inputs)`를 호출하고 State가 input을 `PlayerID` 오름차순으로 stable sort해 적용합니다.
 4. `{"Type":"snapshot","Snapshot":...}` 형태로 감쌉니다.
 5. Snapshot을 tick당 한 번 marshal하고 client별 latest-only slot에 넣습니다. 각 client writer는 매 payload에 새 5초 context를 사용하므로 느린 client가 tick을 막지 않습니다.
 6. HP가 0이 된 player가 있으면 같은 tick의 snapshot 뒤에 player별 `GameEnd` event를 보냅니다.
@@ -177,14 +178,16 @@ Started room의 tick 흐름:
 
 1. `PressedAttack` transient state 초기화와 attack charge recharge 진행
 2. 기존 projectile 이동
-3. projectile의 Wall/boundary 충돌 destroy와 hit 처리
-4. live player의 유한한 input만 적용하고 `MoveDir` clamp, `AttackDir` 정규화
+3. projectile의 Wall/boundary 충돌 destroy와 selected mode별 hit 처리
+4. input을 `PlayerID` 오름차순으로 stable sort하고 live player의 유한한 값만 적용해 `MoveDir` clamp, `AttackDir` 정규화
 5. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
 6. 공격 요청, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
 7. tick 증가
 8. snapshot clone 반환
 
 새 projectile은 생성된 tick에는 owner 위치에 보이고 다음 tick부터 이동합니다.
+
+Projectile hit은 owner와 이미 사망한 player를 제외합니다. Solo는 나머지 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 여러 eligible target이 겹치면 join/배정 순서의 첫 target만 피해를 받습니다. 이 target tie-break는 input의 `PlayerID` 정렬과 별개입니다.
 
 ### 7. Snapshot 필드 의미
 
@@ -223,7 +226,7 @@ Room store는 in-memory입니다.
 
 Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보내며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
 
-GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Solo/team도 현재 player-survival fallback을 사용하며 마지막 공격자 기준 타이브레이커와 mode별 elimination은 후속 issue에서 다룹니다.
+GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. SL-88은 기존 player-survival fallback을 보존하므로 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Death snapshot 이후 Solo/Team elimination과 mode별 GameEnd는 SL-89에서 다룹니다.
 
 ## Linear 흐름
 
@@ -259,6 +262,8 @@ GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. 일부 playe
 - `SL-81` Stack 5: JSON lifecycle log, private Prometheus metrics, coordinated graceful shutdown, HTTP timeout
 - `SL-81` Stack 6: latest 1회 tag 고정, 안전한 asset 이름, checksum 선검증, 배포 회귀 테스트
 - `SL-86`: duel/solo/team mode catalog, same-mode waiting pool, room-local selected config, REST `gameMode`
+- `SL-87`: mode별 2/6-player Ready quorum, 6 human ACK, single countdown/start, safe spawn
+- `SL-88`: room-local mode rules 기반 projectile eligibility와 결정적 target/input 순서
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 

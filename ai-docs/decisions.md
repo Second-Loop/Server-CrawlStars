@@ -506,3 +506,26 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Ready assignment와 첫 gameplay snapshot은 같은 room-local config와 spawn 결과를 사용합니다.
 - Config fallback에서도 여섯 player가 Wall/Water가 아닌 unique spawn으로 시작하고 Bush는 passable candidate로 유지됩니다.
 - 기존 duel 2-player Ready/countdown/start wire behavior는 유지됩니다.
+
+## ADR-0030: SL-88 Projectile Hit은 Mode Rules와 기존 순서를 따른다
+
+상태: 승인됨
+
+맥락: SL-86은 각 room이 selected mode config를 immutable하게 소유하도록 했지만 `friendlyFire`와 `teamBehavior`는 아직 projectile 판정에 쓰지 않았습니다. SL-88은 Solo와 Team/Duel의 hit eligibility를 실제 gameplay에 연결하면서, 같은 tick의 input map 순회와 여러 target 동시 overlap이 결과를 흔들지 않도록 결정성 기준도 고정해야 합니다. 다만 가장 가까운 target 같은 새 우선순위를 도입하면 기존 join/assignment 기반 동작이 바뀌고 SL-89의 elimination/GameEnd 범위까지 불필요하게 넓어질 수 있습니다.
+
+결정:
+
+- 사용자가 선택 `1-A`를 승인했습니다. Room이 시작할 때 고정한 selected mode rules로 projectile eligibility를 판단하고 기존 순서를 보존합니다.
+- 모든 mode에서 owner와 이미 사망한 player는 hit 대상에서 제외합니다.
+- Solo의 `free_for_all`은 owner가 아닌 모든 live player를 적으로 봅니다. 현재 `friendlyFire=false`인 Team/Duel의 `two_teams`는 ally를 통과하고 enemy만 hit합니다.
+- 한 projectile이 같은 tick에 여러 eligible target과 겹치면 `State.players`의 join/배정 순서에서 첫 target만 피해를 받고 projectile을 destroy합니다. 거리나 `PlayerID` 기반의 새 target 우선순위는 만들지 않습니다.
+- `State.Step`은 caller input slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이 input 순서는 projectile target의 join/배정 순서와 별개입니다.
+- 기존 순서를 보존하는 이유는 이미 Ready assignment와 snapshot에 쓰는 authoritative order를 재사용해 duel 동작을 유지하고, SL-88에서 새 target-selection 정책을 발명하지 않기 위해서입니다.
+- Death snapshot 이후 Solo/Team elimination과 mode별 GameEnd는 SL-89 범위로 남기고 기존 player-survival fallback을 바꾸지 않습니다.
+
+결과:
+
+- Solo projectile은 owner를 제외한 live player를 공격하고, Team/Duel projectile은 ally 뒤의 enemy까지 도달할 수 있습니다.
+- Room의 pending input map 순회 순서가 달라도 같은 input batch는 같은 `PlayerID` 적용 순서를 가집니다.
+- Multi-contact target tie-break는 기존 join/assignment order를 유지하므로 기존 duel hit behavior와 wire schema가 바뀌지 않습니다.
+- Projectile로 만든 death snapshot 이후의 match 종료 결과는 SL-89 전까지 기존 GameEnd fallback을 사용합니다.

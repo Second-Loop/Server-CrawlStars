@@ -2,6 +2,7 @@ package simulation
 
 import (
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1173,6 +1174,217 @@ func TestStepProjectileHitMarksTargetDeadWhenHPReachesZero(t *testing.T) {
 	assertPlayerHP(t, snapshot, PlayerID("blue-1"), 0, true)
 	if !snapshot.Projectiles[0].IsDestroyed {
 		t.Fatal("expected lethal projectile to be destroyed after hit")
+	}
+}
+
+func TestStepProjectileCollisionMatrix(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	overlap := Vector2{
+		X: start.X + DefaultProjectileSpeed*TickDuration,
+		Y: start.Y,
+	}
+	type expectedPlayer struct {
+		id     PlayerID
+		hp     float64
+		isDead bool
+	}
+	tests := []struct {
+		name      string
+		mode      string
+		players   []PlayerData
+		expected  []expectedPlayer
+		destroyed bool
+	}{
+		{
+			name: "solo owner",
+			mode: GameModeSolo,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: Team("solo-1"), Pos: start},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("owner"), hp: DefaultPlayerHP}},
+			destroyed: false,
+		},
+		{
+			name: "solo dead player",
+			mode: GameModeSolo,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: Team("solo-1"), Pos: start},
+				{ID: PlayerID("target"), Team: Team("solo-2"), Pos: overlap, HP: 60, IsDead: true},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("target"), hp: 60, isDead: true}},
+			destroyed: false,
+		},
+		{
+			name: "solo same team label live non-owner",
+			mode: GameModeSolo,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: Team("shared"), Pos: start},
+				{ID: PlayerID("target"), Team: Team("shared"), Pos: overlap},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("target"), hp: DefaultPlayerHP - DefaultProjectileDamage}},
+			destroyed: true,
+		},
+		{
+			name: "team ally only",
+			mode: GameModeTeam,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+				{ID: PlayerID("ally"), Team: TeamRed, Pos: overlap},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("ally"), hp: DefaultPlayerHP}},
+			destroyed: false,
+		},
+		{
+			name: "team dead enemy",
+			mode: GameModeTeam,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+				{ID: PlayerID("enemy"), Team: TeamBlue, Pos: overlap, HP: 60, IsDead: true},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("enemy"), hp: 60, isDead: true}},
+			destroyed: false,
+		},
+		{
+			name: "team enemy",
+			mode: GameModeTeam,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+				{ID: PlayerID("enemy"), Team: TeamBlue, Pos: overlap},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("enemy"), hp: DefaultPlayerHP - DefaultProjectileDamage}},
+			destroyed: true,
+		},
+		{
+			name: "duel owner",
+			mode: GameModeDuel1v1,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("owner"), hp: DefaultPlayerHP}},
+			destroyed: false,
+		},
+		{
+			name: "duel dead opponent",
+			mode: GameModeDuel1v1,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+				{ID: PlayerID("opponent"), Team: TeamBlue, Pos: overlap, HP: 60, IsDead: true},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("opponent"), hp: 60, isDead: true}},
+			destroyed: false,
+		},
+		{
+			name: "duel live opponent",
+			mode: GameModeDuel1v1,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: TeamRed, Pos: start},
+				{ID: PlayerID("opponent"), Team: TeamBlue, Pos: overlap},
+			},
+			expected:  []expectedPlayer{{id: PlayerID("opponent"), hp: DefaultPlayerHP - DefaultProjectileDamage}},
+			destroyed: true,
+		},
+		{
+			name: "first eligible overlap preserves player order",
+			mode: GameModeSolo,
+			players: []PlayerData{
+				{ID: PlayerID("owner"), Team: Team("solo-1"), Pos: start},
+				{ID: PlayerID("target-z"), Team: Team("solo-2"), Pos: overlap},
+				{ID: PlayerID("target-a"), Team: Team("solo-3"), Pos: overlap},
+			},
+			expected: []expectedPlayer{
+				{id: PlayerID("target-z"), hp: DefaultPlayerHP - DefaultProjectileDamage},
+				{id: PlayerID("target-a"), hp: DefaultPlayerHP},
+			},
+			destroyed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gameConfig, err := StaticGameConfig().SelectMode(tt.mode)
+			if err != nil {
+				t.Fatalf("select mode %q: %v", tt.mode, err)
+			}
+			state := NewStateWithConfig(tt.players, Config{Map: StaticMapFixture(), Game: gameConfig})
+
+			state.Step([]InputCommand{attackInput(PlayerID("owner"))})
+			snapshot := state.Step(nil)
+
+			for _, player := range tt.expected {
+				assertPlayerHP(t, snapshot, player.id, player.hp, player.isDead)
+			}
+			if len(snapshot.Projectiles) != 1 {
+				t.Fatalf("expected one projectile, got %d", len(snapshot.Projectiles))
+			}
+			if snapshot.Projectiles[0].IsDestroyed != tt.destroyed {
+				t.Fatalf("expected projectile destroyed=%t, got %+v", tt.destroyed, snapshot.Projectiles[0])
+			}
+		})
+	}
+}
+
+func TestStepNormalizesInputOrderThroughCollision(t *testing.T) {
+	step := DefaultProjectileSpeed * TickDuration
+	playerAStart := StaticMapFixture().WorldPos(1, 1)
+	playerBStart := Vector2{X: playerAStart.X + step, Y: playerAStart.Y}
+	players := []PlayerData{
+		{ID: PlayerID("player-a"), Team: TeamRed, Pos: playerAStart},
+		{ID: PlayerID("player-b"), Team: TeamBlue, Pos: playerBStart},
+	}
+	inputs := []InputCommand{
+		{PlayerID: PlayerID("player-b"), AttackDir: Vector2{X: -1}, PressedAttack: true},
+		{PlayerID: PlayerID("player-a"), AttackDir: Vector2{X: 1}, PressedAttack: true},
+	}
+	reversedInputs := []InputCommand{inputs[1], inputs[0]}
+	wantInputs := append([]InputCommand(nil), inputs...)
+	wantReversedInputs := append([]InputCommand(nil), reversedInputs...)
+
+	state := NewStateWithConfig(players, Config{Map: StaticMapFixture()})
+	reversedState := NewStateWithConfig(players, Config{Map: StaticMapFixture()})
+	created := state.Step(inputs)
+	reversedCreated := reversedState.Step(reversedInputs)
+	collided := state.Step(nil)
+	reversedCollided := reversedState.Step(nil)
+
+	if !reflect.DeepEqual(inputs, wantInputs) {
+		t.Errorf("Step mutated caller inputs:\n got: %+v\nwant: %+v", inputs, wantInputs)
+	}
+	if !reflect.DeepEqual(reversedInputs, wantReversedInputs) {
+		t.Errorf("Step mutated reversed caller inputs:\n got: %+v\nwant: %+v", reversedInputs, wantReversedInputs)
+	}
+	if !reflect.DeepEqual(created, reversedCreated) {
+		t.Errorf("creation snapshots differ by input order:\n first: %+v\nsecond: %+v", created, reversedCreated)
+	}
+	if !reflect.DeepEqual(collided, reversedCollided) {
+		t.Errorf("collision snapshots differ by input order:\n first: %+v\nsecond: %+v", collided, reversedCollided)
+	}
+
+	wantProjectileIDs := []ProjectileID{
+		ProjectileID("projectile-1-player-a-1"),
+		ProjectileID("projectile-1-player-b-2"),
+	}
+	for _, result := range []struct {
+		label    string
+		snapshot Snapshot
+	}{
+		{label: "first", snapshot: collided},
+		{label: "second", snapshot: reversedCollided},
+	} {
+		label := result.label
+		snapshot := result.snapshot
+		assertPlayerHP(t, snapshot, PlayerID("player-a"), DefaultPlayerHP-DefaultProjectileDamage, false)
+		assertPlayerHP(t, snapshot, PlayerID("player-b"), DefaultPlayerHP-DefaultProjectileDamage, false)
+		if len(snapshot.Projectiles) != len(wantProjectileIDs) {
+			t.Fatalf("%s collision snapshot: expected %d projectiles, got %d", label, len(wantProjectileIDs), len(snapshot.Projectiles))
+		}
+		for i, wantID := range wantProjectileIDs {
+			if snapshot.Projectiles[i].ID != wantID {
+				t.Errorf("%s collision snapshot: expected projectile %d ID %q, got %q", label, i, wantID, snapshot.Projectiles[i].ID)
+			}
+			if !snapshot.Projectiles[i].IsDestroyed {
+				t.Errorf("%s collision snapshot: expected projectile %q to be destroyed", label, snapshot.Projectiles[i].ID)
+			}
+		}
 	}
 }
 

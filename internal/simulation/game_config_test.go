@@ -426,6 +426,19 @@ func TestResolveGameConfigRejectsInvalidModeCatalog(t *testing.T) {
 	}
 }
 
+func TestValidateGameConfigRejectsUnsupportedTeamBehavior(t *testing.T) {
+	config := StaticGameConfig()
+	config.ModeCatalog.Catalog[0].Rules.TeamBehavior = "unsupported"
+
+	_, err := ResolveGameConfig(config)
+	if err == nil {
+		t.Fatal("expected unsupported team behavior to be rejected")
+	}
+	if !strings.Contains(err.Error(), `teamBehavior "unsupported" is not supported`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGameConfigAssignsDefaultOneVsOneMatchTeams(t *testing.T) {
 	config := StaticGameConfig()
 

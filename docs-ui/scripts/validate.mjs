@@ -220,6 +220,17 @@ for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
 assertSchemaContains(asyncAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
+const projectileDataSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
+const projectileDataDescription = extractYAMLNamedBlock(projectileDataSchema, "      description: |");
+for (const marker of [
+  "Solo",
+  "Team",
+  "friendlyFire=false",
+  "join/배정 순서",
+  "PlayerID 오름차순 input",
+]) {
+  assert(projectileDataDescription.includes(marker), `ProjectileData description must include ${marker}`);
+}
 for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   assertSchemaContains(asyncAPIText, schemaName, [
     "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
