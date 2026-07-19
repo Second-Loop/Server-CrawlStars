@@ -441,7 +441,7 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 		s.releasePlayerID(credentials.id)
 		return playerSessionResponse{}, ErrRoomNotFound
 	}
-	if len(room.Players) >= s.debugRoomCapacity() {
+	if room.matchStatus != "" || len(room.Players) >= s.debugRoomCapacity() {
 		room.mu.Unlock()
 		s.releasePlayerID(credentials.id)
 		return playerSessionResponse{}, ErrRoomFull

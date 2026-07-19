@@ -126,6 +126,8 @@ Retry-After: 6
 
 `Retry-After`는 필요한 대기 시간을 올림한 최소 1초의 delta-seconds 정수입니다.
 
+같은 IP에서 Solo/Team 6-client smoke를 한꺼번에 실행하면 기본 burst 4 때문에 첫 네 요청 뒤 429가 날 수 있습니다. 실제 client는 `Retry-After` 뒤 재시도해야 하며, 격리된 local smoke에서만 필요하면 `MATCHMAKING_JOIN_BURST=6`을 명시합니다.
+
 Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY_CIDRS`에 속하고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 신뢰합니다. Header가 없거나 malformed/multiple이면 요청을 거부하지 않고 peer IP bucket으로 fallback합니다. `X-Forwarded-For`는 항상 무시합니다. Cloudflare Tunnel loopback peer를 trust하지 않으면 public client가 하나의 loopback bucket을 공유할 수 있으므로 배포 설정은 `ai-docs/deployment.md`를 따릅니다.
 
 시뮬레이션 시작 quorum:
@@ -197,9 +199,11 @@ Room response:
 
 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 현재 기본 map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid이며 exact-grid Go regression으로 drift를 막습니다. 이 문서의 예시는 간결함을 위해 5x5 fallback map 기준입니다. config 로드나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 남아 있습니다.
 
+Map config는 `map.maxPlayers`명 모두에게 서로 다른 spawn을 줄 수 있어야 합니다. 명시적 SpawnPoint와 Wall/Water를 제외한 fallback 좌표의 합집합이 `map.maxPlayers`보다 작으면 config를 거부합니다.
+
 `latestSnapshot`은 마지막으로 생성된 snapshot의 요약입니다. 아직 room이 started 전이거나 첫 tick 전이면 `tick: 0`입니다.
 
-`POST /rooms/{roomID}/players`의 인증된 debug 응답도 matchmaking과 같은 player session을 발급합니다.
+`POST /rooms/{roomID}/players`의 인증된 debug 응답도 matchmaking과 같은 player session을 발급합니다. 다만 matchmaking room이 selected mode 정원을 채워 matched/loading/starting/started lifecycle로 잠긴 뒤에는 map 정원이 남아 있어도 409 `room_full`을 반환합니다.
 
 ```json
 {

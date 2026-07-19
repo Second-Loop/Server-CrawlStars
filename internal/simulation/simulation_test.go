@@ -156,6 +156,50 @@ func TestLoadMapDataRejectsInvalidTileGrid(t *testing.T) {
 	}
 }
 
+func TestLoadMapDataRejectsMaxPlayersAboveUniqueSpawnCapacity(t *testing.T) {
+	_, err := LoadMapData(strings.NewReader(`{
+		"width": 4,
+		"height": 4,
+		"index": 0,
+		"maxPlayers": 2,
+		"tileSize": 1.2,
+		"map": [
+			[1, 1, 1, 1],
+			[1, 2, 1, 1],
+			[1, 4, 1, 1],
+			[1, 1, 1, 1]
+		]
+	}`))
+	if err == nil {
+		t.Fatal("expected insufficient unique spawn capacity to be rejected")
+	}
+	if got, want := err.Error(), "map maxPlayers 2 exceeds unique spawn capacity 1"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestLoadMapDataAcceptsMaxPlayersAtUniqueSpawnCapacity(t *testing.T) {
+	gameMap, err := LoadMapData(strings.NewReader(`{
+		"width": 4,
+		"height": 4,
+		"index": 0,
+		"maxPlayers": 2,
+		"tileSize": 1.2,
+		"map": [
+			[1, 1, 1, 1],
+			[1, 2, 0, 1],
+			[1, 4, 1, 1],
+			[1, 1, 1, 1]
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("load map at exact spawn capacity: %v", err)
+	}
+	if gameMap.MaxPlayers != 2 {
+		t.Fatalf("expected maxPlayers 2, got %d", gameMap.MaxPlayers)
+	}
+}
+
 func TestLoadDefaultMapFixtureUsesCommittedFixturePath(t *testing.T) {
 	gameMap, err := LoadDefaultMapFixture()
 	if err != nil {
@@ -372,10 +416,10 @@ func TestStepKeepsPlayerInsideMapBoundary(t *testing.T) {
 	gameMap := MapData{
 		Width: 4, Height: 4, MaxPlayers: 6, TileSize: TileSize,
 		Map: [][]TileType{
+			{TileSpawnPoint, TileGround, TileGround, TileGround},
 			{TileGround, TileGround, TileGround, TileGround},
 			{TileGround, TileGround, TileGround, TileGround},
-			{TileGround, TileGround, TileGround, TileGround},
-			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileSpawnPoint},
 		},
 	}
 	step := DefaultPlayerSpeed * TickDuration

@@ -171,7 +171,7 @@ Started room의 tick 흐름:
 7. GameEnd 이후 room-local ticker와 WebSocket connection을 정리합니다.
 8. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
 
-기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. SpawnPoint가 부족하면 player blocking policy를 재사용해 Wall/Water를 제외한 fallback candidate를 쓰며 Ground/Bush는 유지합니다. 사용 가능한 candidate가 남아 있는 동안 spawn은 겹치지 않습니다.
+기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. SpawnPoint가 부족하면 player blocking policy를 재사용해 Wall/Water를 제외한 fallback candidate를 쓰며 Ground/Bush는 유지합니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이어야 하므로 정상 room의 spawn은 겹치지 않습니다.
 
 `internal/simulation.State.Step` 순서:
 

@@ -62,5 +62,9 @@ func validateMapData(gameMap MapData) error {
 			}
 		}
 	}
+	spawnCapacity := uniqueSpawnCapacity(gameMap)
+	if gameMap.MaxPlayers > spawnCapacity {
+		return fmt.Errorf("map maxPlayers %d exceeds unique spawn capacity %d", gameMap.MaxPlayers, spawnCapacity)
+	}
 	return nil
 }

@@ -63,7 +63,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - tile 값은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`
 - Player는 Wall/Water/boundary, projectile은 Wall/boundary에 충돌
 - `StaticMapFixture().MaxPlayers = 6`
-- Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용합니다. SpawnPoint가 부족하면 map에서 유도한 fallback candidate를 사용하되 player blocking policy와 같은 기준으로 Wall과 Water를 제외합니다. Ground와 Bush는 후보가 될 수 있고, 사용 가능한 candidate가 남아 있는 동안 이미 쓴 spawn과 겹치지 않습니다.
+- Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용합니다. SpawnPoint가 부족하면 map에서 유도한 fallback candidate를 사용하되 player blocking policy와 같은 기준으로 Wall과 Water를 제외합니다. Ground와 Bush는 후보가 될 수 있습니다. Config 검증은 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상인지 확인하므로, 정상 room의 spawn은 서로 겹치지 않습니다.
 - server mode catalog는 `duel_1v1`, `solo`, `team`이고 body가 선택을 생략하면 default `duel_1v1`입니다.
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.

@@ -64,6 +64,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 - Debug를 명시적으로 켤 때만 `DEBUG_API_TOKEN`을 강한 random secret으로 설정합니다. 빠졌거나 공백이면 server가 시작하지 않습니다.
 - Debug enabled 상태에서 missing/wrong/multiple `Authorization`은 route dispatch 전에 `401 unauthorized`입니다. 올바른 Bearer 뒤에만 route별 2xx/404/405/409/500을 평가합니다. WebSocket GET은 debug Bearer 대신 player session query token을 씁니다.
 - Join limiter 기본값은 10 requests/minute, burst 4입니다. Override 중 하나만 쓰면 다른 값은 default를 사용합니다. Non-positive, non-finite rate나 유효하지 않은 burst는 startup error입니다.
+- 같은 IP에서 Solo/Team 6-client smoke를 동시에 실행하면 첫 네 join 뒤 429가 날 수 있습니다. Client는 `Retry-After` 뒤 재시도해야 하며, 격리된 local smoke에서 즉시 여섯 join이 꼭 필요할 때만 `MATCHMAKING_JOIN_BURST=6`을 명시합니다. Production 기본값 변경은 join-spam 방어를 약화하므로 별도 보안 결정을 거칩니다.
 - `TRUSTED_PROXY_CIDRS`는 comma-separated CIDR입니다. Empty element, bare IP, invalid CIDR은 startup error입니다.
 - Systemd unit의 `METRICS_ADDR`를 바꿀 때도 loopback IP literal과 숫자 port만 사용할 수 있습니다. `127.0.0.1:9090`, `[::1]:9090`은 가능하지만 hostname, wildcard, private/Tailscale IP는 startup error입니다.
 

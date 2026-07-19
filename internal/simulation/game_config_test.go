@@ -284,6 +284,31 @@ func TestResolveGameConfigRejectsUnknownSelectedMode(t *testing.T) {
 	}
 }
 
+func TestResolveGameConfigWrapsUniqueSpawnCapacityError(t *testing.T) {
+	config := StaticGameConfig()
+	config.Map = MapData{
+		Width:      4,
+		Height:     4,
+		Index:      0,
+		MaxPlayers: 6,
+		TileSize:   TileSize,
+		Map: [][]TileType{
+			{TileWall, TileWall, TileWall, TileWall},
+			{TileWall, TileSpawnPoint, TileWall, TileWall},
+			{TileWall, TileWater, TileWall, TileWall},
+			{TileWall, TileWall, TileWall, TileWall},
+		},
+	}
+
+	_, err := ResolveGameConfig(config)
+	if err == nil {
+		t.Fatal("expected insufficient unique spawn capacity to be rejected")
+	}
+	if got, want := err.Error(), "resolve game config map: map maxPlayers 6 exceeds unique spawn capacity 1"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestServerGameConfigArtifactIncludesRuntimeMap(t *testing.T) {
 	config := loadServerGameConfig(t)
 	gameMap, err := ResolveMapData(config.Map)

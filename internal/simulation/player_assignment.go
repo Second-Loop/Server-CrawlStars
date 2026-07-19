@@ -64,6 +64,21 @@ func mapSpawnPoints(gameMap MapData) []Vector2 {
 	return spawns
 }
 
+func uniqueSpawnCapacity(gameMap MapData) int {
+	positions := make(map[spawnTile]struct{})
+	for y, row := range gameMap.Map {
+		for x, tile := range row {
+			if tile == TileSpawnPoint {
+				positions[spawnTile{X: x, Y: y}] = struct{}{}
+			}
+		}
+	}
+	for _, tile := range fallbackSpawnTiles(gameMap) {
+		positions[tile] = struct{}{}
+	}
+	return len(positions)
+}
+
 func spawnPositionForIndex(gameMap MapData, spawns []Vector2, index int) Vector2 {
 	if index >= 0 && index < len(spawns) {
 		return spawns[index]

@@ -98,6 +98,13 @@ for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"])
   assert(operation.includes("internal_error"), `${operationID} must name internal_error`);
 }
 
+const createRoomPlayerOperation = extractOpenAPIOperation(openAPIText, "createRoomPlayer");
+assert(
+  createRoomPlayerOperation.includes("matchmaking lifecycle이 이미 잠겼습니다"),
+  "createRoomPlayer must document that matched rooms reject debug players",
+);
+assert(createRoomPlayerOperation.includes("room_full"), "createRoomPlayer 409 must name room_full");
+
 const matchmakingJoinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
 assert(
   matchmakingJoinOperation.includes("1024 bytes"),

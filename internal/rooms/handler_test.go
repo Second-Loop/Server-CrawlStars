@@ -2111,6 +2111,32 @@ func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsDebugPlayerJoinAfterMatchmakingRoomLocks(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	handler := debugHandler(t, store)
+
+	first := joinMatchmaking(t, handler)
+	second := joinMatchmaking(t, handler)
+	if second.Room.ID != first.Room.ID {
+		t.Fatalf("expected first pair to share room, got %q and %q", first.Room.ID, second.Room.ID)
+	}
+
+	rec := request(handler, http.MethodPost, "/rooms/"+first.Room.ID+"/players")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected matched room to reject debug player with status 409, got %d", rec.Code)
+	}
+	assertError(t, rec, "room_full")
+
+	matched, ok := store.getRoomResponse(first.Room.ID)
+	if !ok {
+		t.Fatalf("expected matched room %q to remain registered", first.Room.ID)
+	}
+	if len(matched.Players) != 2 || matched.LatestSnapshot.PlayerCount != 2 {
+		t.Fatalf("expected matched room to keep its two-player quorum, got %+v", matched)
+	}
+}
+
 func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 	mode := simulation.GameModeConfig{
 		ID:              "test_quartet",
