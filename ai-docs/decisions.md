@@ -601,8 +601,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - 첫 human matchmaking join의 `0 -> 1` 전이에서만 room이 one-shot 10초 ticker와 stop channel을 소유합니다. 후속 join과 partial manual bot 추가는 deadline을 reset하지 않습니다.
 - Timer worker와 human join은 `mutationMu -> matchmakingMu -> Store.mu -> room.mu` lock 순서를 지키며, `matchmakingMu`를 먼저 얻은 transition이 이깁니다. Timer-first late join은 다른/new waiting room으로 가고 cap이면 기존 `room_cap_reached` 409를 유지합니다.
-- Worker는 registry pointer와 ticker identity를 확인한 뒤 selected mode의 남은 slot을 한 번에 채웁니다. Bot ID 발급 실패는 모든 예약을 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
-- Timer resource는 room lock 아래에서 detach만 합니다. ticker stop, stop channel close, worker join은 모든 core lock을 푼 뒤 실행합니다. Delete, clear, TTL cleanup, debug start, matched pre-start cancel, Shutdown도 같은 cleanup 경로를 사용합니다.
+- Worker는 registry pointer와 ticker identity를 확인한 뒤 selected mode의 남은 slot을 한 번에 채웁니다. Bot ID 발급 실패는 모든 예약을 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed` structured log event를 한 번 기록하고 retry하지 않습니다.
+- 일반 delete, clear, TTL cleanup, debug start, matched pre-start cancel은 room lock 아래에서 timer resource를 detach만 합니다. 모든 core lock을 푼 뒤 ticker `Stop`과 stop channel close를 수행하고, 일반 cleanup은 worker join을 기다리지 않습니다. `workerWG.Wait`는 Shutdown에서만 추가로 수행합니다.
 - Bot-filled Ready payload는 full participant list를 유지하지만 attach와 Ready ACK quorum은 human session만 셉니다. Unmatched disconnect는 deadline/credential을 유지하고 matched/loading/starting disconnect는 기존 pre-start cancel을 유지합니다.
 - ClientTick/ACK 확장은 이 ADR에 포함하지 않고 SL-94 범위로 둡니다. 전역 scheduler, bot replacement, reconnect grace도 추가하지 않습니다.
 

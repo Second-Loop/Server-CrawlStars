@@ -190,7 +190,7 @@ Match ready ACK:
 | `solo` | 6 | Room 내 human participant 전원 |
 | `team` | 6 | Room 내 human participant 전원 |
 
-Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. Bot ID 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Timer resource stop과 worker join은 lock 밖에서 수행합니다. ClientTick/ACK 확장은 SL-94 범위라 이 계약에는 추가하지 않습니다.
+Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. Bot ID 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed` structured log event를 한 번 기록하며 retry하지 않습니다. 일반 delete/clear/cancel은 room lock 아래에서 timer resource를 detach한 뒤 모든 core lock 밖에서 ticker `Stop`과 stop channel close를 수행합니다. 일반 cleanup은 worker join을 기다리지 않고, `workerWG.Wait`는 Shutdown만 추가로 수행합니다. ClientTick/ACK 확장은 SL-94 범위라 이 계약에는 추가하지 않습니다.
 
 Solo는 `solo-1`부터 `solo-6`까지 각 slot 0을 사용합니다. Team은 join 순서대로 `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2`를 사용합니다. Ready spawn과 첫 gameplay snapshot position은 같은 room-local `PlayerAssignments` 결과입니다. Fallback map에서는 player collision과 같은 기준으로 Wall과 Water를 spawn candidate에서 제외하고 Ground와 Bush를 허용합니다.
 

@@ -100,30 +100,60 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertBodyContains(t, docsUI, `"IsBot": true`)
 }
 
-func TestHandlerServesBotFillReadyContract(t *testing.T) {
-	asyncAPI := request(Handler(), http.MethodGet, "/asyncapi.yaml")
-	assertStatus(t, asyncAPI, http.StatusOK)
+func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
+	handler := Handler()
 
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	assertStatus(t, openAPI, http.StatusOK)
+	joinOperation := extractYAMLBlock(t, openAPI.Body.String(), "  /matchmaking/join:", "\n  /")
 	for _, want := range []string{
-		"version: 0.4.0",
-		"duel_1v1은 2명, solo와 team은 6명의 participant capacity",
-		"Ready payload는 full participant list를 포함",
-		"연결된 human WebSocket session만 attach quorum",
 		"첫 human matchmaking join부터 10초",
 		"남은 participant slot을 bot으로 충원",
-		"active-room cap이면 room_cap_reached",
+		"late join은 다른 waiting room을 찾거나 만들며",
+		"room_cap_reached",
+	} {
+		assertStringContains(t, joinOperation, want)
+	}
+
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	asyncAPIText := asyncAPI.Body.String()
+	asyncAPIInfo := extractYAMLBlock(t, asyncAPIText, "info:", "\nx-stability:")
+	for _, want := range []string{"room_cap_reached", "bot_fill_failed"} {
+		if strings.Contains(asyncAPIInfo, want) {
+			t.Fatalf("AsyncAPI info must not describe REST or structured-log marker %q", want)
+		}
+	}
+
+	readyOperation := extractYAMLBlock(t, asyncAPIText, "  receiveReady:", "\n  sendReadyAck:")
+	for _, want := range []string{
+		"full participant list",
 		"human session만 Ready ACK",
-		"Wall과 Water",
-		"Ground와 Bush",
+	} {
+		assertStringContains(t, readyOperation, want)
+	}
+	readyAckOperation := extractYAMLBlock(t, asyncAPIText, "  sendReadyAck:", "\n  receiveSnapshot:")
+	assertStringContains(t, readyAckOperation, "Bot은 ACK를 보내지 않습니다")
+
+	lifecycleDescription := extractYAMLBlock(t, asyncAPIText, "  roomPlayer:", "\noperations:")
+	for _, want := range []string{
+		"Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+		"matched/loading/starting disconnect는 pre-start cancel",
+	} {
+		assertStringContains(t, lifecycleDescription, want)
+	}
+
+	readyMessage := extractYAMLBlock(t, asyncAPIText, "    ReadyEventMessage:\n      type: object", "\n    ReadyAckMessage:")
+	for _, want := range []string{
 		"        Players:\n          oneOf:",
 		"            - type: array\n              minItems: 2\n              maxItems: 2\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
 		"            - type: array\n              minItems: 6\n              maxItems: 6\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
 	} {
-		assertBodyContains(t, asyncAPI, want)
+		assertStringContains(t, readyMessage, want)
 	}
 
 	teamEnum := "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]"
-	if got := strings.Count(asyncAPI.Body.String(), teamEnum); got != 2 {
+	if got := strings.Count(asyncAPIText, teamEnum); got != 2 {
 		t.Fatalf("expected served AsyncAPI to expose mode team enum twice, got %d", got)
 	}
 }
@@ -176,7 +206,28 @@ func assertContentType(t *testing.T, rec *httptest.ResponseRecorder, wantPrefix 
 func assertBodyContains(t *testing.T, rec *httptest.ResponseRecorder, want string) {
 	t.Helper()
 
-	if !strings.Contains(rec.Body.String(), want) {
-		t.Fatalf("expected body to contain %q, got %s", want, rec.Body.String())
+	assertStringContains(t, rec.Body.String(), want)
+}
+
+func assertStringContains(t *testing.T, body string, want string) {
+	t.Helper()
+
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected body to contain %q, got %s", want, body)
 	}
+}
+
+func extractYAMLBlock(t *testing.T, body, start, end string) string {
+	t.Helper()
+
+	startIndex := strings.Index(body, start)
+	if startIndex < 0 {
+		t.Fatalf("expected YAML block start %q", start)
+	}
+	block := body[startIndex:]
+	endIndex := strings.Index(block, end)
+	if endIndex < 0 {
+		t.Fatalf("expected YAML block end %q after %q", end, start)
+	}
+	return block[:endIndex]
 }
