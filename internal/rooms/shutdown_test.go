@@ -1537,3 +1537,58 @@ func TestStoreShutdownStopsBotFillBeforeDelay(t *testing.T) {
 		t.Fatalf("stop count=%d want 1", got)
 	}
 }
+
+func TestBotFillShutdownJoinsWorkerWaitingForMatchmakingLock(t *testing.T) {
+	clock := newCountingStopClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	room := store.lookupRoom(joined.Room.ID)
+	room.mu.Lock()
+	fillTicker := room.botFillTicker.(*countingStopTicker)
+	room.mu.Unlock()
+
+	store.matchmakingMu.Lock()
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	workerEntered := false
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if store.mutationMu.TryLock() {
+			store.mutationMu.Unlock()
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		workerEntered = true
+		break
+	}
+	if !workerEntered {
+		store.matchmakingMu.Unlock()
+		t.Fatal("bot-fill worker did not enter mutation before matchmaking lock")
+	}
+
+	shutdownResult := startStoreShutdown(store, context.Background())
+	select {
+	case err := <-shutdownResult:
+		store.matchmakingMu.Unlock()
+		t.Fatalf("Shutdown returned before matchmaking winner completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	store.matchmakingMu.Unlock()
+	if err := waitStoreShutdown(t, shutdownResult); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	joinedWorkers := make(chan struct{})
+	go func() {
+		store.workerWG.Wait()
+		close(joinedWorkers)
+	}()
+	waitShutdownSignal(t, joinedWorkers, "bot-fill workerWG join")
+	if got := fillTicker.StopCalls(); got != 1 {
+		t.Fatalf("bot-fill ticker Stop calls=%d want=1", got)
+	}
+}
