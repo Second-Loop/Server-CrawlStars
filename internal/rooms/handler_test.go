@@ -1504,8 +1504,11 @@ func (c *blockingStopClock) Now() time.Time {
 	return c.now
 }
 
-func (c *blockingStopClock) NewTicker(time.Duration) ticker {
-	return c.ticker
+func (c *blockingStopClock) NewTicker(duration time.Duration) ticker {
+	if duration == janitorInterval {
+		return c.ticker
+	}
+	return newCountingTicker()
 }
 
 type blockingStopTicker struct {

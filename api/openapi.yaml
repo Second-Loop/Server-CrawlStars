@@ -39,8 +39,10 @@ paths:
         Raw request body가 1024 bytes를 초과하면 400 `invalid_request`로 거부합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
+        첫 human matchmaking join부터 10초인 room-owned one-shot deadline을 시작합니다. 후속 human join과 partial manual bot 추가는 deadline을 reset하지 않습니다.
+        deadline을 먼저 획득하면 selected mode의 남은 participant slot을 bot으로 충원하고 room을 matched로 잠급니다. 같은 순간 late join은 다른 waiting room을 찾거나 만들며, active-room cap이면 room_cap_reached 409를 반환합니다.
         선택 mode의 participant capacity가 차도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다. Room participant에는 human과 server-owned bot이 함께 들어갈 수 있습니다.
-        연결된 human WebSocket session이 attach quorum을 만족하면 각 human이 `Type: Ready` 이벤트로 bot을 포함한 full participant의 spawn 정보를 받습니다. 모든 human이 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Bot은 token, WebSocket, Ready ACK가 없습니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 room config의 tick rate로 snapshot broadcast를 시작합니다.
+        연결된 human WebSocket session이 attach quorum을 만족하면 각 human이 `Type: Ready` 이벤트로 bot을 포함한 full participant의 spawn 정보를 받습니다. human session만 Ready ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Bot은 token, WebSocket, Ready ACK가 없습니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 room config의 tick rate로 snapshot broadcast를 시작합니다.
         1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
       requestBody:
@@ -92,7 +94,7 @@ paths:
                       code: invalid_request
                       message: invalid request
         "409":
-          description: Active room cap에 도달했습니다. 테스트 중이면 `DELETE /rooms`로 debug room을 비울 수 있습니다.
+          description: Timer-first late join을 포함해 active-room cap에 도달하면 `room_cap_reached`를 반환합니다. 테스트 중이면 `DELETE /rooms`로 debug room을 비울 수 있습니다.
           content:
             application/json:
               schema:
@@ -396,7 +398,7 @@ components:
       description: |
         32 random bytes를 Raw URL Base64로 인코딩한 43자 token입니다.
         Raw 값은 player 발급 응답의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 같은 secret으로 나타나고, 이후 WebSocket `token` query로 다시 전달됩니다.
-        Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. Pre-start match의 실제 disconnect는 room을 취소하고, started room은 TTL/hard lifetime 뒤 삭제됩니다. Failed upgrade는 room을 취소하지 않아 재시도할 수 있습니다.
+        Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 pre-start cancel로 room을 삭제하고, started room은 TTL/hard lifetime 뒤 삭제됩니다. Failed upgrade는 room을 취소하지 않아 재시도할 수 있습니다.
         서버 private state에는 SHA-256 digest만 저장합니다. 세 secret-bearing surface 모두 log나 telemetry에 기록하면 안 됩니다.
       pattern: "^[A-Za-z0-9_-]{43}$"
     HealthStatus:

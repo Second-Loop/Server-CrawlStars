@@ -3121,7 +3121,7 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 	}
 }
 
-func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
+func TestBotFillReadyQuorumUsesHumansAndStartsOnce(t *testing.T) {
 	tests := []struct {
 		name       string
 		mode       string
@@ -3154,13 +3154,7 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 				waitForAttachedClient(t, store, joined[0].Room.ID, joined[index].Player.ID)
 			}
 
-			bots, err := store.addBots(joined[0].Room.ID, tt.botCount)
-			if err != nil {
-				t.Fatalf("add %s bots: %v", tt.mode, err)
-			}
-			if len(bots) != tt.botCount {
-				t.Fatalf("expected %d bots, got %+v", tt.botCount, bots)
-			}
+			fakeClock.TickTicker(matchmakingBotFillDelay, 0)
 			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusLoading, tt.humanCount, 0)
 
 			readyEvents := make([]readyEventMessage, len(connections))
@@ -3176,7 +3170,11 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 			}
 			room.mu.Lock()
 			config := room.gameConfig
+			bots := append([]playerResponse(nil), room.Players[tt.humanCount:]...)
 			room.mu.Unlock()
+			if len(bots) != tt.botCount {
+				t.Fatalf("automatic fill bots=%d want=%d: %+v", len(bots), tt.botCount, bots)
+			}
 			if len(readyEvents[0].Players) != config.MatchPlayerCount() {
 				t.Fatalf("Ready players=%d, want %d", len(readyEvents[0].Players), config.MatchPlayerCount())
 			}
@@ -3218,6 +3216,13 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 					t.Fatalf("final human ACK did not create exactly one countdown ticker")
 				}
 			}
+			for range matchCountdownSeconds {
+				fakeClock.TickTicker(time.Second, 0)
+			}
+			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusStarted, tt.humanCount, tt.humanCount)
+			if got := fakeClock.TickerCount(gameplayInterval); got != 1 {
+				t.Fatalf("automatic fill created gameplay tickers=%d want=1", got)
+			}
 		})
 	}
 
@@ -3230,10 +3235,7 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 		defer server.Close()
 
 		joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
-		bots, err := store.addBots(joined.Room.ID, 1)
-		if err != nil || len(bots) != 1 {
-			t.Fatalf("add bot before attach bots=%+v err=%v", bots, err)
-		}
+		fakeClock.TickTicker(matchmakingBotFillDelay, 0)
 		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusMatched, 0, 0)
 
 		conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
@@ -3249,6 +3251,13 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarting, 1, 1)
 		if got := fakeClock.TickerCount(time.Second); got != 1 {
 			t.Fatalf("expected one countdown ticker, got %d", got)
+		}
+		for range matchCountdownSeconds {
+			fakeClock.TickTicker(time.Second, 0)
+		}
+		waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarted, 1, 1)
+		if got := fakeClock.TickerCount(gameplayInterval); got != 1 {
+			t.Fatalf("expected one gameplay ticker, got %d", got)
 		}
 	})
 }
@@ -3983,6 +3992,195 @@ func TestWebSocketCloseBeforeMatchStartCancelsMatchedRoom(t *testing.T) {
 		t.Fatalf("expected pre-start close to cancel matched room, got status %d", rec.Code)
 	}
 	assertError(t, rec, "room_not_found")
+}
+
+func TestBotFillUnmatchedDisconnectKeepsTimerAndCredentials(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	room := store.lookupRoom(joined.Room.ID)
+	room.mu.Lock()
+	fillTicker := room.botFillTicker
+	beforePlayers := append([]playerResponse(nil), room.Players...)
+	beforeCredential := room.sessions[joined.Player.ID]
+	room.mu.Unlock()
+
+	conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+	waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+	waitForDetachedClient(t, store, joined.Room.ID, joined.Player.ID)
+
+	registered := store.lookupRoom(joined.Room.ID)
+	if registered != room {
+		t.Fatalf("unmatched disconnect registry room=%p want=%p", registered, room)
+	}
+	room.mu.Lock()
+	afterPlayers := append([]playerResponse(nil), room.Players...)
+	afterCredential, credentialExists := room.sessions[joined.Player.ID]
+	retainedTicker := room.botFillTicker
+	status := room.matchStatus
+	room.mu.Unlock()
+	if !reflect.DeepEqual(afterPlayers, beforePlayers) || !credentialExists || afterCredential != beforeCredential || retainedTicker != fillTicker || status != "" {
+		t.Fatalf("unmatched disconnect changed ownership: players=%+v->%+v credential=%t ticker=%p want=%p status=%q", beforePlayers, afterPlayers, credentialExists && afterCredential == beforeCredential, retainedTicker, fillTicker, status)
+	}
+	if got := fillTicker.(*fakeTicker).StopCount(); got != 0 {
+		t.Fatalf("unmatched disconnect stopped bot-fill timer %d times", got)
+	}
+}
+
+func TestBotFillMatchedDisconnectCancelsRoom(t *testing.T) {
+	t.Run("matched", func(t *testing.T) {
+		clock := newCountingStopClock()
+		store := NewStoreWithClock(5, clock)
+		t.Cleanup(store.Close)
+
+		joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+		if err != nil {
+			t.Fatalf("join matchmaking: %v", err)
+		}
+		room := store.lookupRoom(joined.Room.ID)
+		room.mu.Lock()
+		fillTicker := room.botFillTicker.(*countingStopTicker)
+		room.mu.Unlock()
+		clock.TickTicker(matchmakingBotFillDelay, 0)
+		waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+
+		session := newClientSession(newFakeClientConn(false), nil)
+		t.Cleanup(func() { session.close(websocket.StatusNormalClosure, "test complete") })
+		room.mu.Lock()
+		room.clients[joined.Player.ID] = session
+		room.mu.Unlock()
+		store.releaseClient(&clientReservation{room: room, playerID: joined.Player.ID}, session)
+
+		waitForRoomDeleted(t, store, joined.Room.ID)
+		if got := fillTicker.StopCalls(); got != 1 {
+			t.Fatalf("matched cancellation bot-fill Stop calls=%d want=1", got)
+		}
+	})
+
+	for _, target := range []MatchStatus{MatchStatusLoading, MatchStatusStarting} {
+		t.Run(string(target), func(t *testing.T) {
+			clock := newCountingStopClock()
+			store := NewStoreWithClock(5, clock)
+			handler := debugHandler(t, store)
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			defer store.Close()
+
+			joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+			room := store.lookupRoom(joined.Room.ID)
+			room.mu.Lock()
+			fillTicker := room.botFillTicker.(*countingStopTicker)
+			room.mu.Unlock()
+			conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+			waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+			clock.TickTicker(matchmakingBotFillDelay, 0)
+			waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusLoading, 1, 0)
+			_ = readReadyEventMessage(t, conn)
+
+			var countdownTicker *countingStopTicker
+			if target == MatchStatusStarting {
+				writeWSJSON(t, conn, readyMessage{Type: "ready"})
+				waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarting, 1, 1)
+				room.mu.Lock()
+				countdownTicker = room.countdownTicker.(*countingStopTicker)
+				room.mu.Unlock()
+			}
+
+			_ = conn.Close(websocket.StatusNormalClosure, "")
+			waitForRoomDeleted(t, store, joined.Room.ID)
+			if got := fillTicker.StopCalls(); got != 1 {
+				t.Fatalf("%s cancellation bot-fill Stop calls=%d want=1", target, got)
+			}
+			if countdownTicker != nil && countdownTicker.StopCalls() != 1 {
+				t.Fatalf("starting cancellation countdown Stop calls=%d want=1", countdownTicker.StopCalls())
+			}
+			store.mu.RLock()
+			remainingIDs := len(store.playerIDs)
+			store.mu.RUnlock()
+			if remainingIDs != 0 {
+				t.Fatalf("%s cancellation retained player IDs=%d", target, remainingIDs)
+			}
+		})
+	}
+}
+
+func TestBotFillDisconnectAndTimerRaceUsesRoomLockWinner(t *testing.T) {
+	t.Run("disconnect first", func(t *testing.T) {
+		clock := newFakeClock()
+		store := NewStoreWithClock(5, clock)
+		handler := debugHandler(t, store)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+		defer store.Close()
+
+		joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+		room := store.lookupRoom(joined.Room.ID)
+		room.mu.Lock()
+		credential := room.sessions[joined.Player.ID]
+		fillTicker := room.botFillTicker
+		room.mu.Unlock()
+		conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+		waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+
+		store.matchmakingMu.Lock()
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+		waitForDetachedClient(t, store, joined.Room.ID, joined.Player.ID)
+		fillTicker.(*fakeTicker).tick()
+		store.matchmakingMu.Unlock()
+		waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+
+		if store.lookupRoom(joined.Room.ID) != room {
+			t.Fatal("disconnect-first room was canceled")
+		}
+		room.mu.Lock()
+		retainedCredential, credentialExists := room.sessions[joined.Player.ID]
+		players := len(room.Players)
+		room.mu.Unlock()
+		if !credentialExists || retainedCredential != credential || players != room.gameConfig.MatchPlayerCount() {
+			t.Fatalf("disconnect-first ownership credential=%t players=%d", credentialExists && retainedCredential == credential, players)
+		}
+	})
+
+	t.Run("timer first", func(t *testing.T) {
+		clock := newFakeClock()
+		store := NewStoreWithClock(5, clock)
+		handler := debugHandler(t, store)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+		defer store.Close()
+
+		joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+		conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+		waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+		reader := newBotFillBarrierReader(0x61)
+		store.mu.Lock()
+		store.random = reader
+		store.mu.Unlock()
+
+		clock.TickTicker(matchmakingBotFillDelay, 0)
+		waitBotFillSignal(t, reader.entered, "timer-first entropy barrier")
+		closeResult := make(chan error, 1)
+		go func() { closeResult <- conn.Close(websocket.StatusNormalClosure, "") }()
+		reader.release()
+		waitForRoomDeleted(t, store, joined.Room.ID)
+		select {
+		case <-closeResult:
+		case <-time.After(time.Second):
+			t.Fatal("timer-first websocket close did not return")
+		}
+		store.mu.RLock()
+		remainingIDs := len(store.playerIDs)
+		store.mu.RUnlock()
+		if remainingIDs != 0 {
+			t.Fatalf("timer-first cancellation retained IDs=%d", remainingIDs)
+		}
+	})
 }
 
 func TestWebSocketKeepsSnapshotStreamAfterInvalidInput(t *testing.T) {

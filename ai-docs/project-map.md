@@ -25,10 +25,11 @@
 - Duel 2 WebSocket, 2 Ready ACK, 1회 countdown/start regression
 - Solo/Team 6 WebSocket, 6 human Ready ACK, 1회 countdown/start regression
 - SL-90 internal server-owned bot participant와 credential/ACK 없는 lifecycle
+- SL-91 첫 human join 기준 10초 room-owned bot fill, timer/human join first-lock-wins, failure rollback/no-retry
 - Full participant capacity 뒤 human-only attach/ACK, bot을 포함한 Ready/Snapshot
 - 직전 snapshot 기반 결정적 basic controller와 human/bot input의 shared one-Step 처리
 - room-local mode config 기반 team/slot/spawn과 Wall/Water-safe fallback assignment
-- start 전 WebSocket close cancel
+- unmatched 연결 종료 시 deadline/credential 유지, matched/loading/starting WebSocket close cancel
 - `duel_1v1` 호환, Solo 중간 Lose/마지막 생존자, Team elimination을 따르는 GameEnd Win/Lose/Draw
 - Player별 immutable 결과와 terminal close barrier 뒤 room/player ID cleanup
 - client build용 shared game config artifact
@@ -45,7 +46,6 @@
 
 아직 안 되는 것:
 
-- SL-91의 10초 automatic bot fill timer
 - bot replacement와 별도 reconnect grace
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
@@ -107,8 +107,10 @@ Process와 HTTP server error는 JSON `slog`로 stdout에 기록합니다. SIGINT
 3. 같은 selected mode의 여유 waiting room 탐색과 없을 때의 생성을 하나의 serialized find-or-create transition으로 처리합니다.
 4. 새 room은 selected config를 소유합니다. Cap에 닿았을 때만 만료 room을 한 번 즉시 정리하고 생성도 한 번 재시도합니다.
 5. player와 session token을 발급합니다.
-6. Human과 internal bot을 합친 participant가 room-local mode capacity를 채우면 matchmaking room으로 잠그고 late join을 막습니다.
-7. top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 반환합니다.
+6. 첫 human의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
+7. deadline과 human join은 matchmaking lock을 먼저 얻은 transition이 이깁니다. Timer-first fill 뒤 late join은 다른 waiting room으로 가며 cap이면 기존 `room_cap_reached` 409를 받습니다.
+8. Human과 internal bot을 합친 participant가 room-local mode capacity를 채우면 matchmaking room으로 잠그고 late join을 막습니다.
+9. top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 반환합니다.
 
 Server runtime config는 default `duel_1v1`과 `solo`, `team` catalog를 가집니다. Duel은 2명, solo와 team은 6명이며 `map.maxPlayers = 6`과 REST `room.maxPlayers`는 별도의 map/debug room capacity로 유지합니다.
 
@@ -118,7 +120,7 @@ Join quota는 store보다 먼저 실행하므로 429가 room cap 409와 `interna
 
 Participant capacity를 채워도 REST `room.status`는 `waiting`입니다. 그 뒤 room 내 human participant의 WebSocket session이 모두 연결되면 human connection에만 같은 `Ready` event를 보내며, payload에는 bot을 포함한 full participant list를 넣습니다. Human participant의 ready ACK가 모두 모이면 `starting/countdown: 5`를 한 번 broadcast합니다. Duplicate ACK는 player identity별 quorum을 늘리지 않고 bot은 session이나 ACK가 없습니다. Human participant가 0명이면 quorum은 성립하지 않습니다. 5초 뒤 `started`를 한 번 보내고 room-local gameplay ticker 하나를 시작합니다.
 
-SL-90의 `addBots`는 이미 생성된 waiting room의 남은 capacity를 채우는 internal primitive입니다. Public REST endpoint나 bot credential은 없고, 언제 호출할지를 결정하는 SL-91의 10초 automatic fill timer도 아직 없습니다. Ready timeout, reconnect grace, participant replacement는 없으며 start 전 실제 human disconnect는 match cancel입니다.
+SL-91 timer는 10초 deadline에 selected mode의 남은 capacity를 bot으로 원자적으로 채웁니다. Bot ID 발급이 하나라도 실패하면 participant와 ID registry를 이전 상태로 돌리고 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Public REST endpoint나 bot credential은 없습니다. Unmatched disconnect는 credential과 timer를 유지하고, matched/loading/starting 실제 disconnect는 기존 match cancel로 room과 timer resource를 정리합니다. Ready timeout, reconnect grace, participant replacement는 없습니다.
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
@@ -134,7 +136,7 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 서버는 upgrade 전에 room 존재 여부, player 소속 여부, 정확히 한 개의 non-empty token, live connection/in-flight reservation을 순서대로 확인합니다. 실패 status는 404, 404, 401, 409입니다. 정상 extra query key는 허용하지만 malformed query pair는 401입니다. Waiting room도 연결과 input 수신은 허용하지만, started 전 gameplay tick은 돌리지 않습니다.
 
-Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 TTL/hard lifetime을 따릅니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
+Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 TTL/hard lifetime을 따릅니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
 
 Matchmaking room WebSocket 상태:
 
@@ -143,7 +145,7 @@ Matchmaking room WebSocket 상태:
 3. Human client는 이 map과 `Players[].SpawnPosition`으로 렌더 준비를 끝낸 뒤 `{"Type":"ready"}`를 보냅니다. Bot은 WebSocket sender가 아닙니다.
 4. Room 내 human player identity가 모두 ready가 되면 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`가 human connection당 1번 broadcast됩니다. Duplicate ACK는 idempotent합니다.
 5. 중간 countdown broadcast 없이 5초 뒤 `Snapshot.status: "started"`가 오고, 다음 tick부터 30Hz gameplay snapshot이 시작됩니다.
-6. start 전 human WebSocket close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
+6. Unmatched human WebSocket close는 deadline과 credential을 유지합니다. matched/loading/starting close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
 
 ### 4. Room start
 
@@ -230,7 +232,7 @@ Room store는 in-memory입니다.
 - hard room lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-현재 WebSocket close는 client connection과 pending input을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. Matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
+현재 WebSocket close는 client connection과 pending input을 제거합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 match cancel로 room을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다.
 
 각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
@@ -280,22 +282,18 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-88`: room-local mode rules 기반 projectile eligibility와 결정적 target/input 순서
 - `SL-89`: mode별 GameEnd, immutable result ledger, terminal close barrier와 Shutdown 예외
 - `SL-90`: internal bot participant, 결정적 basic controller, human-only Ready quorum, shared one-Step integration
-- `SL-91`: 10초 뒤 automatic bot fill timer 미구현
+- `SL-91`: first-lock-wins 10초 automatic bot fill, human-only Ready quorum, lifecycle cleanup
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
 ## 다음 추천 작업
 
-1. `SL-91`: 10초 automatic bot fill
-   - SL-90의 internal `addBots`를 호출하는 timer policy와 cancel 조건을 별도 scope로 구현
-   - Bot public endpoint나 credential을 만들지 않고 human-only attach/ACK 경계를 유지
-
-2. `SL-30`: shared constants/config v1 마무리
+1. `SL-30`: shared constants/config v1 마무리
    - `client-config/game-config.json`은 client 공유 config, `server-config/game-config.json`은 server runtime config로 사용
    - Server embed, Go 상수, docs validation drift 검증 유지
    - Unity 적용 후 필요한 field가 생기면 v2로 확장
 
-3. `SL-14` closeout
+2. `SL-14` closeout
    - `SL-57` client PR 상태 확인
    - server/client acceptance criteria가 모두 닫히면 parent issue 정리
 

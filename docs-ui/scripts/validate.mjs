@@ -110,6 +110,14 @@ assert(
   matchmakingJoinOperation.includes("1024 bytes"),
   "joinMatchmaking must document the raw 1024-byte request body limit",
 );
+for (const marker of [
+  "첫 human matchmaking join부터 10초",
+  "남은 participant slot을 bot으로 충원",
+  "late join은 다른 waiting room을 찾거나 만들며",
+  "room_cap_reached",
+]) {
+  assert(matchmakingJoinOperation.includes(marker), `joinMatchmaking must document ${marker}`);
+}
 const matchmakingJoinRequestBody = extractYAMLNamedBlock(matchmakingJoinOperation, "      requestBody:");
 assert(
   !matchmakingJoinRequestBody.includes("required: true"),
@@ -142,8 +150,21 @@ assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must docum
 
 assertSchemaContains(openAPIText, "OpaqueRoomID", ['pattern: "^room_[A-Za-z0-9_-]{22}$"']);
 assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0-9_-]{22}$"']);
-assertSchemaContains(openAPIText, "PlayerSessionToken", ['pattern: "^[A-Za-z0-9_-]{43}$"']);
-assertSchemaContains(openAPIText, "PlayerSessionToken", ["sessionToken", "tokenized `webSocketPath`", "Failed upgrade"]);
+const openAPIPlayerSessionToken = extractYAMLSchema(openAPIText, "PlayerSessionToken");
+for (const marker of [
+  'pattern: "^[A-Za-z0-9_-]{43}$"',
+  "sessionToken",
+  "tokenized `webSocketPath`",
+  "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+  "matched/loading/starting disconnect는 pre-start cancel",
+  "Failed upgrade",
+]) {
+  assert(openAPIPlayerSessionToken.includes(marker), `PlayerSessionToken must document ${marker}`);
+}
+assert(
+  !openAPIPlayerSessionToken.includes("Pre-start match의 실제 disconnect는 room을 취소"),
+  "PlayerSessionToken must not collapse unmatched and matched disconnect lifecycle",
+);
 assertSchemaContains(openAPIText, "PlayerSessionResponse", ["required: [player, sessionToken, webSocketPath]"]);
 assertSchemaContains(openAPIText, "MatchmakingJoinRequest", [
   "gameMode:",
@@ -200,7 +221,20 @@ assert(hasLine(asyncAPIText, "        method: GET"), "api/asyncapi.yaml WebSocke
 assert(hasLine(asyncAPIText, "          required: [token]"), "api/asyncapi.yaml WebSocket query must require token");
 assert(hasLine(asyncAPIText, '        bindingVersion: "0.1.0"'), "api/asyncapi.yaml must pin WebSocket bindingVersion 0.1.0");
 assert(!asyncAPIText.includes("additionalProperties: false"), "api/asyncapi.yaml must allow ordinary extra query keys");
-assertNamedBlockContains(asyncAPIText, "    playerSessionToken:", ["type: httpApiKey", "name: token", "in: query"]);
+const asyncAPIPlayerSessionToken = extractYAMLNamedBlock(asyncAPIText, "    playerSessionToken:");
+for (const marker of [
+  "type: httpApiKey",
+  "name: token",
+  "in: query",
+  "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+  "matched/loading/starting disconnect는 pre-start cancel",
+]) {
+  assert(asyncAPIPlayerSessionToken.includes(marker), `playerSessionToken security must document ${marker}`);
+}
+assert(
+  !asyncAPIPlayerSessionToken.includes("Pre-start match의 실제 disconnect는 room을 취소"),
+  "playerSessionToken security must not collapse unmatched and matched disconnect lifecycle",
+);
 const localServer = extractYAMLNamedBlock(asyncAPIText, "  local:");
 assert(
   localServer.includes('$ref: "#/components/securitySchemes/playerSessionToken"'),
@@ -266,20 +300,45 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
   ]);
 }
-for (const marker of [
-  "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
-  "Ready payload는 full participant list를 포함",
-  "연결된 human WebSocket session만 attach quorum",
-  "각 human player가 보낸 ready ACK",
-  "중복 ready ACK",
-  "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
-  "Wall과 Water",
-  "Ground와 Bush",
-]) {
-  assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
-}
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
 assert(hasLine(asyncAPIInfo, "  version: 0.4.0"), "api/asyncapi.yaml must publish version 0.4.0");
+for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
+  assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
+}
+const asyncAPIChannels = extractYAMLNamedBlock(asyncAPIText, "channels:");
+const roomPlayerChannel = extractYAMLNamedBlock(asyncAPIChannels, "  roomPlayer:");
+for (const marker of [
+  "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+  "matched/loading/starting disconnect는 pre-start cancel",
+]) {
+  assert(roomPlayerChannel.includes(marker), `roomPlayer lifecycle must document ${marker}`);
+}
+assert(
+  !roomPlayerChannel.includes("Matchmaking pre-start 연결이 실제로 끊기면 room이 취소"),
+  "roomPlayer lifecycle must not collapse unmatched and matched disconnect lifecycle",
+);
+const asyncAPIOperations = extractYAMLNamedBlock(asyncAPIText, "operations:");
+const receiveReadyOperation = extractYAMLNamedBlock(asyncAPIOperations, "  receiveReady:");
+for (const marker of ["full participant list", "human session만 Ready ACK"]) {
+  assert(receiveReadyOperation.includes(marker), `receiveReady must document ${marker}`);
+}
+const sendReadyAckOperation = extractYAMLNamedBlock(asyncAPIOperations, "  sendReadyAck:");
+for (const marker of [
+  "Bot은 ACK를 보내지 않습니다",
+  "중복 ready ACK는 idempotent",
+  "Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다",
+]) {
+  assert(sendReadyAckOperation.includes(marker), `sendReadyAck must document ${marker}`);
+}
+const asyncAPIComponents = extractYAMLNamedBlock(asyncAPIText, "components:");
+const asyncAPIMessages = extractYAMLNamedBlock(asyncAPIComponents, "  messages:");
+const readyEventMessage = extractYAMLNamedBlock(asyncAPIMessages, "    ReadyEventMessage:");
+for (const marker of [
+  "full participant assignment",
+  "Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다",
+]) {
+  assert(readyEventMessage.includes(marker), `ReadyEventMessage must document ${marker}`);
+}
 const modeTeamEnum = "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]";
 assert(
   countOccurrences(asyncAPIText, modeTeamEnum) === 2,
@@ -298,8 +357,8 @@ assert(
   "Ready Players must allow only exact array cardinalities 2 or 6",
 );
 assert(
-  asyncAPIText.includes("participant capacity") && asyncAPIText.includes("human session"),
-  "api/asyncapi.yaml must distinguish participant capacity from the human session quorum",
+  receiveReadyOperation.includes("full participant") && sendReadyAckOperation.includes("human client"),
+  "Ready/ACK operations must distinguish full participants from the human-only quorum",
 );
 assert(
   !asyncAPIText.includes("두 matched client") && !asyncAPIText.includes("두 client가 모두 연결") && !asyncAPIText.includes("6개의 서로 다른 WebSocket connection"),
@@ -332,6 +391,35 @@ assert(
 );
 for (const marker of ["optional `gameMode`", "participant capacity", "human session", "raw body가 1024 bytes"]) {
   assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
+}
+const apiDocsSessionLifecycle = extractDelimitedText(
+  apiDocsText,
+  "Handshake 순서는",
+  "\n\nAsyncAPI document dialect",
+  "ai-docs/api-docs.md session lifecycle",
+);
+const docsSessionTokenCard = extractDocsHTMLArticle("Session token");
+for (const [text, name, forbiddenMarkers] of [
+  [
+    apiDocsSessionLifecycle,
+    "ai-docs/api-docs.md session lifecycle",
+    ["pre-start 실제 disconnect는 room을 취소", "start 전 cancel"],
+  ],
+  [
+    docsSessionTokenCard,
+    "docs UI Session token card",
+    ["matchmaking pre-start 연결이 실제로 끊기면 room이 취소", "Pre-start match의 실제 disconnect는 room을 취소"],
+  ],
+]) {
+  for (const marker of [
+    "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+    "matched/loading/starting disconnect는 pre-start cancel",
+  ]) {
+    assert(text.includes(marker), `${name} must document ${marker}`);
+  }
+  for (const marker of forbiddenMarkers) {
+    assert(!text.includes(marker), `${name} must not contain blanket lifecycle marker ${marker}`);
+  }
 }
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
@@ -466,6 +554,22 @@ function extractDocsJSONExample(heading) {
   return JSON.parse(docsBuildText.slice(codeStart + opening.length, codeEnd));
 }
 
+function extractDocsHTMLArticle(heading) {
+  const headingStart = docsBuildText.indexOf(`<h3>${heading}</h3>`);
+  assert(headingStart >= 0, `docs UI is missing ${heading} article`);
+  const articleEnd = docsBuildText.indexOf("</article>", headingStart);
+  assert(articleEnd > headingStart, `docs UI ${heading} article is not closed`);
+  return docsBuildText.slice(headingStart, articleEnd);
+}
+
+function extractDelimitedText(text, startMarker, endMarker, name) {
+  const start = text.indexOf(startMarker);
+  assert(start >= 0, `${name} is missing start marker ${startMarker}`);
+  const end = text.indexOf(endMarker, start);
+  assert(end > start, `${name} is missing end marker ${endMarker}`);
+  return text.slice(start, end);
+}
+
 function assertEveryJSONPlayerHasIsBot(players, name) {
   assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
   for (const [index, player] of players.entries()) {
@@ -499,17 +603,6 @@ function validateBotIdentitySchemas() {
   assertSchemaContains(asyncAPIText, "PlayerData", [
     "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
   ]);
-  for (const marker of [
-    "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
-    "Ready payload는 full participant list를 포함",
-    "연결된 human WebSocket session만 attach quorum",
-    "각 human player가 보낸 ready ACK",
-    "중복 ready ACK",
-    "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
-  ]) {
-    assert(asyncAPIText.includes(marker), `AsyncAPI must document ${marker}`);
-  }
-
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
   const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");

@@ -210,6 +210,8 @@ Simple matchmaking:
 - Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`로 처리합니다.
 - 같은 mode의 waiting room 탐색과 없을 때의 room 생성을 하나의 serialized find-or-create transition으로 처리합니다. 동시 첫 join도 같은 pool을 재사용합니다.
 - player를 발급합니다.
+- 첫 human의 `0 -> 1` 전이에서만 room-owned one-shot 10초 ticker를 arm합니다. 후속 human join과 partial manual bot 추가는 deadline을 reset하지 않습니다.
+- Timer worker와 human join은 `matchmakingMu`를 먼저 얻은 transition이 이깁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 cap이 차면 기존 409 `room_cap_reached`를 반환합니다.
 - Room은 생성 시 selected `GameConfig`를 고정하고 required participant 수, team/slot/spawn, Ready quorum, simulation start가 모두 이 config를 사용합니다.
 - Human과 bot을 합친 participant가 `duel_1v1`은 2명, `solo`와 `team`은 6명인 capacity를 채우면 같은-mode match를 완성합니다.
 - Match가 완성된 room은 debug player 추가도 409 `room_full`로 닫아 Ready/player cardinality를 고정합니다.
@@ -219,7 +221,8 @@ Simple matchmaking:
 - `attachClientSession`은 `room.mu` 아래 `matchStatus == matched && allMatchClientsAttached()`일 때만 loading/Ready로 전이합니다. `markClientReady`도 current expected session을 확인하고 `matchStatus == loading && allMatchPlayersReady()`일 때만 countdown을 호출합니다.
 - `allMatchClientsAttached`, `allMatchPlayersReady`, `startMatchCountdownLocked`는 자체 잠금이나 재진입 guard가 없으므로 caller가 `room.mu`와 위 상태 조건을 보장합니다. Countdown worker는 current ticker identity와 `starting`을 다시 확인합니다.
 - `startRoomLocked`도 `room.mu` 보유를 전제로 하며 `room.state == nil`, `room.ticker == nil` guard로 simulation state와 gameplay ticker를 room당 하나만 만듭니다.
-- SL-90의 internal `addBots`는 waiting room의 남은 participant capacity만 채웁니다. 이를 10초 뒤 자동 호출하는 SL-91 timer, Ready timeout, pre-start reconnect grace, reconnect participant replacement는 추가하지 않습니다.
+- SL-91 timer는 deadline에 selected mode의 남은 slot을 원자적으로 채웁니다. Bot ID 발급이 실패하면 모든 예약 ID를 rollback하고 partial participant 없이 `bot_fill_failed` structured log event를 한 번 기록하며 retry하지 않습니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 추가하지 않습니다.
+- 일반 delete/clear/TTL cleanup/debug start/matched pre-start cancel은 room lock 아래에서 timer resource만 detach하고, 모든 core lock을 푼 뒤 ticker `Stop`과 stop channel close를 수행합니다. 일반 cleanup은 worker join을 기다리지 않으며 `workerWG.Wait`는 Shutdown에서만 추가로 수행합니다.
 - response는 top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 포함합니다.
 - Join 전에 process-local per-IP token bucket을 평가합니다. 기본은 10 requests/minute, burst 4이며 quota가 없으면 429가 store의 409/500보다 먼저 나갑니다. 허용된 409/500 요청도 quota를 소비합니다.
 - Immediate peer가 trusted CIDR이고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 client IP로 씁니다. 그 외에는 peer로 fallback하고 `X-Forwarded-For`는 무시합니다.
@@ -252,9 +255,9 @@ WebSocket:
 - 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
-Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
+Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
-동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create 전체를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 participant, 직전 snapshot, pending/bot input, simulation state, client/countdown 및 close barrier session set을, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정, active session 등록, room close barrier 등록을 원자적으로 처리합니다. Session lifecycle monitor는 transport `closeDone` 뒤 room barrier에서 해당 generation을 제거하고, writer와 heartbeat 종료까지 계속 추적합니다.
+동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create와 timer/human join 경쟁을, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 participant, bot-fill ticker/stop channel, 직전 snapshot, pending/bot input, simulation state, client/countdown 및 close barrier session set을, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. Timer resource는 room lock 아래에서 detach만 하고 ticker `Stop`과 stop channel close는 모든 core lock을 푼 뒤 실행합니다. bot-fill worker join(`workerWG.Wait`)은 Shutdown에서만 추가로 수행합니다. Attach는 Store close 판정, active session 등록, room close barrier 등록을 원자적으로 처리합니다. Session lifecycle monitor는 transport `closeDone` 뒤 room barrier에서 해당 generation을 제거하고, writer와 heartbeat 종료까지 계속 추적합니다.
 
 `addBots`는 먼저 room 상태를 빠르게 확인한 뒤 `Store.mu -> room.mu` 순서로 bot ID를 예약하고 같은 room identity, lifecycle, 남은 capacity를 다시 검증합니다. 검증이나 ID 예약이 실패하면 예약한 모든 ID를 Store registry에서 rollback하고, room에는 partial bot을 남기지 않습니다. Bot은 credential/session map을 만들지 않습니다. Room tick은 `room.mu` 아래 직전 snapshot과 input을 한 번 소비해 `State.Step`을 정확히 한 번 호출하고 새 snapshot copy를 다시 보관합니다.
 
@@ -268,7 +271,8 @@ Room store는 in-memory라 TTL이 중요합니다.
 - started all-disconnected TTL: 5분
 - hard lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
-- matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
+- matchmaking matched/loading/starting 단계의 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
+- Unmatched human disconnect는 bot-fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 기존 pre-start cancel로 bot-fill resource도 함께 회수합니다.
 - Solo 중간 탈락은 해당 session만 terminal close하고 room과 ticker를 유지합니다.
 - Room terminal decision은 `ending`을 예약하고 ticker를 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 이 상태에서는 새 mutation과 추가 tick을 받지 않습니다.
 - 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 transport close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 room-owned barrier에 남으며, lifecycle monitor가 각 `closeDone` 뒤 제거합니다. 그 뒤 room registry, active-room observer, player ID, `room_ended` log, 남은 resources를 정리합니다. Cleanup success signal은 모든 정상 작업이 성공한 마지막에만 닫습니다.
@@ -286,8 +290,8 @@ Room store는 in-memory라 TTL이 중요합니다.
 - Kubernetes
 - respawn, score
 - bot replacement
-- SL-91의 10초 automatic bot fill timer
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - reconnect grace
+- ClientTick/ACK 확장(SL-94)
 
 Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, `mode.default`와 `mode.catalog`, map을 담습니다. Attack charge 상태와 mode rule metadata는 server-only이고 public WebSocket snapshot schema는 바뀌지 않습니다.

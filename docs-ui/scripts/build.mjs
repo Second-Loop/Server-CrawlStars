@@ -125,7 +125,7 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>Session token</h3>
-            <p>Token은 일회용이 아니며 room/player session이 남아 있을 때 재사용합니다. 다만 matchmaking pre-start 연결이 실제로 끊기면 room이 취소되고, failed upgrade는 같은 경로로 재시도할 수 있습니다.</p>
+            <p>Token은 일회용이 아니며 room/player session이 남아 있을 때 재사용합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 pre-start cancel로 room을 삭제하고, failed upgrade는 같은 경로로 재시도할 수 있습니다.</p>
           </article>
           <article>
             <h3>실패 순서</h3>

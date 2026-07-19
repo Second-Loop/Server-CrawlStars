@@ -53,7 +53,7 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, human `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 participant capacity는 duel 2명, solo/team 6명이며 human과 internal bot을 합쳐 정원을 채웁니다. 그 뒤 room 내 human session만 attach/Ready ACK quorum에 들어가고 public `room.status: waiting`은 Ready/start 전까지 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
+`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, human `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 participant capacity는 duel 2명, solo/team 6명이며, 첫 human join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작하고 deadline은 남은 participant slot을 bot으로 채웁니다. 후속 join이나 partial manual bot 추가는 reset하지 않습니다. Timer와 late human join은 같은 matchmaking lock을 먼저 얻은 transition이 이기며, timer-first late join은 다른 waiting room을 찾거나 만들고 active cap이면 기존 `room_cap_reached` 409를 받습니다. Ready payload는 full participant를 담지만 human session만 attach/Ready ACK quorum에 들어가고 public `room.status: waiting`은 Ready/start 전까지 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
 
 Join raw body가 1024 bytes를 초과하거나 JSON이 잘못되면 400 `invalid_request`, 지원하지 않는 non-empty mode면 400 `invalid_game_mode`를 반환합니다.
 
@@ -65,7 +65,7 @@ Join의 process-local per-IP token bucket은 store보다 먼저 평가합니다.
 
 Room debug API는 기본 비활성화되어 `404 not_found`를 반환합니다. 활성화하면 정확히 하나의 `Authorization: Bearer <DEBUG_API_TOKEN>`이 필요하고, missing/wrong/multiple credential은 route dispatch보다 먼저 `401 unauthorized`입니다. 올바른 credential 뒤에 기존 route 결과를 평가합니다. Matched 이후 matchmaking room에 debug player를 추가하면 409 `room_full`입니다. `DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 operation입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array입니다. OpenAPI와 AsyncAPI의 `MapData` tile item enum은 `[0, 1, 2, 3, 4]`이며 각각 Ground, Wall, SpawnPoint, Bush, Water입니다. Player는 Wall/Water, projectile은 Wall에 충돌하고 map boundary는 둘 다 막습니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이어야 합니다.
 
-Match Ready event, ready ACK, 5초 server-internal countdown, start 전 cancel은 WebSocket 계약에서 다룹니다. 새 REST polling이나 SSE를 늘리지 않고 Ready event와 기존 gameplay WebSocket wrapper인 `Type: snapshot` 안의 `Snapshot.status`/`Snapshot.countdown`을 사용합니다. `starting`은 countdown 시작 신호로 1번만 보냅니다.
+Match Ready event, ready ACK, 5초 server-internal countdown, matched/loading/starting disconnect cancel은 WebSocket 계약에서 다룹니다. 새 REST polling이나 SSE를 늘리지 않고 Ready event와 기존 gameplay WebSocket wrapper인 `Type: snapshot` 안의 `Snapshot.status`/`Snapshot.countdown`을 사용합니다. `starting`은 countdown 시작 신호로 1번만 보냅니다.
 
 ## 현재 WebSocket surface
 
@@ -77,7 +77,7 @@ WS /rooms/{roomID}/players/{playerID}
 
 AsyncAPI channel `address`는 query를 붙이지 않은 path-only 값으로 유지하고, WebSocket binding의 query object에서 43자 `token` 하나를 required로 선언합니다. Server security는 `playerSessionToken` httpApiKey를 참조합니다. 정상적인 extra query key는 허용하므로 `additionalProperties: false`를 두지 않지만, malformed query pair는 전체 query를 401로 거부한다고 설명합니다.
 
-Handshake 순서는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409입니다. Token credential은 room/player session이 남아 있는 동안 재사용할 수 있지만 pre-start 실제 disconnect는 room을 취소합니다. Failed upgrade는 room을 취소하지 않아 같은 경로로 재시도할 수 있습니다. Raw token과 전체 query 문자열은 log에 남기지 않습니다.
+Handshake 순서는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409입니다. Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Failed upgrade는 room을 취소하지 않아 같은 경로로 재시도할 수 있습니다. Raw token과 전체 query 문자열은 log에 남기지 않습니다.
 
 AsyncAPI document dialect는 계속 `asyncapi: 3.0.0`이고, API 계약을 나타내는 `info.version`은 bot identity가 추가된 `0.4.0`입니다. `ReadyPlayer`는 required `IsBot`, `PlayerData`도 required `IsBot`을 가지며 모든 Ready/gameplay example의 모든 player object가 boolean `IsBot`을 정확히 한 번 포함합니다.
 
@@ -190,7 +190,7 @@ Match ready ACK:
 | `solo` | 6 | Room 내 human participant 전원 |
 | `team` | 6 | Room 내 human participant 전원 |
 
-Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. SL-90은 internal `addBots`만 제공하고, 이를 10초 뒤 호출하는 automatic fill은 SL-91 범위입니다.
+Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. Bot ID 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed` structured log event를 한 번 기록하며 retry하지 않습니다. 일반 delete/clear/cancel은 room lock 아래에서 timer resource를 detach한 뒤 모든 core lock 밖에서 ticker `Stop`과 stop channel close를 수행합니다. 일반 cleanup은 worker join을 기다리지 않고, `workerWG.Wait`는 Shutdown만 추가로 수행합니다. ClientTick/ACK 확장은 SL-94 범위라 이 계약에는 추가하지 않습니다.
 
 Solo는 `solo-1`부터 `solo-6`까지 각 slot 0을 사용합니다. Team은 join 순서대로 `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2`를 사용합니다. Ready spawn과 첫 gameplay snapshot position은 같은 room-local `PlayerAssignments` 결과입니다. Fallback map에서는 player collision과 같은 기준으로 Wall과 Water를 spawn candidate에서 제외하고 Ground와 Bush를 허용합니다.
 

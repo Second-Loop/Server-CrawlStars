@@ -104,6 +104,8 @@ type room struct {
 	stop                     chan struct{}
 	countdownTicker          ticker
 	countdownStop            chan struct{}
+	botFillTicker            ticker
+	botFillStop              chan struct{}
 }
 
 type simulationStepper interface {
@@ -237,15 +239,16 @@ func (s *Store) createRoom() (roomResponse, error) {
 	if !s.beginMutation() {
 		return roomResponse{}, ErrInternal
 	}
+	var resources roomResources
+	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
 	defer s.endMutation()
 
 	response, err := s.createRoomOnce()
-	if !errors.Is(err, ErrActiveRoomCapReached) {
-		return response, err
+	if errors.Is(err, ErrActiveRoomCapReached) {
+		s.detachExpiredRooms(s.clock.Now(), &resources)
+		response, err = s.createRoomOnce()
 	}
-
-	s.cleanupExpired(s.clock.Now())
-	return s.createRoomOnce()
+	return response, err
 }
 
 func (s *Store) createRoomOnce() (roomResponse, error) {
@@ -279,11 +282,12 @@ func (s *Store) clearRooms() clearRoomsResponse {
 	if !s.beginMutation() {
 		return clearRoomsResponse{}
 	}
+	var resources roomResources
+	defer func() { resources.close(defaultRoomDebugDeleteMsg) }()
 	defer s.endMutation()
 
 	registered := s.registeredRooms()
 	deleted := 0
-	var resources roomResources
 	for _, room := range registered {
 		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
@@ -301,7 +305,6 @@ func (s *Store) clearRooms() clearRoomsResponse {
 		}
 	}
 
-	resources.close(defaultRoomDebugDeleteMsg)
 	return clearRoomsResponse{Deleted: deleted}
 }
 
@@ -309,6 +312,8 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 	if !s.beginMutation() {
 		return clearRoomsResponse{}, false
 	}
+	var resources roomResources
+	defer func() { resources.close(defaultRoomDebugDeleteMsg) }()
 	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
@@ -316,7 +321,6 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 		return clearRoomsResponse{}, false
 	}
 
-	var resources roomResources
 	room.mu.Lock()
 	if room.ending {
 		room.mu.Unlock()
@@ -327,12 +331,10 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 	room.mu.Unlock()
 	s.publishDisconnectedClients(clientTransitions)
 	if !removed || !s.deleteRoomIfSame(roomID, room) {
-		resources.close(defaultRoomDebugDeleteMsg)
 		return clearRoomsResponse{}, false
 	}
 
 	s.releasePlayerIDs(playerIDs)
-	resources.close(defaultRoomDebugDeleteMsg)
 	return clearRoomsResponse{Deleted: 1}, true
 }
 
@@ -475,12 +477,31 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	if !s.beginMutation() {
 		return nil, ErrInternal
 	}
+	var failedSessions []*clientSession
+	defer func() { closeClientSessions(failedSessions, "control delivery failed") }()
+	var resources roomResources
+	defer func() { resources.stop() }()
 	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
 	if room == nil {
 		return nil, ErrRoomNotFound
 	}
+	storeLocked := false
+	roomLocked := false
+	var reservedBotIDs []string
+	defer func() {
+		for _, id := range reservedBotIDs {
+			delete(s.playerIDs, id)
+		}
+		if roomLocked {
+			room.mu.Unlock()
+		}
+		if storeLocked {
+			s.mu.Unlock()
+		}
+	}()
+
 	room.mu.Lock()
 	precheckErr := botAppendErrorLocked(room, count)
 	room.mu.Unlock()
@@ -489,50 +510,47 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	}
 
 	s.mu.Lock()
+	storeLocked = true
 	if s.closed {
-		s.mu.Unlock()
 		return nil, ErrInternal
 	}
 	if s.rooms[roomID] != room {
-		s.mu.Unlock()
 		return nil, ErrRoomNotFound
 	}
-	ids, err := s.reserveBotIDsLocked(count)
+	reservedBotIDs, err := s.reserveBotIDsLocked(count)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
-
-	rollbackIDs := func() {
-		for _, id := range ids {
-			delete(s.playerIDs, id)
-		}
-	}
 	room.mu.Lock()
+	roomLocked = true
 	if s.rooms[roomID] != room {
-		room.mu.Unlock()
-		rollbackIDs()
-		s.mu.Unlock()
 		return nil, ErrRoomNotFound
 	}
 	if err := botAppendErrorLocked(room, count); err != nil {
-		room.mu.Unlock()
-		rollbackIDs()
-		s.mu.Unlock()
 		return nil, err
 	}
-	bots := make([]playerResponse, 0, count)
+	bots := s.appendReservedBotsLocked(room, reservedBotIDs)
+	reservedBotIDs = nil
+	s.markRoomMatchedIfFullLocked(room)
+	if len(room.Players) == room.gameConfig.MatchPlayerCount() {
+		resources.detachBotFillLocked(room)
+	}
+	s.mu.Unlock()
+	storeLocked = false
+
+	deliveries := s.advanceMatchLoadingLocked(room)
+	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
+	roomLocked = false
+	return bots, nil
+}
+
+func (s *Store) appendReservedBotsLocked(room *room, ids []string) []playerResponse {
+	bots := make([]playerResponse, 0, len(ids))
 	for _, id := range ids {
 		bots = append(bots, s.appendParticipantLocked(room, id, true))
 	}
-	s.markRoomMatchedIfFullLocked(room)
-	s.mu.Unlock()
-
-	deliveries := s.advanceMatchLoadingLocked(room)
-	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
-	room.mu.Unlock()
-	closeClientSessions(failedSessions, "control delivery failed")
-	return bots, nil
+	return bots
 }
 
 func botAppendErrorLocked(room *room, count int) error {
@@ -551,10 +569,16 @@ func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error
 	if !s.beginMutation() {
 		return matchmakingJoinResponse{}, ErrInternal
 	}
+	var resources roomResources
+	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
 	defer s.endMutation()
 	s.matchmakingMu.Lock()
 	defer s.matchmakingMu.Unlock()
+	response, err := s.joinMatchmakingLocked(gameMode, &resources)
+	return response, err
+}
 
+func (s *Store) joinMatchmakingLocked(gameMode string, resources *roomResources) (matchmakingJoinResponse, error) {
 	selectedConfig, err := s.gameConfig.SelectMode(gameMode)
 	if err != nil {
 		return matchmakingJoinResponse{}, ErrInvalidGameMode
@@ -576,15 +600,18 @@ func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error
 			}
 			credentials = &issued
 		}
-		if joined, ok := s.tryJoinMatchmakingRoom(room, *credentials); ok {
+		if joined, joinedResources, ok := s.tryJoinMatchmakingRoom(room, *credentials); ok {
+			resources.merge(joinedResources)
 			return joined, nil
 		}
 	}
 
-	response, err := s.createMatchmakingRoom(credentials, selectedConfig)
+	response, createdResources, err := s.createMatchmakingRoom(credentials, selectedConfig)
+	resources.merge(createdResources)
 	if errors.Is(err, ErrActiveRoomCapReached) {
-		s.cleanupExpired(s.clock.Now())
-		response, err = s.createMatchmakingRoom(credentials, selectedConfig)
+		s.detachExpiredRooms(s.clock.Now(), resources)
+		response, createdResources, err = s.createMatchmakingRoom(credentials, selectedConfig)
+		resources.merge(createdResources)
 	}
 	if err != nil && credentials != nil {
 		s.releasePlayerID(credentials.id)
@@ -592,38 +619,45 @@ func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error
 	return response, err
 }
 
-func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, bool) {
+func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, roomResources, bool) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if !room.canAcceptMatchmakingLocked(s.debugRoomCapacity()) {
-		return matchmakingJoinResponse{}, false
+		return matchmakingJoinResponse{}, roomResources{}, false
 	}
 
+	humanCount := matchmakingHumanCount(room.Players)
 	issued := s.addPlayerLocked(room, credentials)
 	s.markRoomMatchedIfFullLocked(room)
-	return matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued), true
+	var resources roomResources
+	if humanCount == 0 {
+		resources.merge(s.armBotFillLocked(room))
+	} else if len(room.Players) == room.gameConfig.MatchPlayerCount() {
+		resources.detachBotFillLocked(room)
+	}
+	return matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued), resources, true
 }
 
-func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig simulation.GameConfig) (matchmakingJoinResponse, error) {
+func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig simulation.GameConfig) (matchmakingJoinResponse, roomResources, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return matchmakingJoinResponse{}, ErrInternal
+		return matchmakingJoinResponse{}, roomResources{}, ErrInternal
 	}
 	if len(s.rooms) >= s.maxActiveRooms {
 		s.mu.Unlock()
-		return matchmakingJoinResponse{}, ErrActiveRoomCapReached
+		return matchmakingJoinResponse{}, roomResources{}, ErrActiveRoomCapReached
 	}
 	roomID, err := s.uniqueRoomIDLocked()
 	if err != nil {
 		s.mu.Unlock()
-		return matchmakingJoinResponse{}, err
+		return matchmakingJoinResponse{}, roomResources{}, err
 	}
 	if credentials == nil {
 		issued, err := s.issuePlayerCredentialsLocked()
 		if err != nil {
 			s.mu.Unlock()
-			return matchmakingJoinResponse{}, err
+			return matchmakingJoinResponse{}, roomResources{}, err
 		}
 		credentials = &issued
 	}
@@ -631,6 +665,7 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig
 	room := s.newRoomLocked(roomID, gameConfig)
 	issued := s.addPlayerLocked(room, *credentials)
 	s.markRoomMatchedIfFullLocked(room)
+	resources := s.armBotFillLocked(room)
 	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
 	s.rooms[room.ID] = room
 	transition := s.observation.activeRoomsDelta(1)
@@ -638,7 +673,113 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig
 
 	s.observation.publish(transition)
 	s.logRoomEvent("room_created", room.ID)
-	return response, nil
+	return response, resources, nil
+}
+
+// armBotFillLocked starts a room-owned one-shot worker only for the first
+// human participant in a waiting matchmaking room. The caller holds room.mu
+// (or owns an unpublished room) and stops any returned resources after every
+// core Store lock is released.
+func (s *Store) armBotFillLocked(room *room) roomResources {
+	var resources roomResources
+	if room.removed || room.ending || room.Status != RoomStatusWaiting ||
+		room.matchStatus != "" || matchmakingHumanCount(room.Players) != 1 || room.botFillTicker != nil {
+		return resources
+	}
+	fillTicker := s.clock.NewTicker(matchmakingBotFillDelay)
+	fillStop := make(chan struct{})
+	room.botFillTicker = fillTicker
+	room.botFillStop = fillStop
+	if !s.launchRoomWorker(func() { s.runBotFill(room, fillTicker, fillStop) }) {
+		resources.detachBotFillLocked(room)
+	}
+	return resources
+}
+
+func (s *Store) runBotFill(room *room, fillTicker ticker, stop <-chan struct{}) {
+	select {
+	case <-fillTicker.C():
+		s.fillMatchmakingBots(room, fillTicker)
+	case <-stop:
+	}
+}
+
+func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
+	if room == nil || !s.beginMutation() {
+		return
+	}
+	var resources roomResources
+	var failedSessions []*clientSession
+	var fillErr error
+	defer func() {
+		resources.stop()
+		closeClientSessions(failedSessions, "control delivery failed")
+		if fillErr != nil {
+			s.logger.Error("bot fill failed", "event", "bot_fill_failed", "room_id", room.ID, "error", fillErr)
+		}
+	}()
+	defer s.endMutation()
+	s.matchmakingMu.Lock()
+	defer s.matchmakingMu.Unlock()
+	storeLocked := false
+	roomLocked := false
+	var reservedBotIDs []string
+	defer func() {
+		for _, id := range reservedBotIDs {
+			delete(s.playerIDs, id)
+		}
+		if roomLocked {
+			room.mu.Unlock()
+		}
+		if storeLocked {
+			s.mu.Unlock()
+		}
+	}()
+
+	s.mu.Lock()
+	storeLocked = true
+	if s.closed || s.rooms[room.ID] != room {
+		return
+	}
+	room.mu.Lock()
+	roomLocked = true
+	if room.removed || room.ending || room.Status != RoomStatusWaiting ||
+		room.matchStatus != "" || room.botFillTicker != expectedTicker {
+		return
+	}
+	remaining := room.gameConfig.MatchPlayerCount() - len(room.Players)
+	if remaining > 0 {
+		reservedBotIDs, fillErr = s.reserveBotIDsLocked(remaining)
+	}
+	ownedAfterReservation := s.rooms[room.ID] == room &&
+		!room.removed && !room.ending && room.Status == RoomStatusWaiting &&
+		room.matchStatus == "" && room.botFillTicker == expectedTicker
+	if room.botFillTicker == expectedTicker {
+		resources.detachBotFillLocked(room)
+	}
+	if fillErr != nil || !ownedAfterReservation {
+		return
+	}
+	s.appendReservedBotsLocked(room, reservedBotIDs)
+	reservedBotIDs = nil
+	s.markRoomMatchedIfFullLocked(room)
+	s.mu.Unlock()
+	storeLocked = false
+
+	deliveries := s.advanceMatchLoadingLocked(room)
+	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
+	room.mu.Unlock()
+	roomLocked = false
+}
+
+func matchmakingHumanCount(players []playerResponse) int {
+	count := 0
+	for _, player := range players {
+		if !player.IsBot {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Store) markRoomMatchedIfFullLocked(room *room) {
@@ -684,6 +825,8 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 	if !s.beginMutation() {
 		return roomResponse{}, ErrInternal
 	}
+	var resources roomResources
+	defer func() { resources.stop() }()
 	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
@@ -700,6 +843,7 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 		return roomResponse{}, ErrRoomHasNoPlayers
 	}
 
+	resources.detachBotFillLocked(room)
 	started := s.startRoomLocked(room)
 	response := room.toResponse(s.gameMap)
 	room.mu.Unlock()
