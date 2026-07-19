@@ -84,6 +84,203 @@ func TestStepContractAppliesInputCommands(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, Vector2{X: DefaultPlayerSpeed * TickDuration, Y: 0})
 }
 
+func TestStepAcknowledgesProcessedClientTick(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red"), Team: TeamRed}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID:   PlayerID("red"),
+		ClientTick: 12,
+		MoveDir:    Vector2{X: 1},
+	}})
+
+	if got := snapshot.Players[0].LastProcessedClientTick; got != 12 {
+		t.Fatalf("ACK=%d want=12", got)
+	}
+}
+
+func TestStepPreservesLastProcessedClientTickWithoutInput(t *testing.T) {
+	state := NewState([]PlayerData{{ID: PlayerID("red"), Team: TeamRed}})
+	state.Step([]InputCommand{{PlayerID: PlayerID("red"), ClientTick: 12}})
+
+	snapshot := state.Step(nil)
+
+	if got := snapshot.Players[0].LastProcessedClientTick; got != 12 {
+		t.Fatalf("ACK after no input=%d want=12", got)
+	}
+}
+
+func TestStepTracksClientTickIndependentlyPerPlayer(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red"), Team: TeamRed},
+		{ID: PlayerID("blue"), Team: TeamBlue},
+	})
+	state.Step([]InputCommand{
+		{PlayerID: PlayerID("red"), ClientTick: 7},
+		{PlayerID: PlayerID("blue"), ClientTick: 11},
+	})
+
+	snapshot := state.Step([]InputCommand{{PlayerID: PlayerID("red"), ClientTick: 8}})
+
+	if got := playerByID(t, snapshot, PlayerID("red")).LastProcessedClientTick; got != 8 {
+		t.Fatalf("red ACK=%d want=8", got)
+	}
+	if got := playerByID(t, snapshot, PlayerID("blue")).LastProcessedClientTick; got != 11 {
+		t.Fatalf("blue ACK=%d want=11", got)
+	}
+}
+
+func TestStepAcknowledgesProcessedInputWithoutVisibleEffect(t *testing.T) {
+	t.Run("wall collision", func(t *testing.T) {
+		start := Vector2{
+			X: StaticMapFixture().WorldPos(0, 1).X + TileSize/2 + DefaultPlayerRadius + DefaultPlayerSpeed*TickDuration,
+			Y: StaticMapFixture().WorldPos(1, 1).Y,
+		}
+		state := NewStateWithConfig([]PlayerData{{
+			ID: PlayerID("red"), Team: TeamRed, Pos: start,
+		}}, Config{Map: StaticMapFixture()})
+
+		snapshot := state.Step([]InputCommand{{
+			PlayerID: PlayerID("red"), ClientTick: 1, MoveDir: Vector2{X: -1},
+		}})
+
+		assertVector(t, "wall-blocked position", snapshot.Players[0].Pos, start)
+		if got := snapshot.Players[0].LastProcessedClientTick; got != 1 {
+			t.Fatalf("wall-blocked ACK=%d want=1", got)
+		}
+	})
+
+	t.Run("zero attack direction", func(t *testing.T) {
+		state := NewState([]PlayerData{{ID: PlayerID("red"), Team: TeamRed}})
+
+		snapshot := state.Step([]InputCommand{{
+			PlayerID: PlayerID("red"), ClientTick: 1, PressedAttack: true,
+		}})
+
+		if snapshot.Players[0].PressedAttack || len(snapshot.Projectiles) != 0 {
+			t.Fatalf("zero-direction attack had a visible effect: player=%+v projectiles=%+v", snapshot.Players[0], snapshot.Projectiles)
+		}
+		if got := snapshot.Players[0].LastProcessedClientTick; got != 1 {
+			t.Fatalf("zero-direction ACK=%d want=1", got)
+		}
+	})
+
+	t.Run("exhausted attack charge", func(t *testing.T) {
+		state := NewState([]PlayerData{{ID: PlayerID("red"), Team: TeamRed}})
+		for tick := int64(1); tick <= 4; tick++ {
+			state.Step([]InputCommand{{
+				PlayerID: PlayerID("red"), ClientTick: tick,
+				AttackDir: Vector2{X: 1}, PressedAttack: true,
+			}})
+		}
+
+		snapshot := state.Step([]InputCommand{{
+			PlayerID: PlayerID("red"), ClientTick: 5,
+			AttackDir: Vector2{X: 1}, PressedAttack: true,
+		}})
+
+		if snapshot.Players[0].PressedAttack || len(snapshot.Projectiles) != 4 {
+			t.Fatalf("exhausted attack had a visible effect: player=%+v projectiles=%d", snapshot.Players[0], len(snapshot.Projectiles))
+		}
+		if got := snapshot.Players[0].LastProcessedClientTick; got != 5 {
+			t.Fatalf("exhausted-attack ACK=%d want=5", got)
+		}
+	})
+}
+
+func TestStepRejectsStaleAndDuplicateClientTick(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		clientTick int64
+	}{
+		{name: "stale", clientTick: 11},
+		{name: "duplicate", clientTick: 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewState([]PlayerData{{ID: PlayerID("red"), Team: TeamRed}})
+			before := state.Step([]InputCommand{{
+				PlayerID: PlayerID("red"), ClientTick: 12, MoveDir: Vector2{X: 1},
+			}})
+
+			after := state.Step([]InputCommand{{
+				PlayerID: PlayerID("red"), ClientTick: tc.clientTick,
+				MoveDir: Vector2{Y: 1}, AttackDir: Vector2{Y: 1}, PressedAttack: true,
+			}})
+
+			if !reflect.DeepEqual(after.Players, before.Players) {
+				t.Fatalf("player state changed for %s tick: before=%+v after=%+v", tc.name, before.Players, after.Players)
+			}
+			if !reflect.DeepEqual(after.Projectiles, before.Projectiles) {
+				t.Fatalf("projectiles changed for %s tick: before=%+v after=%+v", tc.name, before.Projectiles, after.Projectiles)
+			}
+		})
+	}
+}
+
+func TestStepDoesNotAcknowledgeUnprocessedInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		player  PlayerData
+		command InputCommand
+	}{
+		{
+			name:    "negative tick",
+			player:  PlayerData{ID: PlayerID("red"), Team: TeamRed, LastProcessedClientTick: 7},
+			command: InputCommand{PlayerID: PlayerID("red"), ClientTick: -1, MoveDir: Vector2{X: 1}},
+		},
+		{
+			name:    "unknown player",
+			player:  PlayerData{ID: PlayerID("red"), Team: TeamRed, LastProcessedClientTick: 7},
+			command: InputCommand{PlayerID: PlayerID("ghost"), ClientTick: 8, MoveDir: Vector2{X: 1}},
+		},
+		{
+			name:    "dead player",
+			player:  PlayerData{ID: PlayerID("red"), Team: TeamRed, HP: 100, IsDead: true, LastProcessedClientTick: 7},
+			command: InputCommand{PlayerID: PlayerID("red"), ClientTick: 8, MoveDir: Vector2{X: 1}},
+		},
+		{
+			name:    "non-finite movement",
+			player:  PlayerData{ID: PlayerID("red"), Team: TeamRed, LastProcessedClientTick: 7},
+			command: InputCommand{PlayerID: PlayerID("red"), ClientTick: 8, MoveDir: Vector2{X: math.NaN()}},
+		},
+		{
+			name:    "non-finite attack",
+			player:  PlayerData{ID: PlayerID("red"), Team: TeamRed, LastProcessedClientTick: 7},
+			command: InputCommand{PlayerID: PlayerID("red"), ClientTick: 8, AttackDir: Vector2{Y: math.Inf(1)}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewState([]PlayerData{tc.player})
+			before := state.Step(nil)
+
+			after := state.Step([]InputCommand{tc.command})
+
+			if !reflect.DeepEqual(after.Players, before.Players) {
+				t.Fatalf("player state changed for unprocessed input: before=%+v after=%+v", before.Players, after.Players)
+			}
+			if !reflect.DeepEqual(after.Projectiles, before.Projectiles) {
+				t.Fatalf("projectiles changed for unprocessed input: before=%+v after=%+v", before.Projectiles, after.Projectiles)
+			}
+		})
+	}
+}
+
+func TestStepAppliesLegacyInputWithoutChangingACK(t *testing.T) {
+	state := NewState([]PlayerData{{
+		ID: PlayerID("red"), Team: TeamRed, LastProcessedClientTick: 12,
+	}})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red"), ClientTick: 0, MoveDir: Vector2{X: 1},
+	}})
+
+	assertVector(t, "legacy input position", snapshot.Players[0].Pos, Vector2{X: DefaultPlayerSpeed * TickDuration})
+	if got := snapshot.Players[0].LastProcessedClientTick; got != 12 {
+		t.Fatalf("legacy input ACK=%d want=12", got)
+	}
+}
+
 func TestStaticMapFixtureMatchesClientPrototypeValues(t *testing.T) {
 	gameMap := StaticMapFixture()
 
@@ -1431,6 +1628,19 @@ func assertPlayer(t *testing.T, snapshot Snapshot, id PlayerID, team Team, slot 
 	}
 
 	t.Fatalf("expected snapshot to include player %s", id)
+}
+
+func playerByID(t *testing.T, snapshot Snapshot, id PlayerID) PlayerData {
+	t.Helper()
+
+	for _, player := range snapshot.Players {
+		if player.ID == id {
+			return player
+		}
+	}
+
+	t.Fatalf("expected snapshot to include player %s", id)
+	return PlayerData{}
 }
 
 func assertPlayerHP(t *testing.T, snapshot Snapshot, id PlayerID, hp float64, isDead bool) {
