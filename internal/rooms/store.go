@@ -18,11 +18,14 @@ import (
 // mu protects rooms, activeSessions, playerIDs, random, and closed. Room
 // gameplay, connection, countdown, and resource fields are protected by room.mu
 // instead. The lock order is mutationMu -> Store.mu -> room.mu; acquiring an
-// outer lock while holding an inner lock is forbidden. workerMu is a leaf lock
+// outer lock while holding an inner lock is forbidden. matchmakingMu serializes
+// one complete waiting-room find-or-create transition, with lock order
+// mutationMu -> matchmakingMu -> Store.mu -> room.mu. workerMu is a leaf lock
 // that closes the gameplay/countdown launch gate before shutdown waits on
 // workerWG; no core lock is acquired while workerMu is held.
 type Store struct {
 	mutationMu        sync.RWMutex
+	matchmakingMu     sync.Mutex
 	mu                sync.RWMutex
 	shutdownOnce      sync.Once
 	shutdownErrMu     sync.Mutex
@@ -453,6 +456,9 @@ func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error
 		return matchmakingJoinResponse{}, ErrInternal
 	}
 	defer s.endMutation()
+	s.matchmakingMu.Lock()
+	defer s.matchmakingMu.Unlock()
+
 	selectedConfig, err := s.gameConfig.SelectMode(gameMode)
 	if err != nil {
 		return matchmakingJoinResponse{}, ErrInvalidGameMode

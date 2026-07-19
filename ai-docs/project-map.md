@@ -95,8 +95,8 @@ Process와 HTTP server error는 JSON `slog`로 stdout에 기록합니다. SIGINT
 
 1. Client IP를 resolve하고 token-bucket quota를 평가합니다. 허용 요청은 여기서 quota를 소비합니다.
 2. Optional request body의 `gameMode`를 catalog의 canonical config로 선택합니다. Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`입니다.
-3. Registry에서 같은 selected mode의 여유 waiting room만 찾습니다.
-4. 없으면 selected config를 소유한 새 waiting room을 만듭니다. Cap에 닿았을 때만 만료 room을 한 번 즉시 정리하고 생성도 한 번 재시도합니다.
+3. 같은 selected mode의 여유 waiting room 탐색과 없을 때의 생성을 하나의 serialized find-or-create transition으로 처리합니다.
+4. 새 room은 selected config를 소유합니다. Cap에 닿았을 때만 만료 room을 한 번 즉시 정리하고 생성도 한 번 재시도합니다.
 5. player와 session token을 발급합니다.
 6. room-local mode의 required player 수가 차면 matchmaking room으로 잠그고 late join을 막습니다.
 7. top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 반환합니다.
@@ -217,7 +217,7 @@ Room store는 in-memory입니다.
 
 각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
-외부 mutation의 lock 순서는 `mutationMu -> Store.mu -> room.mu`입니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
+외부 mutation의 lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `matchmakingMu`는 같은 mode의 동시 첫 join이 여러 room을 만들지 않도록 find-or-create 전체를 직렬화합니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
 
 Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보내며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
 

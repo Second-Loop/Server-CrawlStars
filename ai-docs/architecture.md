@@ -190,7 +190,7 @@ Simple matchmaking:
 - `POST /matchmaking/join`
 - Optional body의 `gameMode`로 `duel_1v1`, `solo`, `team`을 선택합니다.
 - Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`로 처리합니다.
-- 같은 mode의 waiting room만 찾고, 없으면 selected config를 소유한 room을 만듭니다.
+- 같은 mode의 waiting room 탐색과 없을 때의 room 생성을 하나의 serialized find-or-create transition으로 처리합니다. 동시 첫 join도 같은 pool을 재사용합니다.
 - player를 발급합니다.
 - selected mode의 `playersPerMatch`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
 - 모든 matched WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
@@ -229,7 +229,7 @@ WebSocket:
 
 Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
-동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
+동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create 전체를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
 
 ## Cleanup
 

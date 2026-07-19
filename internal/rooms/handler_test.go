@@ -1726,6 +1726,47 @@ func TestMatchmakingJoinSeparatesModePools(t *testing.T) {
 	}
 }
 
+func TestConcurrentMatchmakingJoinsReuseSingleModeRoom(t *testing.T) {
+	const playerCount = 6
+	for attempt := 0; attempt < 25; attempt++ {
+		store := NewStore(10)
+		start := make(chan struct{})
+		responses := make([]matchmakingJoinResponse, playerCount)
+		errs := make([]error, playerCount)
+		var workers sync.WaitGroup
+		workers.Add(playerCount)
+		for index := 0; index < playerCount; index++ {
+			go func() {
+				defer workers.Done()
+				<-start
+				responses[index], errs[index] = store.joinMatchmaking(simulation.GameModeSolo)
+			}()
+		}
+
+		close(start)
+		workers.Wait()
+		for index, err := range errs {
+			if err != nil {
+				store.Close()
+				t.Fatalf("attempt %d join %d: %v", attempt, index, err)
+			}
+		}
+
+		roomID := responses[0].Room.ID
+		for index, response := range responses[1:] {
+			if response.Room.ID != roomID {
+				store.Close()
+				t.Fatalf("attempt %d split same-mode joins between %q and join %d room %q", attempt, roomID, index+1, response.Room.ID)
+			}
+		}
+		rooms := store.listRooms().Rooms
+		store.Close()
+		if len(rooms) != 1 || len(rooms[0].Players) != playerCount {
+			t.Fatalf("attempt %d expected one full solo room, got %+v", attempt, rooms)
+		}
+	}
+}
+
 func TestMatchmakingJoinResponseMode(t *testing.T) {
 	store := NewStore(5)
 	handler := debugHandler(t, store)
