@@ -154,7 +154,7 @@ func (c *fakeClientConn) closeMetadata() (websocket.StatusCode, string) {
 	return c.closeCode, c.closeReason
 }
 
-func (c *fakeClientConn) CloseNow() error {
+func (c *fakeClientConn) AbortTransport() error {
 	c.forceCount.Add(1)
 	if c.forceFn != nil {
 		return c.forceFn()

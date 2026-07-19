@@ -1,9 +1,11 @@
 package rooms
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -18,7 +20,36 @@ type clientConn interface {
 	Write(context.Context, websocket.MessageType, []byte) error
 	Ping(context.Context) error
 	Close(websocket.StatusCode, string) error
-	CloseNow() error
+	AbortTransport() error
+}
+
+type hijackCaptureResponseWriter struct {
+	http.ResponseWriter
+	transport net.Conn
+}
+
+func (w *hijackCaptureResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("http.ResponseWriter does not implement http.Hijacker")
+	}
+	transport, readWriter, err := hijacker.Hijack()
+	if err == nil {
+		w.transport = transport
+	}
+	return transport, readWriter, err
+}
+
+type acceptedClientConn struct {
+	*websocket.Conn
+	transport net.Conn
+}
+
+func (c *acceptedClientConn) AbortTransport() error {
+	if c.transport == nil {
+		return nil
+	}
+	return c.transport.Close()
 }
 
 type writerCommandKind uint8
@@ -440,7 +471,7 @@ func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
 	}
 	s.forceOnce.Do(func() {
 		if s.conn != nil {
-			_ = s.conn.CloseNow()
+			_ = s.conn.AbortTransport()
 		}
 	})
 }
@@ -477,12 +508,19 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, nil)
+	capture := &hijackCaptureResponseWriter{ResponseWriter: w}
+	conn, err := websocket.Accept(capture, r, nil)
 	if err != nil {
 		s.rollbackClientReservation(reservation)
 		return
 	}
-	session, attached := s.attachClientSession(reservation, conn)
+	if capture.transport == nil {
+		s.rollbackClientReservation(reservation)
+		_ = conn.CloseNow()
+		return
+	}
+	clientConn := &acceptedClientConn{Conn: conn, transport: capture.transport}
+	session, attached := s.attachClientSession(reservation, clientConn)
 	if !attached {
 		s.rollbackClientReservation(reservation)
 		_ = conn.Close(websocket.StatusGoingAway, "room unavailable")

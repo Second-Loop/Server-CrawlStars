@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync"
 	"testing"
@@ -501,6 +502,57 @@ func TestStoreShutdownForceClosesBlockingHandshakeAtDeadline(t *testing.T) {
 	assertShutdownChannelClosed(t, session.writerDone, "forced session writerDone")
 	assertShutdownChannelClosed(t, session.heartbeatDone, "forced session heartbeatDone")
 	assertShutdownChannelClosed(t, lifecycleDone, "forced session lifecycleDone")
+}
+
+func TestStoreShutdownDeadlineAbortsRealWebSocketAlreadyClosing(t *testing.T) {
+	store := NewStore(5)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	created, err := store.createRoom()
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	issued, err := store.addPlayer(created.ID)
+	if err != nil {
+		t.Fatalf("add player: %v", err)
+	}
+	client := dialIssuedPlayer(t, server.URL, issued.WebSocketPath)
+	defer client.CloseNow()
+
+	store.mu.RLock()
+	var session *clientSession
+	var lifecycleDone <-chan struct{}
+	for current, done := range store.activeSessions {
+		session = current
+		lifecycleDone = done
+	}
+	store.mu.RUnlock()
+	if session == nil || lifecycleDone == nil {
+		t.Fatal("expected real WebSocket session lifecycle registration")
+	}
+
+	ctx := newShutdownManualDeadlineContext()
+	shutdownResult := startStoreShutdown(store, ctx)
+	waitShutdownSignal(t, session.transportCloseStart, "real WebSocket graceful close entry")
+	ctx.expire()
+
+	select {
+	case shutdownErr := <-shutdownResult:
+		if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+			t.Fatalf("expected real WebSocket shutdown deadline, got %v", shutdownErr)
+		}
+	case <-time.After(time.Second):
+		_ = client.CloseNow()
+		shutdownErr := waitStoreShutdown(t, shutdownResult)
+		t.Fatalf("shutdown deadline did not abort the real WebSocket transport; eventual result: %v", shutdownErr)
+	}
+
+	assertShutdownChannelClosed(t, session.closeDone, "real WebSocket session closeDone")
+	assertShutdownChannelClosed(t, session.writerDone, "real WebSocket session writerDone")
+	assertShutdownChannelClosed(t, session.heartbeatDone, "real WebSocket session heartbeatDone")
+	assertShutdownChannelClosed(t, lifecycleDone, "real WebSocket session lifecycleDone")
 }
 
 func TestStoreShutdownForceDetachesTerminalRoomAlreadyInsideClose(t *testing.T) {
