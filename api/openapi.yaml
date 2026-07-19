@@ -36,6 +36,7 @@ paths:
       description: |
         요청한 gameMode와 같은 여유 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
         body가 없거나, 빈 object이거나, gameMode가 빈 문자열이면 기본값 duel_1v1을 선택합니다.
+        Raw request body가 1024 bytes를 초과하면 400 `invalid_request`로 거부합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
         선택 mode의 required player 수가 차도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
@@ -47,6 +48,7 @@ paths:
           선택할 game mode입니다. Request body 자체는 optional입니다.
           body 없음, 빈 object, gameMode 빈 문자열은 모두 duel_1v1로 처리합니다.
           새 client는 enum의 canonical mode ID를 보내거나 field를 생략해야 합니다.
+          Raw request body의 최대 크기는 1024 bytes이며 초과하면 `invalid_request`입니다.
         content:
           application/json:
             schema:
@@ -71,7 +73,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/MatchmakingJoin"
         "400":
-          description: 요청 JSON이 잘못됐거나 지원하지 않는 gameMode입니다.
+          description: 요청 JSON이 잘못됐거나 raw body가 1024 bytes를 초과했거나 지원하지 않는 gameMode입니다.
           content:
             application/json:
               schema:

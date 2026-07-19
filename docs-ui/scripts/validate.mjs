@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
+const apiDocsText = await readFile(new URL("../../ai-docs/api-docs.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
@@ -98,6 +99,10 @@ for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"])
 }
 
 const matchmakingJoinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+assert(
+  matchmakingJoinOperation.includes("1024 bytes"),
+  "joinMatchmaking must document the raw 1024-byte request body limit",
+);
 const matchmakingJoinRequestBody = extractYAMLNamedBlock(matchmakingJoinOperation, "      requestBody:");
 assert(
   !matchmakingJoinRequestBody.includes("required: true"),
@@ -232,6 +237,21 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
+assert(
+  docsBuildText.includes("{ gameMode, room, player, sessionToken, webSocketPath }"),
+  "docs UI must show the selected gameMode in the join response",
+);
+assert(
+  docsBuildText.includes("선택 mode의 required player"),
+  "docs UI must describe Ready using the selected mode player count",
+);
+assert(
+  !docsBuildText.includes("두 player가 모두 WebSocket"),
+  "docs UI must not hard-code the duel Ready player count",
+);
+for (const marker of ["optional `gameMode`", "선택 mode의 required player", "raw body가 1024 bytes"]) {
+  assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
+}
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);

@@ -43,7 +43,9 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-`POST /matchmaking/join`은 Unity client가 `room`, `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Production queue, rating, account auth, persistence는 없습니다. 두 번째 player가 들어오면 room은 matched 상태로 잠기지만 `room.status: waiting`은 유지합니다.
+`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 required player 수는 duel 2명, solo/team 6명이며 정원이 차면 room은 matched 상태로 잠기지만 `room.status: waiting`은 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
+
+Join raw body가 1024 bytes를 초과하거나 JSON이 잘못되면 400 `invalid_request`, 지원하지 않는 non-empty mode면 400 `invalid_game_mode`를 반환합니다.
 
 Room/player ID는 random opaque pattern으로 문서화합니다. Raw player token은 발급 응답의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 같은 secret으로 나타나며 inbound query로 다시 전달됩니다. Public Room/Player/list/detail/Ready/Snapshot/GameEnd schema에는 raw token이나 digest field를 두지 않습니다.
 
