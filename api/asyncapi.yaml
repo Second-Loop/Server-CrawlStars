@@ -94,7 +94,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Send ready ACK
-    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Bot은 ACK를 보내지 않습니다.
+    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Bot은 ACK를 보내지 않습니다. 같은 human player의 중복 ready ACK는 idempotent하므로 Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyAck"
   receiveSnapshot:

@@ -133,7 +133,13 @@ func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
 		assertStringContains(t, readyOperation, want)
 	}
 	readyAckOperation := extractYAMLBlock(t, asyncAPIText, "  sendReadyAck:", "\n  receiveSnapshot:")
-	assertStringContains(t, readyAckOperation, "Bot은 ACK를 보내지 않습니다")
+	for _, want := range []string{
+		"Bot은 ACK를 보내지 않습니다",
+		"중복 ready ACK는 idempotent",
+		"Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다",
+	} {
+		assertStringContains(t, readyAckOperation, want)
+	}
 
 	lifecycleDescription := extractYAMLBlock(t, asyncAPIText, "  roomPlayer:", "\noperations:")
 	for _, want := range []string{
@@ -143,13 +149,16 @@ func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
 		assertStringContains(t, lifecycleDescription, want)
 	}
 
-	readyMessage := extractYAMLBlock(t, asyncAPIText, "    ReadyEventMessage:\n      type: object", "\n    ReadyAckMessage:")
+	readyMessage := extractYAMLBlock(t, asyncAPIText, "    ReadyEventMessage:\n      name: ReadyEventMessage", "\n    ReadyAckMessage:")
+	assertStringContains(t, readyMessage, "Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다")
+
+	readySchema := extractYAMLBlock(t, asyncAPIText, "    ReadyEventMessage:\n      type: object", "\n    ReadyAckMessage:")
 	for _, want := range []string{
 		"        Players:\n          oneOf:",
 		"            - type: array\n              minItems: 2\n              maxItems: 2\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
 		"            - type: array\n              minItems: 6\n              maxItems: 6\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
 	} {
-		assertStringContains(t, readyMessage, want)
+		assertStringContains(t, readySchema, want)
 	}
 
 	teamEnum := "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]"

@@ -293,11 +293,22 @@ for (const marker of ["full participant list", "human session만 Ready ACK"]) {
   assert(receiveReadyOperation.includes(marker), `receiveReady must document ${marker}`);
 }
 const sendReadyAckOperation = extractYAMLNamedBlock(asyncAPIOperations, "  sendReadyAck:");
-assert(sendReadyAckOperation.includes("Bot은 ACK를 보내지 않습니다"), "sendReadyAck must be human-only");
+for (const marker of [
+  "Bot은 ACK를 보내지 않습니다",
+  "중복 ready ACK는 idempotent",
+  "Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다",
+]) {
+  assert(sendReadyAckOperation.includes(marker), `sendReadyAck must document ${marker}`);
+}
 const asyncAPIComponents = extractYAMLNamedBlock(asyncAPIText, "components:");
 const asyncAPIMessages = extractYAMLNamedBlock(asyncAPIComponents, "  messages:");
 const readyEventMessage = extractYAMLNamedBlock(asyncAPIMessages, "    ReadyEventMessage:");
-assert(readyEventMessage.includes("full participant assignment"), "ReadyEventMessage must describe full participants");
+for (const marker of [
+  "full participant assignment",
+  "Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다",
+]) {
+  assert(readyEventMessage.includes(marker), `ReadyEventMessage must document ${marker}`);
+}
 const modeTeamEnum = "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]";
 assert(
   countOccurrences(asyncAPIText, modeTeamEnum) === 2,
