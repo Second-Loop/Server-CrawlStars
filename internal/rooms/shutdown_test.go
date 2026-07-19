@@ -521,17 +521,20 @@ func TestStoreShutdownDeadlineAbortsRealWebSocketAlreadyClosing(t *testing.T) {
 	client := dialIssuedPlayer(t, server.URL, issued.WebSocketPath)
 	defer client.CloseNow()
 
-	store.mu.RLock()
 	var session *clientSession
 	var lifecycleDone <-chan struct{}
-	for current, done := range store.activeSessions {
-		session = current
-		lifecycleDone = done
-	}
-	store.mu.RUnlock()
-	if session == nil || lifecycleDone == nil {
-		t.Fatal("expected real WebSocket session lifecycle registration")
-	}
+	waitShutdownCondition(t, "real WebSocket session lifecycle registration", func() bool {
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+		if len(store.activeSessions) != 1 {
+			return false
+		}
+		for current, done := range store.activeSessions {
+			session = current
+			lifecycleDone = done
+		}
+		return session != nil && lifecycleDone != nil
+	})
 
 	ctx := newShutdownManualDeadlineContext()
 	shutdownResult := startStoreShutdown(store, ctx)
