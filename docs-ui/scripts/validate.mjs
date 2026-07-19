@@ -678,6 +678,21 @@ function validateClientTickACKContract() {
 
   const docsGameplay = extractDocsJSONExample("Gameplay");
   assertEveryJSONPlayerHasClientTickACK(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
+  assert(
+    docsGameplay.Snapshot.Players.some(
+      (player) =>
+        player.IsBot === false &&
+        Number.isSafeInteger(player.LastProcessedClientTick) &&
+        player.LastProcessedClientTick > 0,
+    ),
+    "docs UI Gameplay example must show at least one human with a positive processed tick",
+  );
+  assert(
+    docsGameplay.Snapshot.Players.some((player) => player.IsBot === true),
+    "docs UI Gameplay example must show a bot with ACK 0",
+  );
+
+  assertTopLevelRequiredFieldsParserContract();
 }
 
 function assertLifecyclePlayersNull(example, status, name) {
@@ -716,14 +731,65 @@ function extractSchemaProperty(schema, propertyName) {
 }
 
 function topLevelRequiredFields(schema) {
-  const matches = schema.split(/\r?\n/).filter((line) => /^      required: \[.*\]$/.test(line));
+  const lines = schema.split(/\r?\n/);
+  const matches = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.startsWith("      required:"));
   assert(matches.length <= 1, "schema must have at most one top-level required list");
   if (matches.length === 0) return [];
-  const line = matches[0];
-  return line
-    .slice(line.indexOf("[") + 1, line.lastIndexOf("]"))
-    .split(",")
-    .map((value) => value.trim());
+
+  const [{ line, index }] = matches;
+  const value = line.slice("      required:".length).trim();
+  if (value !== "") {
+    const inline = value.match(/^\[(.*)\]$/);
+    assert(inline, "schema top-level required must be an inline or block list");
+    if (inline[1].trim() === "") return [];
+    return inline[1].split(",").map((field) => requiredFieldName(field));
+  }
+
+  const fields = [];
+  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+    const candidate = lines[cursor];
+    if (candidate.trim() === "" || candidate.trimStart().startsWith("#")) continue;
+    const indentation = candidate.length - candidate.trimStart().length;
+    if (indentation <= 6) break;
+    const item = candidate.match(/^        -\s+(.+)$/);
+    assert(item, "schema top-level required block must contain only list items");
+    fields.push(requiredFieldName(item[1]));
+  }
+  assert(fields.length > 0, "schema top-level required block must not be empty");
+  return fields;
+}
+
+function requiredFieldName(value) {
+  const field = value.trim();
+  assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(field), `invalid required field name ${field}`);
+  return field;
+}
+
+function assertTopLevelRequiredFieldsParserContract() {
+  const inline = `    Example:\n      required: [First, Second]\n      properties:\n        First:\n          type: string`;
+  assert(
+    JSON.stringify(topLevelRequiredFields(inline)) === JSON.stringify(["First", "Second"]),
+    "required parser must support inline lists",
+  );
+
+  const block = `    Example:\n      required:\n        - First\n        - Second\n      properties:\n        First:\n          type: string`;
+  assert(
+    JSON.stringify(topLevelRequiredFields(block)) === JSON.stringify(["First", "Second"]),
+    "required parser must support block lists",
+  );
+
+  const nestedOnly = `    Example:\n      properties:\n        Child:\n          required: [Nested]\n          properties:\n            Nested:\n              type: string`;
+  assert(topLevelRequiredFields(nestedOnly).length === 0, "required parser must ignore nested lists");
+
+  let malformedRejected = false;
+  try {
+    topLevelRequiredFields("    Example:\n      required: First");
+  } catch {
+    malformedRejected = true;
+  }
+  assert(malformedRejected, "required parser must reject malformed scalar values");
 }
 
 function countExactLines(text, want) {

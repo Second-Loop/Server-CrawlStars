@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -266,6 +267,33 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	gameplayArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Gameplay</h3>", "</article>")
 	if got := strings.Count(gameplayArticle, `"LastProcessedClientTick":`); got != 2 {
 		t.Fatalf("expected served gameplay article to include two ACK fields, got %d", got)
+	}
+	gameplayJSON := strings.TrimPrefix(
+		extractYAMLBlock(t, gameplayArticle, "<pre><code>", "</code></pre>"),
+		"<pre><code>",
+	)
+	var servedGameplay struct {
+		Snapshot struct {
+			Players []struct {
+				IsBot                   bool
+				LastProcessedClientTick int64
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(gameplayJSON), &servedGameplay); err != nil {
+		t.Fatalf("decode served gameplay example: %v", err)
+	}
+	servedHasPositiveHuman := false
+	servedHasBotZero := false
+	for _, player := range servedGameplay.Snapshot.Players {
+		if player.IsBot {
+			servedHasBotZero = servedHasBotZero || player.LastProcessedClientTick == 0
+		} else {
+			servedHasPositiveHuman = servedHasPositiveHuman || player.LastProcessedClientTick > 0
+		}
+	}
+	if !servedHasPositiveHuman || !servedHasBotZero {
+		t.Fatalf("served gameplay example must include a positive human ACK and bot ACK 0: %s", gameplayJSON)
 	}
 }
 
