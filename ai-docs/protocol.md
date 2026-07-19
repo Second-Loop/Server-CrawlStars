@@ -355,7 +355,7 @@ Store는 30초 janitor ticker 하나로 registry snapshot을 짧게 얻은 뒤 r
 
 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. 따라서 Solo prior loser와 ordinary reconnect predecessor가 모두 barrier에 남고, lifecycle monitor가 각 `closeDone` 뒤 이를 제거합니다. 그 뒤 registry를 분리하고 active-room observer를 반영한 다음 player ID를 release하고 `room_ended` log와 남은 room resource close를 수행합니다. `cleanup success signal`은 이 정상 작업이 모두 성공한 마지막에만 닫습니다. Callback panic, stale ownership, 이미 제거된 room은 성공으로 표시하지 않습니다. Closing 중인 ending room은 hard TTL과 debug `DELETE /rooms`/`DELETE /rooms/{roomID}`가 제거하지 않습니다.
 
-`Shutdown`은 forced-teardown 예외입니다. Store quiescing을 소유하므로 terminal `closeDone` 전에 room registry와 player ID를 detach할 수 있고 deadline에는 transport를 force-close할 수 있습니다. 그래도 GameEnd cleanup worker와 session의 close/writer/heartbeat/lifecycle을 모두 join한 뒤 반환합니다. Forced takeover는 normal GameEnd cleanup signal을 닫지 않고 `room_ended`를 기록하지 않습니다.
+`Shutdown`은 forced-teardown 예외입니다. Store quiescing을 소유하므로 terminal `closeDone` 전에 room registry와 player ID를 detach할 수 있습니다. Deadline에는 WebSocket accept 때 캡처한 underlying `net.Conn`을 직접 닫아 이미 진행 중인 graceful close를 중단합니다. 그래도 GameEnd cleanup worker와 session의 close/writer/heartbeat/lifecycle을 모두 join한 뒤 반환합니다. Forced takeover는 normal GameEnd cleanup signal을 닫지 않고 `room_ended`를 기록하지 않습니다.
 
 디버그 테스트 중 즉시 비워야 하면 REST debug API를 명시적으로 활성화하고 Bearer credential로 호출합니다. 기본 상태에서는 debug route와 method fallback이 `404 not_found`이며, 활성화 후 missing/wrong/multiple credential은 route result보다 먼저 `401 unauthorized`입니다. WebSocket GET은 debug Bearer 예외입니다.
 

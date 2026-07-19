@@ -226,7 +226,7 @@ Room store는 in-memory입니다.
 
 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 아직 close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 barrier에 남습니다. 그 뒤 registry, active-room observer, player ID, `room_ended` log, resources를 정리하고 cleanup success signal을 마지막에 닫습니다. Hard TTL과 debug clear/delete는 ending room을 제거하지 않습니다.
 
-Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보냅니다. GameEnd close barrier의 forced-teardown 예외로서 close 전에 registry/player ID를 detach할 수 있지만 cleanup worker와 session lifecycle을 join합니다. 이 takeover는 normal cleanup signal을 닫거나 `room_ended`를 기록하지 않으며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
+Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보냅니다. GameEnd close barrier의 forced-teardown 예외로서 close 전에 registry/player ID를 detach할 수 있고, deadline에는 WebSocket accept에서 캡처한 underlying `net.Conn`을 직접 닫아 진행 중인 graceful close를 중단합니다. 그래도 cleanup worker와 session lifecycle을 join합니다. 이 takeover는 normal cleanup signal을 닫거나 `room_ended`를 기록하지 않으며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
 
 GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로입니다. `duel_1v1` 결과는 유지하고, Solo 중간 탈락은 Lose 후 survivor가 계속하며 마지막 생존자는 Win입니다. 이전 Lose는 이후 Draw로 덮지 않습니다. Team 일부 사망은 계속하고 한 team 전멸은 3 Lose/3 Win, 양 team 같은 tick 전멸은 6 Draw입니다.
 

@@ -78,7 +78,7 @@ SIGINT/SIGTERM 또는 어느 한 HTTP server 종료
   -> 남은 HTTP transport 강제 close
 ```
 
-Systemd의 `TimeoutStopSec=15s` 안에서 application 자체 10초 grace를 사용합니다. `rooms.Store.Shutdown`은 janitor와 room ticker를 멈추고, WebSocket에 `1000 / server shutting down` close를 보낸 뒤 writer와 heartbeat까지 join합니다. 이미 GameEnd close barrier에 들어간 room에도 Shutdown은 forced-teardown 예외로 동작합니다. Registry/player ID를 `closeDone` 전에 detach할 수 있지만 GameEnd cleanup worker와 session close/writer/heartbeat/lifecycle은 모두 join합니다. 이 takeover는 normal GameEnd cleanup signal과 `room_ended` log를 만들지 않습니다. Application HTTP는 `ReadHeaderTimeout=5s`, `IdleTimeout=60s`를 사용합니다. WebSocket과 streaming response를 자르지 않도록 server-wide `WriteTimeout`은 두지 않습니다.
+Systemd의 `TimeoutStopSec=15s` 안에서 application 자체 10초 grace를 사용합니다. `rooms.Store.Shutdown`은 janitor와 room ticker를 멈추고, WebSocket에 `1000 / server shutting down` close를 보낸 뒤 writer와 heartbeat까지 join합니다. 이미 GameEnd close barrier에 들어간 room에도 Shutdown은 forced-teardown 예외로 동작합니다. Registry/player ID를 `closeDone` 전에 detach할 수 있지만 GameEnd cleanup worker와 session close/writer/heartbeat/lifecycle은 모두 join합니다. Deadline에는 WebSocket accept 때 캡처한 underlying `net.Conn`을 직접 닫아 이미 진행 중인 graceful close도 중단합니다. 이 takeover는 normal GameEnd cleanup signal과 `room_ended` log를 만들지 않습니다. Application HTTP는 `ReadHeaderTimeout=5s`, `IdleTimeout=60s`를 사용합니다. WebSocket과 streaming response를 자르지 않도록 server-wide `WriteTimeout`은 두지 않습니다.
 
 Process log와 HTTP server error log는 stdout의 JSON `slog`로 기록합니다. Process event 이름은 `msg`에, room lifecycle과 WebSocket event 이름은 `event`와 `msg`에 기록합니다. Room/WebSocket log는 `roomID`, 필요한 경우 `playerID`와 bounded category/status만 추가합니다. Logger와 Observer callback은 Store를 다시 호출하지 않는 bounded pure sink입니다. Mutation 함수가 반환되면 해당 transition의 log와 metric publication도 끝난 상태입니다.
 
@@ -254,7 +254,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - Room terminal decision은 `ending`을 예약하고 ticker를 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 이 상태에서는 새 mutation과 추가 tick을 받지 않습니다.
 - 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 transport close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 room-owned barrier에 남으며, lifecycle monitor가 각 `closeDone` 뒤 제거합니다. 그 뒤 room registry, active-room observer, player ID, `room_ended` log, 남은 resources를 정리합니다. Cleanup success signal은 모든 정상 작업이 성공한 마지막에만 닫습니다.
 - Hard TTL janitor와 debug clear/delete는 ending room을 제거하지 않습니다.
-- Shutdown은 close barrier의 forced-teardown 예외입니다. Registry/player ID를 먼저 detach할 수 있지만 cleanup worker와 session lifecycle을 join하며 normal cleanup signal과 `room_ended` log는 만들지 않습니다.
+- Shutdown은 close barrier의 forced-teardown 예외입니다. Registry/player ID를 먼저 detach할 수 있고 deadline에는 captured underlying transport를 직접 abort하지만, cleanup worker와 session lifecycle을 join하며 normal cleanup signal과 `room_ended` log는 만들지 않습니다.
 - Store당 하나의 30초 janitor가 TTL을 검사하며, `Store.Close`는 room에서 이미 분리된 terminal session까지 포함해 connection close, writer, heartbeat 종료를 기다립니다.
 - Active room cap에 닿은 create/matchmaking만 즉시 cleanup을 한 번 수행하고 생성도 한 번 재시도합니다. Non-expired room만 남으면 409를 유지합니다.
 
