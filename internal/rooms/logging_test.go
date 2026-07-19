@@ -1027,6 +1027,7 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 		"room_created": true, "room_started": true, "room_ended": true, "room_expired": true,
 		"websocket_connected": true, "websocket_disconnected": true,
 		"websocket_auth_rejected": true, "websocket_io_error": true,
+		"bot_fill_failed": true,
 	}
 	allowedCategories := map[string]bool{
 		"invalid_token": true, "read_failed": true, "write_failed": true,
@@ -1039,6 +1040,7 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 	allowedKeys := map[string]bool{
 		"time": true, "level": true, "msg": true, "event": true,
 		"roomID": true, "playerID": true, "category": true, "status": true,
+		"room_id": true, "error": true,
 	}
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 		if line == "" {

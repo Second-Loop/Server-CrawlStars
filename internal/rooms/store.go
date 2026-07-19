@@ -487,6 +487,21 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	if room == nil {
 		return nil, ErrRoomNotFound
 	}
+	storeLocked := false
+	roomLocked := false
+	var reservedBotIDs []string
+	defer func() {
+		for _, id := range reservedBotIDs {
+			delete(s.playerIDs, id)
+		}
+		if roomLocked {
+			room.mu.Unlock()
+		}
+		if storeLocked {
+			s.mu.Unlock()
+		}
+	}()
+
 	room.mu.Lock()
 	precheckErr := botAppendErrorLocked(room, count)
 	room.mu.Unlock()
@@ -495,52 +510,57 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	}
 
 	s.mu.Lock()
+	storeLocked = true
 	if s.closed {
-		s.mu.Unlock()
 		return nil, ErrInternal
 	}
 	if s.rooms[roomID] != room {
-		s.mu.Unlock()
 		return nil, ErrRoomNotFound
 	}
-	ids, err := s.reserveBotIDsLocked(count)
+	reservedBotIDs, err := s.reserveBotIDsLocked(count)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
-
-	rollbackIDs := func() {
-		for _, id := range ids {
-			delete(s.playerIDs, id)
-		}
-	}
 	room.mu.Lock()
+	roomLocked = true
 	if s.rooms[roomID] != room {
-		room.mu.Unlock()
-		rollbackIDs()
-		s.mu.Unlock()
 		return nil, ErrRoomNotFound
 	}
 	if err := botAppendErrorLocked(room, count); err != nil {
-		room.mu.Unlock()
-		rollbackIDs()
-		s.mu.Unlock()
 		return nil, err
 	}
-	bots := make([]playerResponse, 0, count)
-	for _, id := range ids {
-		bots = append(bots, s.appendParticipantLocked(room, id, true))
-	}
+	bots := s.appendReservedBotsLocked(room, reservedBotIDs)
+	reservedBotIDs = nil
 	s.markRoomMatchedIfFullLocked(room)
 	if len(room.Players) == room.gameConfig.MatchPlayerCount() {
 		resources.detachBotFillLocked(room)
 	}
 	s.mu.Unlock()
+	storeLocked = false
 
 	deliveries := s.advanceMatchLoadingLocked(room)
 	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
+	roomLocked = false
 	return bots, nil
+}
+
+// appendBotsLocked reserves every bot identity before appending any participant.
+// The caller holds Store.mu and room.mu.
+func (s *Store) appendBotsLocked(room *room, count int) ([]playerResponse, error) {
+	ids, err := s.reserveBotIDsLocked(count)
+	if err != nil {
+		return nil, err
+	}
+	return s.appendReservedBotsLocked(room, ids), nil
+}
+
+func (s *Store) appendReservedBotsLocked(room *room, ids []string) []playerResponse {
+	bots := make([]playerResponse, 0, len(ids))
+	for _, id := range ids {
+		bots = append(bots, s.appendParticipantLocked(room, id, true))
+	}
+	return bots
 }
 
 func botAppendErrorLocked(room *room, count int) error {
@@ -694,25 +714,62 @@ func (s *Store) runBotFill(room *room, fillTicker ticker, stop <-chan struct{}) 
 	}
 }
 
-// fillMatchmakingBots only consumes the one-shot resource in Task 1. Task 2
-// owns the participant append transition.
-func (s *Store) fillMatchmakingBots(room *room, fillTicker ticker) {
-	if !s.beginMutation() {
+func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
+	if room == nil || !s.beginMutation() {
 		return
 	}
 	var resources roomResources
-	defer func() { resources.stop() }()
+	var failedSessions []*clientSession
+	var fillErr error
+	defer func() {
+		resources.stop()
+		closeClientSessions(failedSessions, "control delivery failed")
+		if fillErr != nil {
+			s.logger.Error("bot fill failed", "event", "bot_fill_failed", "room_id", room.ID, "error", fillErr)
+		}
+	}()
 	defer s.endMutation()
-	if room == nil {
+	s.matchmakingMu.Lock()
+	defer s.matchmakingMu.Unlock()
+	storeLocked := false
+	roomLocked := false
+	defer func() {
+		if roomLocked {
+			room.mu.Unlock()
+		}
+		if storeLocked {
+			s.mu.Unlock()
+		}
+	}()
+
+	s.mu.Lock()
+	storeLocked = true
+	if s.closed || s.rooms[room.ID] != room {
 		return
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	room.mu.Lock()
-	defer room.mu.Unlock()
-	if s.rooms[room.ID] == room && room.botFillTicker == fillTicker {
-		resources.detachBotFillLocked(room)
+	roomLocked = true
+	if room.removed || room.ending || room.Status != RoomStatusWaiting ||
+		room.matchStatus != "" || room.botFillTicker != expectedTicker {
+		return
 	}
+	resources.detachBotFillLocked(room)
+	remaining := room.gameConfig.MatchPlayerCount() - len(room.Players)
+	if remaining > 0 {
+		_, fillErr = s.appendBotsLocked(room, remaining)
+	}
+	if fillErr == nil {
+		s.markRoomMatchedIfFullLocked(room)
+	}
+	s.mu.Unlock()
+	storeLocked = false
+
+	if fillErr == nil {
+		deliveries := s.advanceMatchLoadingLocked(room)
+		failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
+	}
+	room.mu.Unlock()
+	roomLocked = false
 }
 
 func matchmakingHumanCount(players []playerResponse) int {

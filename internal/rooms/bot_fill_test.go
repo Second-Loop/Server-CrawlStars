@@ -2,14 +2,434 @@ package rooms
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
+
+func TestBotFillAtTenSeconds(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	room := store.lookupRoom(joined.Room.ID)
+
+	clock.Advance(matchmakingBotFillDelay - time.Nanosecond)
+	room.mu.Lock()
+	playersBeforeDeadline := len(room.Players)
+	statusBeforeDeadline := room.matchStatus
+	room.mu.Unlock()
+	if playersBeforeDeadline != 1 || statusBeforeDeadline != "" {
+		t.Fatalf("fill before 10s: players=%d status=%q", playersBeforeDeadline, statusBeforeDeadline)
+	}
+
+	clock.Advance(time.Nanosecond)
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+
+	room.mu.Lock()
+	players := append([]playerResponse(nil), room.Players...)
+	room.mu.Unlock()
+	if len(players) != 2 || players[0].IsBot || !players[1].IsBot {
+		t.Fatalf("players at 10s=%+v want one human then one bot", players)
+	}
+}
+
+func TestBotFillUsesEveryModeAssignment(t *testing.T) {
+	for _, mode := range []string{
+		simulation.GameModeDuel1v1,
+		simulation.GameModeSolo,
+		simulation.GameModeTeam,
+	} {
+		selected, err := simulation.StaticGameConfig().SelectMode(mode)
+		if err != nil {
+			t.Fatalf("select mode %q: %v", mode, err)
+		}
+		for humanCount := 1; humanCount < selected.MatchPlayerCount(); humanCount++ {
+			t.Run(mode+"/humans="+string(rune('0'+humanCount)), func(t *testing.T) {
+				clock := newFakeClock()
+				store := NewStoreWithClock(5, clock)
+				t.Cleanup(store.Close)
+
+				var roomID string
+				for index := 0; index < humanCount; index++ {
+					joined, joinErr := store.joinMatchmaking(mode)
+					if joinErr != nil {
+						t.Fatalf("join human %d: %v", index, joinErr)
+					}
+					if index == 0 {
+						roomID = joined.Room.ID
+					} else if joined.Room.ID != roomID {
+						t.Fatalf("human %d joined room=%q want=%q", index, joined.Room.ID, roomID)
+					}
+				}
+
+				clock.TickTicker(matchmakingBotFillDelay, 0)
+				room := store.lookupRoom(roomID)
+				waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+
+				room.mu.Lock()
+				players := append([]playerResponse(nil), room.Players...)
+				config := room.gameConfig
+				room.mu.Unlock()
+				if len(players) != config.MatchPlayerCount() {
+					t.Fatalf("players=%d want=%d", len(players), config.MatchPlayerCount())
+				}
+				for index, player := range players {
+					wantTeam, wantSlot, ok := config.TeamForPlayerIndex(index)
+					if !ok || player.Team != string(wantTeam) || player.Slot != wantSlot {
+						t.Fatalf("player[%d]=%+v want team=%q slot=%d", index, player, wantTeam, wantSlot)
+					}
+					if gotBot := index >= humanCount; player.IsBot != gotBot {
+						t.Fatalf("player[%d].IsBot=%t want=%t", index, player.IsBot, gotBot)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestBotFillHumanFirst(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+
+	first, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join first human: %v", err)
+	}
+	reader := newBotFillBarrierReader(0x61)
+	store.mu.Lock()
+	store.random = reader
+	store.mu.Unlock()
+
+	secondResult := make(chan matchmakingJoinResult, 1)
+	go func() {
+		joined, joinErr := store.joinMatchmaking(simulation.GameModeDuel1v1)
+		secondResult <- matchmakingJoinResult{joined: joined, err: joinErr}
+	}()
+	waitBotFillSignal(t, reader.entered, "human credential entropy")
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	reader.release()
+
+	second := waitBotFillJoinResult(t, secondResult)
+	if second.err != nil {
+		t.Fatalf("join second human: %v", second.err)
+	}
+	if second.joined.Room.ID != first.Room.ID {
+		t.Fatalf("second human room=%q want=%q", second.joined.Room.ID, first.Room.ID)
+	}
+	room := store.lookupRoom(first.Room.ID)
+	room.mu.Lock()
+	players := append([]playerResponse(nil), room.Players...)
+	room.mu.Unlock()
+	if len(players) != 2 || players[0].IsBot || players[1].IsBot {
+		t.Fatalf("human-first players=%+v want two humans", players)
+	}
+}
+
+func TestBotFillTimerFirst(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(2, clock)
+	t.Cleanup(store.Close)
+
+	first, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join first human: %v", err)
+	}
+	reader := newBotFillBarrierReader(0x71)
+	store.mu.Lock()
+	store.random = reader
+	store.mu.Unlock()
+
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	waitBotFillSignal(t, reader.entered, "bot ID entropy")
+	lateResult := make(chan matchmakingJoinResult, 1)
+	go func() {
+		joined, joinErr := store.joinMatchmaking(simulation.GameModeDuel1v1)
+		lateResult <- matchmakingJoinResult{joined: joined, err: joinErr}
+	}()
+	reader.release()
+
+	late := waitBotFillJoinResult(t, lateResult)
+	if late.err != nil {
+		t.Fatalf("late human join: %v", late.err)
+	}
+	if late.joined.Room.ID == first.Room.ID {
+		t.Fatalf("late human joined bot-filled room %q", first.Room.ID)
+	}
+	room := store.lookupRoom(first.Room.ID)
+	waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+	room.mu.Lock()
+	players := append([]playerResponse(nil), room.Players...)
+	room.mu.Unlock()
+	if len(players) != 2 || players[0].IsBot || !players[1].IsBot {
+		t.Fatalf("timer-first players=%+v want one human then one bot", players)
+	}
+}
+
+func TestBotFillRoomCap(t *testing.T) {
+	clock := newFakeClock()
+	store := newStore(1, clock, StoreConfig{})
+	t.Cleanup(store.Close)
+	handler := debugHandler(t, store)
+
+	first := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	reader := newBotFillBarrierReader(0x81)
+	store.mu.Lock()
+	store.random = reader
+	store.mu.Unlock()
+
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	waitBotFillSignal(t, reader.entered, "bot ID entropy")
+	response := make(chan *httptest.ResponseRecorder, 1)
+	lateStarted := make(chan struct{})
+	go func() {
+		close(lateStarted)
+		response <- requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":"duel_1v1"}`)
+	}()
+	waitBotFillSignal(t, lateStarted, "late handler join start")
+	reader.release()
+
+	var recorded *httptest.ResponseRecorder
+	select {
+	case recorded = <-response:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for capped late join")
+	}
+	if recorded.Code != http.StatusConflict {
+		t.Fatalf("late join status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	assertError(t, recorded, "room_cap_reached")
+	room := store.lookupRoom(first.Room.ID)
+	waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+}
+
+func TestBotFillLogsEntropyFailure(t *testing.T) {
+	clock := newFakeClock()
+	logs := &lockedLogBuffer{}
+	store := newStore(5, clock, StoreConfig{Logger: jsonTestLogger(logs)})
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeSolo)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	reader := &failAfterReadsReader{successfulReads: 1, value: 0x91, err: errors.New("second bot entropy failure")}
+	store.mu.Lock()
+	beforeIDs := len(store.playerIDs)
+	store.random = reader
+	store.mu.Unlock()
+	room := store.lookupRoom(joined.Room.ID)
+	room.mu.Lock()
+	beforePlayers := len(room.Players)
+	fillTicker := room.botFillTicker
+	room.mu.Unlock()
+
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	waitForBotFillLogEvent(t, logs, "bot_fill_failed")
+
+	store.mu.RLock()
+	afterIDs := len(store.playerIDs)
+	store.mu.RUnlock()
+	room.mu.Lock()
+	afterPlayers := len(room.Players)
+	status := room.matchStatus
+	detached := room.botFillTicker == nil && room.botFillStop == nil
+	room.mu.Unlock()
+	if reader.calls != 2 || afterIDs != beforeIDs || afterPlayers != beforePlayers || status != "" ||
+		!detached || fillTicker.(*fakeTicker).StopCount() != 1 {
+		t.Fatalf("failed fill calls=%d IDs=%d->%d players=%d->%d status=%q detached=%t stops=%d", reader.calls, beforeIDs, afterIDs, beforePlayers, afterPlayers, status, detached, fillTicker.(*fakeTicker).StopCount())
+	}
+
+	matchedLogs := 0
+	for _, line := range splitBotFillLogLines(logs.String()) {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if record["event"] != "bot_fill_failed" {
+			continue
+		}
+		matchedLogs++
+		if record["level"] != "ERROR" || record["room_id"] != joined.Room.ID {
+			t.Fatalf("bot fill log=%v want ERROR event and room_id=%q", record, joined.Room.ID)
+		}
+	}
+	if matchedLogs != 1 {
+		t.Fatalf("bot_fill_failed logs=%d want=1 in %s", matchedLogs, logs.String())
+	}
+}
+
+func TestBotFillFailureLogRunsOutsideCoreLocks(t *testing.T) {
+	clock := newFakeClock()
+	callbackResult := make(chan string, 1)
+	var store *Store
+	var room *room
+	handler := &callbackLogHandler{handle: func(record slog.Record) {
+		if logRecordString(record, "event") != "bot_fill_failed" {
+			return
+		}
+		if !store.mutationMu.TryLock() {
+			callbackResult <- "mutationMu held"
+			return
+		}
+		store.mutationMu.Unlock()
+		if !store.matchmakingMu.TryLock() {
+			callbackResult <- "matchmakingMu held"
+			return
+		}
+		store.matchmakingMu.Unlock()
+		if !store.mu.TryLock() {
+			callbackResult <- "Store.mu held"
+			return
+		}
+		store.mu.Unlock()
+		if !room.mu.TryLock() {
+			callbackResult <- "room.mu held"
+			return
+		}
+		room.mu.Unlock()
+		callbackResult <- ""
+	}}
+	store = newStore(5, clock, StoreConfig{Logger: slog.New(handler)})
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeSolo)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	room = store.lookupRoom(joined.Room.ID)
+	store.mu.Lock()
+	store.random = &failAfterReadsReader{successfulReads: 1, value: 0xa1, err: errors.New("entropy failure")}
+	store.mu.Unlock()
+
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	select {
+	case lockErr := <-callbackResult:
+		if lockErr != "" {
+			t.Fatal(lockErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for bot_fill_failed callback")
+	}
+}
+
+type matchmakingJoinResult struct {
+	joined matchmakingJoinResponse
+	err    error
+}
+
+type botFillBarrierReader struct {
+	entered     chan struct{}
+	releaseRead chan struct{}
+	enterOnce   sync.Once
+	releaseOnce sync.Once
+	mu          sync.Mutex
+	calls       int
+	base        byte
+}
+
+func newBotFillBarrierReader(base byte) *botFillBarrierReader {
+	return &botFillBarrierReader{
+		entered:     make(chan struct{}),
+		releaseRead: make(chan struct{}),
+		base:        base,
+	}
+}
+
+func (reader *botFillBarrierReader) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	reader.enterOnce.Do(func() {
+		close(reader.entered)
+		<-reader.releaseRead
+	})
+	reader.mu.Lock()
+	value := reader.base + byte(reader.calls)
+	reader.calls++
+	reader.mu.Unlock()
+	for index := range buffer {
+		buffer[index] = value
+	}
+	return len(buffer), nil
+}
+
+func (reader *botFillBarrierReader) release() {
+	reader.releaseOnce.Do(func() { close(reader.releaseRead) })
+}
+
+func waitForBotFillMatchStatus(t *testing.T, room *room, want MatchStatus) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		room.mu.Lock()
+		got := room.matchStatus
+		room.mu.Unlock()
+		if got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("match status=%q want=%q", got, want)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func waitBotFillSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitBotFillJoinResult(t *testing.T, result <-chan matchmakingJoinResult) matchmakingJoinResult {
+	t.Helper()
+	select {
+	case joined := <-result:
+		return joined
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for matchmaking join")
+		return matchmakingJoinResult{}
+	}
+}
+
+func waitForBotFillLogEvent(t *testing.T, logs *lockedLogBuffer, event string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		if strings.Contains(logs.String(), `"event":"`+event+`"`) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s log in %s", event, logs.String())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func splitBotFillLogLines(logs string) []string {
+	return strings.Split(strings.TrimSpace(logs), "\n")
+}
 
 func TestMatchmakingBotFillTimerStartsOnHumanZeroToOneOnly(t *testing.T) {
 	clock := newFakeClock()
