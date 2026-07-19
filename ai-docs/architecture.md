@@ -109,7 +109,7 @@ State.Step(inputs []InputCommand) Snapshot
 - map drift guard = client `Map_0` 값을 고정한 exact-grid Go regression
 - config load/validation failure fallback = `StaticGameConfig()`의 5x5 static map, max players `6`
 - `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 사용
-- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 사용, 부족하거나 없으면 map 크기에서 유도한 legacy-compatible fallback 좌표 사용
+- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용하고, 부족하면 Wall/Water를 제외한 fallback candidate 사용. Ground/Bush는 유지하고 config 단계에서 `map.maxPlayers`명분의 고유 좌표를 검증함
 
 Movement:
 
@@ -192,9 +192,15 @@ Simple matchmaking:
 - Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`로 처리합니다.
 - 같은 mode의 waiting room 탐색과 없을 때의 room 생성을 하나의 serialized find-or-create transition으로 처리합니다. 동시 첫 join도 같은 pool을 재사용합니다.
 - player를 발급합니다.
-- selected mode의 `playersPerMatch`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
-- 모든 matched WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
-- 모든 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
+- Room은 생성 시 selected `GameConfig`를 고정하고 required player 수, team/slot/spawn, Ready quorum, simulation start가 모두 이 config를 사용합니다.
+- `duel_1v1`은 2명, `solo`와 `team`은 6명이 같은-mode waiting pool에서 match를 완성합니다.
+- Match가 완성된 room은 debug player 추가도 409 `room_full`로 닫아 Ready/player cardinality를 고정합니다.
+- Selected mode의 required player가 모두 attach되면 같은 Ready payload를 broadcast하고, required player session 각각의 ready ACK가 모이면 countdown을 한 번 시작합니다.
+- `readyPlayers map[string]bool`이 player identity별 quorum을 소유하므로 duplicate ACK는 idempotent합니다.
+- `attachClientSession`은 `room.mu` 아래 `matchStatus == matched && allMatchClientsAttached()`일 때만 loading/Ready로 전이합니다. `markClientReady`도 current expected session을 확인하고 `matchStatus == loading && allMatchPlayersReady()`일 때만 countdown을 호출합니다.
+- `allMatchClientsAttached`, `allMatchPlayersReady`, `startMatchCountdownLocked`는 자체 잠금이나 재진입 guard가 없으므로 caller가 `room.mu`와 위 상태 조건을 보장합니다. Countdown worker는 current ticker identity와 `starting`을 다시 확인합니다.
+- `startRoomLocked`도 `room.mu` 보유를 전제로 하며 `room.state == nil`, `room.ticker == nil` guard로 simulation state와 gameplay ticker를 room당 하나만 만듭니다.
+- Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 추가하지 않습니다.
 - response는 top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 포함합니다.
 - Join 전에 process-local per-IP token bucket을 평가합니다. 기본은 10 requests/minute, burst 4이며 quota가 없으면 429가 store의 409/500보다 먼저 나갑니다. 허용된 409/500 요청도 quota를 소비합니다.
 - Immediate peer가 trusted CIDR이고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 client IP로 씁니다. 그 외에는 peer로 fallback하고 `X-Forwarded-For`는 무시합니다.
@@ -204,7 +210,7 @@ Simple matchmaking:
 Mode/team rule:
 
 - `internal/simulation.GameConfig.ModeCatalog`가 default와 세 canonical mode를, `SelectedMode`가 해당 room의 mode id, match size, team 목록, friendly-fire/team behavior metadata를 가집니다.
-- `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다.
+- `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다. SpawnPoint를 먼저 쓰고 fallback candidate에서 `tileBlocksPlayer`가 true인 Wall/Water를 제외하며 Ground/Bush는 유지합니다. `ResolveMapData`는 두 후보 집합의 고유 좌표 수가 `map.maxPlayers`보다 작으면 config를 거부합니다.
 - `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 `room.gameConfig`에서 읽습니다.
 - `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
 - `friendlyFire`는 catalog metadata로만 저장하고 projectile team 판정은 이 issue에서 바꾸지 않습니다.

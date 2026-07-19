@@ -286,6 +286,7 @@ paths:
       summary: debug room에 player 발급
       description: |
         수동 room 검증용 player를 추가하고, 최초 응답에서만 raw player session token을 발급합니다. 현재 fixture 기준 최대 player 수는 6명입니다.
+        Matchmaking room은 selected mode의 required player가 모두 들어와 lifecycle이 잠기면 추가 player를 받지 않습니다.
         Debug API는 기본 비활성화이며, 비활성화 상태에서는 route 자체가 없는 것처럼 404를 반환합니다.
       operationId: createRoomPlayer
       security:
@@ -312,7 +313,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: room player 수가 map의 maxPlayers에 도달했습니다.
+          description: room player 수가 map의 maxPlayers에 도달했거나 matchmaking lifecycle이 이미 잠겼습니다. 응답 code는 `room_full`입니다.
           content:
             application/json:
               schema:

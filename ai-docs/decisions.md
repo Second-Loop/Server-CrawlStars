@@ -481,3 +481,28 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Room이 생성된 뒤에는 Store default와 무관하게 lifecycle 전체가 하나의 canonical selected config를 사용합니다.
 - No-body client는 계속 duel 1v1로 동작하고 새 client는 REST `gameMode`로 선택과 응답을 명시적으로 확인할 수 있습니다.
 - ADR-0019의 “duel만 활성” 결정은 이 ADR로 확장되고, ADR-0020의 map/debug capacity 분리와 assignment 단일 source 원칙은 유지됩니다.
+
+## ADR-0029: SL-87 Ready Quorum은 Room-local Mode Config를 따른다
+
+상태: 승인됨
+
+맥락: SL-86은 `duel_1v1`, `solo`, `team`의 waiting pool과 room-local selected config를 제공합니다. 기존 Ready state machine은 required count를 받을 수 있지만 실제 6 WebSocket, 6 human ACK, duplicate ACK, single-start behavior가 end-to-end로 고정되지 않았습니다. 또한 5x5 StaticMap의 preferred fallback 가운데 center `(2,2)`가 Wall이라 다섯 번째 player가 blocking tile에서 시작할 수 있었습니다.
+
+결정:
+
+- `duel_1v1`은 2명, `solo`와 `team`은 6명의 human player와 서로 다른 WebSocket session을 required quorum으로 사용합니다.
+- Room의 selected `GameConfig`가 required count와 team/slot/spawn의 유일한 기준입니다.
+- Required client가 모두 attach된 뒤 같은 Ready payload를 보내고, `readyPlayers map[string]bool`에 required player identity가 모두 들어온 뒤 countdown을 한 번 시작합니다.
+- Duplicate ACK는 idempotent하고 `starting`, `started`, countdown ticker, gameplay ticker를 추가로 만들지 않습니다.
+- `attachClientSession`은 `room.mu` 아래 matched/all-attached 조건으로 Ready를 전이하고, `markClientReady`는 current expected session과 loading/all-ready 조건을 확인한 뒤 `startMatchCountdownLocked`를 호출합니다. Quorum helper와 `startMatchCountdownLocked` 자체에는 잠금이나 재진입 guard가 없으므로 caller가 이 조건을 소유합니다.
+- Countdown worker는 current ticker identity와 `starting`을 확인합니다. `startRoomLocked`는 `room.mu` 아래 state/ticker nil guard로 gameplay state와 ticker를 room당 하나만 생성합니다.
+- Fallback spawn candidate는 player collision policy를 재사용해 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다. Passable candidate가 남아 있는 동안 spawn position은 중복하지 않습니다.
+- Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 추가하지 않습니다. Start 전 실제 disconnect는 기존 pre-start cancel을 유지합니다.
+- Solo/Team GameEnd와 elimination rule은 별도 issue 범위로 남깁니다.
+
+결과:
+
+- Solo와 Team은 6개의 실제 WebSocket과 6개의 human Ready ACK 없이는 시작하지 않습니다.
+- Ready assignment와 첫 gameplay snapshot은 같은 room-local config와 spawn 결과를 사용합니다.
+- Config fallback에서도 여섯 player가 Wall/Water가 아닌 unique spawn으로 시작하고 Bush는 passable candidate로 유지됩니다.
+- 기존 duel 2-player Ready/countdown/start wire behavior는 유지됩니다.

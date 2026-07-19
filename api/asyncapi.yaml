@@ -1,12 +1,14 @@
 asyncapi: 3.0.0
 info:
   title: Server Crawl Stars WebSocket API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
-    Matchmaking room은 선택 mode의 required player가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player spawn을 전달합니다.
-    Client는 asset load/render 준비가 끝난 뒤 `Type: ready` ACK를 보내고, server는 countdown 시작 신호를 1번 보낸 뒤 5초를 내부에서 센 다음 started gameplay snapshot을 broadcast합니다.
+    Matchmaking room은 선택 mode의 required player가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player별 team/slot/spawn을 전달합니다.
+    duel_1v1은 2명, solo와 team은 6명의 human player와 6개의 서로 다른 WebSocket connection을 요구합니다. Countdown은 각 player가 보낸 ready ACK가 모두 모인 뒤 한 번만 시작합니다.
+    같은 player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` gameplay snapshot을 broadcast합니다.
+    Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다. Start 전 실제 disconnect는 pre-start cancel로 room을 삭제합니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
     일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하고, started room도 TTL과 hard lifetime 이후에는 사라집니다. Failed upgrade는 room을 취소하지 않아 같은 발급 경로로 재시도할 수 있습니다.
@@ -31,8 +33,8 @@ channels:
       Handshake 실패 우선순위는 room 404, player 404, token 401, 이미 연결됐거나 in-flight reservation이 있는 player 409 순서입니다. Wrong token은 reservation 409보다 먼저 401입니다.
       발급 응답의 `sessionToken`, tokenized `webSocketPath`, inbound query는 모두 secret-bearing surface입니다. raw token과 전체 query 문자열은 log에 남기지 않습니다.
       같은 room/player의 중복 연결은 upgrade 전에 거부됩니다.
-      Matchmaking room에서는 선택 mode의 required player가 모두 연결되면 `Type: Ready` 이벤트를 받고,
-      모든 player가 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다.
+      Matchmaking room에서는 selected mode required player가 모두 연결되면 `Type: Ready` 이벤트를 받습니다.
+      duel_1v1의 2개 또는 solo/team의 6개 player session이 각각 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
       Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Bot replacement와 reconnect grace는 제공하지 않습니다.
       일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
@@ -80,7 +82,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Receive Ready event
-    summary: 선택 mode의 required player가 모두 연결된 뒤 map과 player spawn 정보를 받습니다.
+    summary: selected mode의 required client가 모두 연결된 뒤 map과 player별 team, slot, spawn 정보를 받습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyEvent"
   sendReadyAck:
@@ -147,12 +149,12 @@ components:
     ReadyEventMessage:
       name: ReadyEventMessage
       title: Ready event
-      summary: 서버가 client 렌더 준비에 필요한 map과 player spawn 정보를 전달합니다.
+      summary: 서버가 selected mode의 client 렌더 준비에 필요한 map과 player assignment를 전달합니다.
       payload:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
-        - name: readyEvent
-          summary: 예시는 5x5 fallback map 기준입니다. 실제 기본 runtime map은 server-config/game-config.json의 20x20 map이며 spawn point tile(2)에서 spawn을 발급합니다.
+        - name: teamReadyEvent
+          summary: team mode 6명이 5x5 fallback map에서 받는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
           payload:
             Type: Ready
             Map:
@@ -163,23 +165,35 @@ components:
               tileSize: 1.2
               map:
                 - [1, 1, 1, 1, 1]
-                - [1, 0, 0, 0, 1]
-                - [1, 0, 1, 0, 1]
+                - [1, 0, 4, 0, 1]
+                - [1, 3, 1, 0, 1]
                 - [1, 0, 0, 0, 1]
                 - [1, 1, 1, 1, 1]
             Players:
               - Id: player_VuTsRqPoNmLkJiHgFeDcBa
                 Team: red
                 Slot: 0
-                SpawnPosition:
-                  x: -1.2
-                  y: 1.2
-              - Id: player_0123456789abcdefghijkl
+                SpawnPosition: {x: -1.2, y: 1.2}
+              - Id: player_AbCdEfGhIjKlMnOpQrStUv
                 Team: blue
                 Slot: 0
-                SpawnPosition:
-                  x: 1.2
-                  y: -1.2
+                SpawnPosition: {x: 1.2, y: -1.2}
+              - Id: player_wXyZ0123456789AbCdEfGh
+                Team: red
+                Slot: 1
+                SpawnPosition: {x: 1.2, y: 1.2}
+              - Id: player_q1W2e3R4t5Y6u7I8o9P0aS
+                Team: blue
+                Slot: 1
+                SpawnPosition: {x: -1.2, y: -1.2}
+              - Id: player_LmNoPqRsTuVwXyZaBcDeFg
+                Team: red
+                Slot: 2
+                SpawnPosition: {x: -1.2, y: 0}
+              - Id: player_hGfEdCbAzYxWvUtSrQpOnM
+                Team: blue
+                Slot: 2
+                SpawnPosition: {x: 1.2, y: 0}
     ReadyAckMessage:
       name: ReadyAckMessage
       title: Match ready ACK
@@ -198,7 +212,7 @@ components:
         $ref: "#/components/schemas/SnapshotMessage"
       examples:
         - name: startingSignal
-          summary: 모든 client가 ready ACK를 보낸 뒤 countdown 시작 신호를 1번 받습니다.
+          summary: selected mode의 모든 human client가 ready ACK를 보낸 뒤 connection당 한 번 받는 countdown 시작 신호입니다.
           payload:
             Type: snapshot
             Snapshot:
@@ -298,7 +312,7 @@ components:
     ReadyEventMessage:
       type: object
       required: [Type, Map, Players]
-      description: 서버가 선택 mode의 required player 모두에게 보내는 렌더 준비 이벤트입니다. `Map.map`은 Base64 문자열이 아니라 JSON number array row로 직렬화됩니다.
+      description: 선택 mode의 required client 모두에게 보내는 렌더 준비 이벤트입니다. `Map.map`은 JSON number array row이고 `Players`는 room-local mode assignment 순서입니다.
       properties:
         Type:
           type: string
@@ -306,13 +320,23 @@ components:
         Map:
           $ref: "#/components/schemas/MapData"
         Players:
-          type: array
-          items:
-            $ref: "#/components/schemas/ReadyPlayer"
+          oneOf:
+            - type: array
+              minItems: 2
+              maxItems: 2
+              items:
+                $ref: "#/components/schemas/ReadyPlayer"
+            - type: array
+              minItems: 6
+              maxItems: 6
+              items:
+                $ref: "#/components/schemas/ReadyPlayer"
     ReadyAckMessage:
       type: object
       required: [Type]
-      description: "`Type: Ready` 이벤트를 받은 client가 map load/render 준비 완료 후 보내는 ACK입니다."
+      description: >-
+        각 human player의 `Type: Ready` 렌더 준비가 끝난 뒤 해당 player의
+        WebSocket session에서 한 번 이상 보내는 idempotent ACK입니다.
       properties:
         Type:
           type: string
@@ -397,8 +421,8 @@ components:
       type: string
       enum: [starting, started]
       description: |
-        starting은 모든 client ready 이후 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다.
-        started는 countdown이 끝나고 gameplay snapshot stream이 시작된 상태입니다.
+        starting은 selected mode의 서로 다른 모든 player가 ready ACK를 보낸 뒤 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다.
+        started는 countdown이 끝나고 room의 단일 gameplay ticker와 snapshot stream이 시작된 상태입니다.
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]

@@ -26,6 +26,16 @@ type snapshotMessage struct {
 	Snapshot simulation.Snapshot `json:"Snapshot"`
 }
 
+type webSocketReadPump struct {
+	payloads chan []byte
+	errors   chan error
+}
+
+type webSocketControlQueueBarrierMessage struct {
+	Type   string `json:"Type"`
+	Marker string `json:"Marker"`
+}
+
 type issuedPlayer struct {
 	playerResponse
 	SessionToken  string
@@ -2290,6 +2300,11 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 				if gotStatus != wantStatus {
 					t.Fatalf("expected %s attach %d/%d to leave match %q, got %q", tt.mode, index+1, len(joined), wantStatus, gotStatus)
 				}
+				if index < len(joined)-1 {
+					for _, attached := range connections {
+						assertNoFakeClientWrite(t, attached)
+					}
+				}
 			}
 
 			playerIDs := make([]simulation.PlayerID, 0, len(joined))
@@ -2318,6 +2333,9 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 					}
 				}
 			}
+			for _, conn := range connections {
+				assertNoFakeClientWrite(t, conn)
+			}
 
 			for index, response := range joined {
 				store.markClientReady(response.Room.ID, response.Player.ID, sessions[index])
@@ -2340,6 +2358,194 @@ func TestReadyEventUsesRoomMode(t *testing.T) {
 				}
 				if got := fakeClock.TickerCount(time.Second); got != 1 {
 					t.Fatalf("expected one countdown ticker at room quorum, got %d", got)
+				}
+			}
+		})
+	}
+}
+
+func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.T) {
+	tests := []struct {
+		mode  string
+		teams []string
+		slots []int
+	}{
+		{
+			mode:  simulation.GameModeSolo,
+			teams: []string{"solo-1", "solo-2", "solo-3", "solo-4", "solo-5", "solo-6"},
+			slots: []int{0, 0, 0, 0, 0, 0},
+		},
+		{
+			mode:  simulation.GameModeTeam,
+			teams: []string{"red", "blue", "red", "blue", "red", "blue"},
+			slots: []int{0, 0, 1, 1, 2, 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			handler := debugHandler(t, store)
+			server := httptest.NewServer(handler)
+			defer server.Close()
+
+			joined := make([]matchmakingJoinResponse, 6)
+			for index := range joined {
+				joined[index] = joinMatchmakingWithMode(t, handler, tt.mode)
+				if joined[index].GameMode != tt.mode || joined[index].Room.GameMode != tt.mode {
+					t.Fatalf("join %d expected mode %q, got top-level %q room %q", index, tt.mode, joined[index].GameMode, joined[index].Room.GameMode)
+				}
+				if index > 0 && joined[index].Room.ID != joined[0].Room.ID {
+					t.Fatalf("join %d expected room %q, got %q", index, joined[0].Room.ID, joined[index].Room.ID)
+				}
+			}
+
+			roomID := joined[0].Room.ID
+			joinedPlayerIDs := make([]string, len(joined))
+			for index := range joined {
+				joinedPlayerIDs[index] = joined[index].Player.ID
+			}
+			connections := make([]*websocket.Conn, len(joined))
+			readPumps := make([]*webSocketReadPump, len(joined))
+			for index := 0; index < len(joined)-1; index++ {
+				connections[index] = dialIssuedPlayer(t, server.URL, joined[index].WebSocketPath)
+				defer connections[index].Close(websocket.StatusNormalClosure, "")
+				readPumps[index] = startWebSocketReadPump(t, connections[index])
+				waitForAttachedClient(t, store, roomID, joined[index].Player.ID)
+			}
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusMatched, 5, 0)
+			fiveAttachedBarriers := enqueueWebSocketControlQueueBarriers(t, store, roomID, "five-attached", joinedPlayerIDs[:5])
+			for index, barrier := range fiveAttachedBarriers {
+				readWebSocketReadPumpControlBarrier(t, readPumps[index], barrier)
+			}
+
+			connections[5] = dialIssuedPlayer(t, server.URL, joined[5].WebSocketPath)
+			defer connections[5].Close(websocket.StatusNormalClosure, "")
+			readPumps[5] = startWebSocketReadPump(t, connections[5])
+			waitForAttachedClient(t, store, roomID, joined[5].Player.ID)
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusLoading, 6, 0)
+			readyBarriers := enqueueWebSocketControlQueueBarriers(t, store, roomID, "ready-enqueued", joinedPlayerIDs)
+
+			readyEvents := make([]readyEventMessage, len(connections))
+			for index, readPump := range readPumps {
+				readyEvents[index] = readWebSocketReadPumpReadyEvent(t, readPump)
+				if readyEvents[index].Type != "Ready" {
+					t.Fatalf("connection %d expected Ready, got %q", index, readyEvents[index].Type)
+				}
+				if index > 0 {
+					assertMatchingReadyEvents(t, readyEvents[0], readyEvents[index])
+				}
+				readWebSocketReadPumpControlBarrier(t, readPump, readyBarriers[index])
+			}
+			if len(readyEvents[0].Players) != len(joined) {
+				t.Fatalf("expected Ready event with six players, got %+v", readyEvents[0].Players)
+			}
+
+			room := store.lookupRoom(roomID)
+			if room == nil {
+				t.Fatalf("expected room %q", roomID)
+			}
+			room.mu.Lock()
+			gameConfig := room.gameConfig
+			room.mu.Unlock()
+			if gameConfig.SelectedMode.ID != tt.mode {
+				t.Fatalf("expected selected room mode %q, got %q", tt.mode, gameConfig.SelectedMode.ID)
+			}
+
+			playerIDs := make([]simulation.PlayerID, 0, len(joined))
+			for _, issued := range joined {
+				playerIDs = append(playerIDs, simulation.PlayerID(issued.Player.ID))
+			}
+			assignments := simulation.PlayerAssignments(playerIDs, gameConfig)
+			if len(assignments) != len(joined) {
+				t.Fatalf("expected six mode assignments, got %+v", assignments)
+			}
+			for index, issued := range joined {
+				readyPlayer := readyEvents[0].Players[index]
+				assignment := assignments[index]
+				if readyPlayer.ID != issued.Player.ID || readyPlayer.Team != tt.teams[index] || readyPlayer.Slot != tt.slots[index] || readyPlayer.SpawnPosition != assignment.SpawnPosition {
+					t.Fatalf("Ready player %d expected ID=%q team=%q slot=%d spawn=%+v, got %+v", index, issued.Player.ID, tt.teams[index], tt.slots[index], assignment.SpawnPosition, readyPlayer)
+				}
+			}
+			for index := 0; index < len(connections)-1; index++ {
+				writeWSJSON(t, connections[index], readyMessage{Type: "ready"})
+			}
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusLoading, 6, 5)
+			if got := fakeClock.TickerCount(time.Second); got != 0 {
+				t.Fatalf("expected no countdown ticker after five distinct Ready ACKs, got %d", got)
+			}
+
+			writeWSJSON(t, connections[0], readyMessage{Type: "ready"})
+			writeWSJSON(t, connections[0], inputMessage{})
+			waitForPendingInput(t, store, roomID, joined[0].Player.ID)
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusLoading, 6, 5)
+			if got := fakeClock.TickerCount(time.Second); got != 0 {
+				t.Fatalf("expected duplicate Ready ACK to preserve zero countdown tickers, got %d", got)
+			}
+
+			writeWSJSON(t, connections[5], readyMessage{Type: "ready"})
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusStarting, 6, 6)
+			if got := fakeClock.TickerCount(time.Second); got != 1 {
+				t.Fatalf("expected one countdown ticker at six-player quorum, got %d", got)
+			}
+
+			starting := make([]matchSnapshotMessage, len(connections))
+			for index, readPump := range readPumps {
+				starting[index] = readWebSocketReadPumpMatchSnapshot(t, readPump)
+				if starting[index].Snapshot.Status != string(MatchStatusStarting) || starting[index].Snapshot.Countdown != matchCountdownSeconds || starting[index].Snapshot.Tick != 0 {
+					t.Fatalf("connection %d expected starting countdown %d, got %+v", index, matchCountdownSeconds, starting[index].Snapshot)
+				}
+				if index > 0 {
+					assertMatchingMatchSnapshots(t, starting[0], starting[index])
+				}
+			}
+
+			writeWSJSON(t, connections[5], readyMessage{Type: "ready"})
+			writeWSJSON(t, connections[5], inputMessage{})
+			waitForPendingInput(t, store, roomID, joined[5].Player.ID)
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusStarting, 6, 6)
+			if got := fakeClock.TickerCount(time.Second); got != 1 {
+				t.Fatalf("expected post-quorum duplicate Ready ACK to preserve one countdown ticker, got %d", got)
+			}
+
+			for range matchCountdownSeconds {
+				fakeClock.TickTicker(time.Second, 0)
+			}
+			waitForMatchLifecycleState(t, store, roomID, MatchStatusStarted, 6, 6)
+
+			started := make([]matchSnapshotMessage, len(connections))
+			for index, readPump := range readPumps {
+				started[index] = readWebSocketReadPumpMatchSnapshot(t, readPump)
+				if started[index].Snapshot.Status != string(MatchStatusStarted) || started[index].Snapshot.Tick != 0 {
+					t.Fatalf("connection %d expected next control started, got %+v", index, started[index].Snapshot)
+				}
+				if index > 0 {
+					assertMatchingMatchSnapshots(t, started[0], started[index])
+				}
+			}
+			if got := fakeClock.TickerCount(gameplayInterval); got != 1 {
+				t.Fatalf("expected one gameplay ticker after countdown, got %d", got)
+			}
+
+			fakeClock.TickTicker(gameplayInterval, 0)
+			gameplay := make([]snapshotMessage, len(connections))
+			for index, readPump := range readPumps {
+				gameplay[index] = readWebSocketReadPumpSnapshot(t, readPump)
+				if gameplay[index].Snapshot.Tick != 1 {
+					t.Fatalf("connection %d expected first gameplay tick 1, got %d", index, gameplay[index].Snapshot.Tick)
+				}
+				if index > 0 {
+					assertMatchingSnapshots(t, gameplay[0], gameplay[index])
+				}
+			}
+			if len(gameplay[0].Snapshot.Players) != len(assignments) {
+				t.Fatalf("expected first gameplay snapshot with six players, got %+v", gameplay[0].Snapshot.Players)
+			}
+			for index, assignment := range assignments {
+				player := findSnapshotPlayer(t, gameplay[0].Snapshot, assignment.ID)
+				if player.ID != assignment.ID || player.Team != assignment.Team || player.Slot != assignment.Slot || player.Pos != assignment.SpawnPosition {
+					t.Fatalf("gameplay player %d expected ID=%q team=%q slot=%d pos=%+v, got %+v", index, assignment.ID, assignment.Team, assignment.Slot, assignment.SpawnPosition, player)
 				}
 			}
 		})
@@ -2511,27 +2717,54 @@ func TestWebSocketMatchmakingUsesSnapshotStatusForReadyCountdownAndStart(t *test
 	}
 
 	writeWSJSON(t, redConn, readyMessage{Type: "ready"})
+	writeWSJSON(t, redConn, readyMessage{Type: "ready"})
+	writeWSJSON(t, redConn, inputMessage{})
+	waitForPendingInput(t, store, red.Room.ID, red.Player.ID)
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusLoading, 2, 1)
+	if got := fakeClock.TickerCount(time.Second); got != 0 {
+		t.Fatalf("expected first distinct plus duplicate Ready ACK to preserve zero countdown tickers, got %d", got)
+	}
+
 	writeWSJSON(t, blueConn, readyMessage{Type: "ready"})
-	redStarting := readUntilSnapshotStatus(t, redConn, "starting")
-	blueStarting := readUntilSnapshotStatus(t, blueConn, "starting")
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarting, 2, 2)
+	if got := fakeClock.TickerCount(time.Second); got != 1 {
+		t.Fatalf("expected one countdown ticker after second distinct Ready ACK, got %d", got)
+	}
+	redStarting := readMatchSnapshotMessage(t, redConn)
+	blueStarting := readMatchSnapshotMessage(t, blueConn)
 	assertMatchingMatchSnapshots(t, redStarting, blueStarting)
-	if redStarting.Snapshot.Countdown != 5 {
+	if redStarting.Snapshot.Status != string(MatchStatusStarting) || redStarting.Snapshot.Countdown != matchCountdownSeconds || redStarting.Snapshot.Tick != 0 {
 		t.Fatalf("expected starting countdown 5, got %+v", redStarting.Snapshot)
 	}
 
-	for i := 0; i < 4; i++ {
-		fakeClock.TickTicker(time.Second, 0)
+	writeWSJSON(t, blueConn, readyMessage{Type: "ready"})
+	writeWSJSON(t, blueConn, inputMessage{})
+	waitForPendingInput(t, store, red.Room.ID, blue.Player.ID)
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarting, 2, 2)
+	if got := fakeClock.TickerCount(time.Second); got != 1 {
+		t.Fatalf("expected post-quorum duplicate Ready ACK to preserve one countdown ticker, got %d", got)
 	}
 
-	fakeClock.TickTicker(time.Second, 0)
-	redStarted := readUntilSnapshotStatus(t, redConn, "started")
-	blueStarted := readUntilSnapshotStatus(t, blueConn, "started")
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarted, 2, 2)
+	redStarted := readMatchSnapshotMessage(t, redConn)
+	blueStarted := readMatchSnapshotMessage(t, blueConn)
 	assertMatchingMatchSnapshots(t, redStarted, blueStarted)
+	if redStarted.Snapshot.Status != string(MatchStatusStarted) || redStarted.Snapshot.Tick != 0 {
+		t.Fatalf("expected next control started, got %+v", redStarted.Snapshot)
+	}
+	if got := fakeClock.TickerCount(gameplayInterval); got != 1 {
+		t.Fatalf("expected one gameplay ticker after duel countdown, got %d", got)
+	}
 
 	fakeClock.TickTicker(gameplayInterval, 0)
-	gameplay := readSnapshotMessage(t, redConn)
-	if gameplay.Snapshot.Tick != 1 {
-		t.Fatalf("expected first gameplay snapshot tick 1 after countdown, got %d", gameplay.Snapshot.Tick)
+	redGameplay := readSnapshotMessage(t, redConn)
+	blueGameplay := readSnapshotMessage(t, blueConn)
+	assertMatchingSnapshots(t, redGameplay, blueGameplay)
+	if redGameplay.Snapshot.Tick != 1 {
+		t.Fatalf("expected first gameplay snapshot tick 1 after countdown, got %d", redGameplay.Snapshot.Tick)
 	}
 }
 
@@ -3500,6 +3733,16 @@ func readFakeReadyEventMessage(t *testing.T, conn *fakeClientConn) readyEventMes
 	}
 }
 
+func assertNoFakeClientWrite(t *testing.T, conn *fakeClientConn) {
+	t.Helper()
+
+	select {
+	case payload := <-conn.writes:
+		t.Fatalf("expected no fake client write, got %s", payload)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
 func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID string) {
 	t.Helper()
 
@@ -3519,6 +3762,36 @@ func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID str
 	}
 
 	t.Fatalf("expected pending input for player %s", playerID)
+}
+
+func waitForMatchLifecycleState(t *testing.T, store *Store, roomID string, wantStatus MatchStatus, wantClients int, wantReady int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	var gotStatus MatchStatus
+	var gotClients int
+	var gotReady int
+	for time.Now().Before(deadline) {
+		room := store.lookupRoom(roomID)
+		if room != nil {
+			room.mu.Lock()
+			gotStatus = room.matchStatus
+			gotClients = len(room.clients)
+			gotReady = 0
+			for _, ready := range room.readyPlayers {
+				if ready {
+					gotReady++
+				}
+			}
+			room.mu.Unlock()
+			if gotStatus == wantStatus && gotClients == wantClients && gotReady == wantReady {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected room %s lifecycle status=%q clients=%d ready=%d, got status=%q clients=%d ready=%d", roomID, wantStatus, wantClients, wantReady, gotStatus, gotClients, gotReady)
 }
 
 func waitForAttachedClient(t *testing.T, store *Store, roomID string, playerID string) {
@@ -3754,6 +4027,142 @@ func writeWSJSON(t *testing.T, conn *websocket.Conn, message any) {
 	writeText(t, conn, string(payload))
 }
 
+func startWebSocketReadPump(t *testing.T, conn *websocket.Conn) *webSocketReadPump {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pump := &webSocketReadPump{
+		payloads: make(chan []byte, 16),
+		errors:   make(chan error, 1),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_, payload, err := conn.Read(ctx)
+			if err != nil {
+				select {
+				case pump.errors <- err:
+				case <-ctx.Done():
+				}
+				return
+			}
+			payload = append([]byte(nil), payload...)
+			select {
+			case pump.payloads <- payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("expected WebSocket read pump to stop")
+		}
+	})
+	return pump
+}
+
+func enqueueWebSocketControlQueueBarriers(t *testing.T, store *Store, roomID string, phase string, playerIDs []string) [][]byte {
+	t.Helper()
+
+	payloads := make([][]byte, len(playerIDs))
+	for index, playerID := range playerIDs {
+		payload, err := json.Marshal(webSocketControlQueueBarrierMessage{
+			Type:   "test_control_queue_barrier",
+			Marker: fmt.Sprintf("%s:%d:%s", phase, index, playerID),
+		})
+		if err != nil {
+			t.Fatalf("marshal WebSocket control queue barrier: %v", err)
+		}
+		payloads[index] = payload
+	}
+
+	room := store.lookupRoom(roomID)
+	if room == nil {
+		t.Fatalf("expected room %q for WebSocket control queue barrier", roomID)
+	}
+	room.mu.Lock()
+	failure := ""
+	for index, playerID := range playerIDs {
+		session := room.clients[playerID]
+		if session == nil {
+			failure = fmt.Sprintf("expected attached client session for player %s", playerID)
+			break
+		}
+		queued, shouldClose := session.tryEnqueueControl(payloads[index])
+		if !queued || shouldClose {
+			failure = fmt.Sprintf("expected control queue barrier for player %s to enqueue, got queued=%t shouldClose=%t", playerID, queued, shouldClose)
+			break
+		}
+	}
+	room.mu.Unlock()
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	return payloads
+}
+
+func readWebSocketReadPumpControlBarrier(t *testing.T, pump *webSocketReadPump, want []byte) {
+	t.Helper()
+
+	got := readWebSocketReadPumpPayload(t, pump)
+	if string(got) != string(want) {
+		t.Fatalf("expected next WebSocket payload to be control queue barrier %s, got %s", want, got)
+	}
+}
+
+func readWebSocketReadPumpPayload(t *testing.T, pump *webSocketReadPump) []byte {
+	t.Helper()
+
+	select {
+	case payload := <-pump.payloads:
+		return payload
+	case err := <-pump.errors:
+		t.Fatalf("WebSocket read pump failed: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("expected WebSocket read pump payload")
+	}
+	return nil
+}
+
+func readWebSocketReadPumpReadyEvent(t *testing.T, pump *webSocketReadPump) readyEventMessage {
+	t.Helper()
+
+	var message readyEventMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped Ready event: %v", err)
+	}
+	return message
+}
+
+func readWebSocketReadPumpMatchSnapshot(t *testing.T, pump *webSocketReadPump) matchSnapshotMessage {
+	t.Helper()
+
+	var message matchSnapshotMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped match snapshot: %v", err)
+	}
+	if message.Type != "snapshot" {
+		t.Fatalf("expected exact next pumped control snapshot, got type %q", message.Type)
+	}
+	return message
+}
+
+func readWebSocketReadPumpSnapshot(t *testing.T, pump *webSocketReadPump) snapshotMessage {
+	t.Helper()
+
+	var message snapshotMessage
+	if err := json.Unmarshal(readWebSocketReadPumpPayload(t, pump), &message); err != nil {
+		t.Fatalf("decode pumped gameplay snapshot: %v", err)
+	}
+	return message
+}
+
 func readSnapshotMessage(t *testing.T, conn *websocket.Conn) snapshotMessage {
 	t.Helper()
 
@@ -3762,6 +4171,20 @@ func readSnapshotMessage(t *testing.T, conn *websocket.Conn) snapshotMessage {
 	var message snapshotMessage
 	if err := json.Unmarshal(payload, &message); err != nil {
 		t.Fatalf("decode snapshot message: %v", err)
+	}
+	return message
+}
+
+func readMatchSnapshotMessage(t *testing.T, conn *websocket.Conn) matchSnapshotMessage {
+	t.Helper()
+
+	payload := readWebSocketPayload(t, conn)
+	var message matchSnapshotMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode match snapshot message: %v", err)
+	}
+	if message.Type != "snapshot" {
+		t.Fatalf("expected exact next control snapshot, got type %q", message.Type)
 	}
 	return message
 }
@@ -3800,27 +4223,6 @@ func readGameEndMessage(t *testing.T, conn *websocket.Conn) gameEndMessage {
 		t.Fatalf("decode game end message: %v", err)
 	}
 	return message
-}
-
-func readUntilSnapshotStatus(t *testing.T, conn *websocket.Conn, status string) matchSnapshotMessage {
-	t.Helper()
-
-	for i := 0; i < 4; i++ {
-		payload := readWebSocketPayload(t, conn)
-		var message matchSnapshotMessage
-		if err := json.Unmarshal(payload, &message); err != nil {
-			t.Fatalf("decode match snapshot message: %v", err)
-		}
-		if message.Type != "snapshot" {
-			t.Fatalf("expected snapshot message while waiting for status %q, got %q", status, message.Type)
-		}
-		if message.Snapshot.Status == status {
-			return message
-		}
-	}
-
-	t.Fatalf("expected snapshot status %q", status)
-	return matchSnapshotMessage{}
 }
 
 func readWebSocketPayload(t *testing.T, conn *websocket.Conn) []byte {

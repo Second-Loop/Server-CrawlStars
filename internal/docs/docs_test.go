@@ -37,6 +37,32 @@ func TestHandlerServesRawSpecs(t *testing.T) {
 	assertBodyContains(t, asyncAPI, "/rooms/{roomID}/players/{playerID}")
 }
 
+func TestHandlerServesModeAwareSixPlayerReadyContract(t *testing.T) {
+	asyncAPI := request(Handler(), http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+
+	for _, want := range []string{
+		"version: 0.3.0",
+		"duel_1v1은 2명, solo와 team은 6명",
+		"6개의 서로 다른 WebSocket connection",
+		"각 player가 보낸 ready ACK",
+		"중복 ready ACK",
+		"Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다.",
+		"Wall과 Water",
+		"Ground와 Bush",
+		"        Players:\n          oneOf:",
+		"            - type: array\n              minItems: 2\n              maxItems: 2\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
+		"            - type: array\n              minItems: 6\n              maxItems: 6\n              items:\n                $ref: \"#/components/schemas/ReadyPlayer\"",
+	} {
+		assertBodyContains(t, asyncAPI, want)
+	}
+
+	teamEnum := "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]"
+	if got := strings.Count(asyncAPI.Body.String(), teamEnum); got != 2 {
+		t.Fatalf("expected served AsyncAPI to expose mode team enum twice, got %d", got)
+	}
+}
+
 func TestHandlerServesHumanReadableDocsUI(t *testing.T) {
 	handler := Handler()
 
