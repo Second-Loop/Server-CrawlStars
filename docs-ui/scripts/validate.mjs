@@ -150,8 +150,21 @@ assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must docum
 
 assertSchemaContains(openAPIText, "OpaqueRoomID", ['pattern: "^room_[A-Za-z0-9_-]{22}$"']);
 assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0-9_-]{22}$"']);
-assertSchemaContains(openAPIText, "PlayerSessionToken", ['pattern: "^[A-Za-z0-9_-]{43}$"']);
-assertSchemaContains(openAPIText, "PlayerSessionToken", ["sessionToken", "tokenized `webSocketPath`", "Failed upgrade"]);
+const openAPIPlayerSessionToken = extractYAMLSchema(openAPIText, "PlayerSessionToken");
+for (const marker of [
+  'pattern: "^[A-Za-z0-9_-]{43}$"',
+  "sessionToken",
+  "tokenized `webSocketPath`",
+  "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+  "matched/loading/starting disconnect는 pre-start cancel",
+  "Failed upgrade",
+]) {
+  assert(openAPIPlayerSessionToken.includes(marker), `PlayerSessionToken must document ${marker}`);
+}
+assert(
+  !openAPIPlayerSessionToken.includes("Pre-start match의 실제 disconnect는 room을 취소"),
+  "PlayerSessionToken must not collapse unmatched and matched disconnect lifecycle",
+);
 assertSchemaContains(openAPIText, "PlayerSessionResponse", ["required: [player, sessionToken, webSocketPath]"]);
 assertSchemaContains(openAPIText, "MatchmakingJoinRequest", [
   "gameMode:",
@@ -208,7 +221,20 @@ assert(hasLine(asyncAPIText, "        method: GET"), "api/asyncapi.yaml WebSocke
 assert(hasLine(asyncAPIText, "          required: [token]"), "api/asyncapi.yaml WebSocket query must require token");
 assert(hasLine(asyncAPIText, '        bindingVersion: "0.1.0"'), "api/asyncapi.yaml must pin WebSocket bindingVersion 0.1.0");
 assert(!asyncAPIText.includes("additionalProperties: false"), "api/asyncapi.yaml must allow ordinary extra query keys");
-assertNamedBlockContains(asyncAPIText, "    playerSessionToken:", ["type: httpApiKey", "name: token", "in: query"]);
+const asyncAPIPlayerSessionToken = extractYAMLNamedBlock(asyncAPIText, "    playerSessionToken:");
+for (const marker of [
+  "type: httpApiKey",
+  "name: token",
+  "in: query",
+  "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+  "matched/loading/starting disconnect는 pre-start cancel",
+]) {
+  assert(asyncAPIPlayerSessionToken.includes(marker), `playerSessionToken security must document ${marker}`);
+}
+assert(
+  !asyncAPIPlayerSessionToken.includes("Pre-start match의 실제 disconnect는 room을 취소"),
+  "playerSessionToken security must not collapse unmatched and matched disconnect lifecycle",
+);
 const localServer = extractYAMLNamedBlock(asyncAPIText, "  local:");
 assert(
   localServer.includes('$ref: "#/components/securitySchemes/playerSessionToken"'),
@@ -287,6 +313,10 @@ for (const marker of [
 ]) {
   assert(roomPlayerChannel.includes(marker), `roomPlayer lifecycle must document ${marker}`);
 }
+assert(
+  !roomPlayerChannel.includes("Matchmaking pre-start 연결이 실제로 끊기면 room이 취소"),
+  "roomPlayer lifecycle must not collapse unmatched and matched disconnect lifecycle",
+);
 const asyncAPIOperations = extractYAMLNamedBlock(asyncAPIText, "operations:");
 const receiveReadyOperation = extractYAMLNamedBlock(asyncAPIOperations, "  receiveReady:");
 for (const marker of ["full participant list", "human session만 Ready ACK"]) {
@@ -361,6 +391,35 @@ assert(
 );
 for (const marker of ["optional `gameMode`", "participant capacity", "human session", "raw body가 1024 bytes"]) {
   assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
+}
+const apiDocsSessionLifecycle = extractDelimitedText(
+  apiDocsText,
+  "Handshake 순서는",
+  "\n\nAsyncAPI document dialect",
+  "ai-docs/api-docs.md session lifecycle",
+);
+const docsSessionTokenCard = extractDocsHTMLArticle("Session token");
+for (const [text, name, forbiddenMarkers] of [
+  [
+    apiDocsSessionLifecycle,
+    "ai-docs/api-docs.md session lifecycle",
+    ["pre-start 실제 disconnect는 room을 취소", "start 전 cancel"],
+  ],
+  [
+    docsSessionTokenCard,
+    "docs UI Session token card",
+    ["matchmaking pre-start 연결이 실제로 끊기면 room이 취소", "Pre-start match의 실제 disconnect는 room을 취소"],
+  ],
+]) {
+  for (const marker of [
+    "Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+    "matched/loading/starting disconnect는 pre-start cancel",
+  ]) {
+    assert(text.includes(marker), `${name} must document ${marker}`);
+  }
+  for (const marker of forbiddenMarkers) {
+    assert(!text.includes(marker), `${name} must not contain blanket lifecycle marker ${marker}`);
+  }
 }
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
@@ -493,6 +552,22 @@ function extractDocsJSONExample(heading) {
   const codeEnd = docsBuildText.indexOf("</code></pre>", codeStart);
   assert(codeStart >= 0 && codeEnd > codeStart, `docs UI ${heading} JSON is missing`);
   return JSON.parse(docsBuildText.slice(codeStart + opening.length, codeEnd));
+}
+
+function extractDocsHTMLArticle(heading) {
+  const headingStart = docsBuildText.indexOf(`<h3>${heading}</h3>`);
+  assert(headingStart >= 0, `docs UI is missing ${heading} article`);
+  const articleEnd = docsBuildText.indexOf("</article>", headingStart);
+  assert(articleEnd > headingStart, `docs UI ${heading} article is not closed`);
+  return docsBuildText.slice(headingStart, articleEnd);
+}
+
+function extractDelimitedText(text, startMarker, endMarker, name) {
+  const start = text.indexOf(startMarker);
+  assert(start >= 0, `${name} is missing start marker ${startMarker}`);
+  const end = text.indexOf(endMarker, start);
+  assert(end > start, `${name} is missing end marker ${endMarker}`);
+  return text.slice(start, end);
 }
 
 function assertEveryJSONPlayerHasIsBot(players, name) {

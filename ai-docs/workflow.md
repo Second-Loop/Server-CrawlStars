@@ -29,7 +29,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - matchmaking Ready event/ready ACK/countdown/start
 - sessionless server-owned bot participant와 human-only Ready quorum
 - 첫 human join 기준 10초 bot fill, timer/human join first-lock-wins, failure rollback/no-retry
-- start 전 match cancel
+- unmatched 연결 종료 시 deadline/credential 유지, matched/loading/starting match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
 - JSON room/WebSocket lifecycle log와 loopback 전용 Prometheus metrics

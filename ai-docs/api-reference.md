@@ -163,7 +163,7 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - 첫 human matchmaking join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
 - deadline을 먼저 획득하면 selected mode의 남은 slot을 bot으로 원자적으로 채웁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 `room_cap_reached` 409를 반환합니다.
 - Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
-- Ready timeout, reconnect grace, participant replacement는 없습니다. Start 전 실제 human WebSocket close는 match cancel입니다.
+- Ready timeout, reconnect grace, participant replacement는 없습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
 - 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 
 ### Room debug API
@@ -302,7 +302,7 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking의 matched/loading/starting 단계에서 실제 연결이 끊기면 pre-start cancel로 room이 삭제되어 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. HTTP-to-WebSocket upgrade 자체가 실패하면 reservation만 rollback하고 room을 취소하지 않으므로 같은 발급 path로 재시도할 수 있습니다.
 
-Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Pre-start match에서는 기존 cancel 정책을 적용하고, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement나 별도 reconnect grace는 없습니다.
+Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 기존 cancel 정책을 적용하며, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement나 별도 reconnect grace는 없습니다.
 
 일반 gameplay snapshot은 client별 크기 1 latest-only slot에서 합쳐 느린 client가 room tick이나 다른 client를 막지 않게 합니다. `Ready`, `starting`, `started`, `error`는 reliable control queue에서 순서를 보존합니다. 종료 시에는 남은 일반 snapshot을 버리고 `terminal snapshot -> GameEnd -> close` 순서를 socket close 전에 보장합니다. 각 payload write는 새 5초 context를 사용합니다.
 

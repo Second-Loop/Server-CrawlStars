@@ -114,6 +114,14 @@ func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
 	} {
 		assertStringContains(t, joinOperation, want)
 	}
+	playerSessionToken := extractYAMLBlock(t, openAPI.Body.String(), "    PlayerSessionToken:", "\n    HealthStatus:")
+	for _, want := range []string{
+		"Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+		"matched/loading/starting disconnect는 pre-start cancel",
+	} {
+		assertStringContains(t, playerSessionToken, want)
+	}
+	assertStringNotContains(t, playerSessionToken, "Pre-start match의 실제 disconnect는 room을 취소")
 
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
@@ -148,6 +156,27 @@ func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
 	} {
 		assertStringContains(t, lifecycleDescription, want)
 	}
+	assertStringNotContains(t, lifecycleDescription, "Matchmaking pre-start 연결이 실제로 끊기면 room이 취소")
+
+	playerSessionSecurity := extractYAMLBlock(t, asyncAPIText, "    playerSessionToken:", "\n  messages:")
+	for _, want := range []string{
+		"Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+		"matched/loading/starting disconnect는 pre-start cancel",
+	} {
+		assertStringContains(t, playerSessionSecurity, want)
+	}
+	assertStringNotContains(t, playerSessionSecurity, "Pre-start match의 실제 disconnect는 room을 취소")
+
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	sessionTokenCard := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Session token</h3>", "</article>")
+	for _, want := range []string{
+		"Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지",
+		"matched/loading/starting disconnect는 pre-start cancel",
+	} {
+		assertStringContains(t, sessionTokenCard, want)
+	}
+	assertStringNotContains(t, sessionTokenCard, "matchmaking pre-start 연결이 실제로 끊기면 room이 취소")
 
 	readyMessage := extractYAMLBlock(t, asyncAPIText, "    ReadyEventMessage:\n      name: ReadyEventMessage", "\n    ReadyAckMessage:")
 	assertStringContains(t, readyMessage, "Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다")
@@ -223,6 +252,14 @@ func assertStringContains(t *testing.T, body string, want string) {
 
 	if !strings.Contains(body, want) {
 		t.Fatalf("expected body to contain %q, got %s", want, body)
+	}
+}
+
+func assertStringNotContains(t *testing.T, body string, unwanted string) {
+	t.Helper()
+
+	if strings.Contains(body, unwanted) {
+		t.Fatalf("expected body not to contain %q, got %s", unwanted, body)
 	}
 }
 

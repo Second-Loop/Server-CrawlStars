@@ -398,7 +398,7 @@ components:
       description: |
         32 random bytes를 Raw URL Base64로 인코딩한 43자 token입니다.
         Raw 값은 player 발급 응답의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 같은 secret으로 나타나고, 이후 WebSocket `token` query로 다시 전달됩니다.
-        Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. Pre-start match의 실제 disconnect는 room을 취소하고, started room은 TTL/hard lifetime 뒤 삭제됩니다. Failed upgrade는 room을 취소하지 않아 재시도할 수 있습니다.
+        Token은 일회용이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 pre-start cancel로 room을 삭제하고, started room은 TTL/hard lifetime 뒤 삭제됩니다. Failed upgrade는 room을 취소하지 않아 재시도할 수 있습니다.
         서버 private state에는 SHA-256 digest만 저장합니다. 세 secret-bearing surface 모두 log나 telemetry에 기록하면 안 됩니다.
       pattern: "^[A-Za-z0-9_-]{43}$"
     HealthStatus:

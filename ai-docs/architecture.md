@@ -255,7 +255,7 @@ WebSocket:
 - 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
 - invalid input은 error message만 보내고 연결은 유지합니다.
 
-Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
+Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
 동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create와 timer/human join 경쟁을, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 participant, bot-fill ticker/stop channel, 직전 snapshot, pending/bot input, simulation state, client/countdown 및 close barrier session set을, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. Timer resource는 room lock 아래에서 detach만 하고 ticker `Stop`과 stop channel close는 모든 core lock을 푼 뒤 실행합니다. bot-fill worker join(`workerWG.Wait`)은 Shutdown에서만 추가로 수행합니다. Attach는 Store close 판정, active session 등록, room close barrier 등록을 원자적으로 처리합니다. Session lifecycle monitor는 transport `closeDone` 뒤 room barrier에서 해당 generation을 제거하고, writer와 heartbeat 종료까지 계속 추적합니다.
 
@@ -271,7 +271,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - started all-disconnected TTL: 5분
 - hard lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
-- matchmaking start 전 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
+- matchmaking matched/loading/starting 단계의 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
 - Unmatched human disconnect는 bot-fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 기존 pre-start cancel로 bot-fill resource도 함께 회수합니다.
 - Solo 중간 탈락은 해당 session만 terminal close하고 room과 ticker를 유지합니다.
 - Room terminal decision은 `ending`을 예약하고 ticker를 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 이 상태에서는 새 mutation과 추가 tick을 받지 않습니다.

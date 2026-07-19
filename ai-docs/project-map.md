@@ -29,7 +29,7 @@
 - Full participant capacity 뒤 human-only attach/ACK, bot을 포함한 Ready/Snapshot
 - 직전 snapshot 기반 결정적 basic controller와 human/bot input의 shared one-Step 처리
 - room-local mode config 기반 team/slot/spawn과 Wall/Water-safe fallback assignment
-- start 전 WebSocket close cancel
+- unmatched 연결 종료 시 deadline/credential 유지, matched/loading/starting WebSocket close cancel
 - `duel_1v1` 호환, Solo 중간 Lose/마지막 생존자, Team elimination을 따르는 GameEnd Win/Lose/Draw
 - Player별 immutable 결과와 terminal close barrier 뒤 room/player ID cleanup
 - client build용 shared game config artifact
@@ -136,7 +136,7 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 서버는 upgrade 전에 room 존재 여부, player 소속 여부, 정확히 한 개의 non-empty token, live connection/in-flight reservation을 순서대로 확인합니다. 실패 status는 404, 404, 401, 409입니다. 정상 extra query key는 허용하지만 malformed query pair는 401입니다. Waiting room도 연결과 input 수신은 허용하지만, started 전 gameplay tick은 돌리지 않습니다.
 
-Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 TTL/hard lifetime을 따릅니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
+Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 TTL/hard lifetime을 따릅니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
 
 Matchmaking room WebSocket 상태:
 
@@ -145,7 +145,7 @@ Matchmaking room WebSocket 상태:
 3. Human client는 이 map과 `Players[].SpawnPosition`으로 렌더 준비를 끝낸 뒤 `{"Type":"ready"}`를 보냅니다. Bot은 WebSocket sender가 아닙니다.
 4. Room 내 human player identity가 모두 ready가 되면 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`가 human connection당 1번 broadcast됩니다. Duplicate ACK는 idempotent합니다.
 5. 중간 countdown broadcast 없이 5초 뒤 `Snapshot.status: "started"`가 오고, 다음 tick부터 30Hz gameplay snapshot이 시작됩니다.
-6. start 전 human WebSocket close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
+6. Unmatched human WebSocket close는 deadline과 credential을 유지합니다. matched/loading/starting close는 match cancel로 처리하며 room과 남은 connection을 정리합니다.
 
 ### 4. Room start
 
@@ -232,7 +232,7 @@ Room store는 in-memory입니다.
 - hard room lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-현재 WebSocket close는 client connection과 pending input을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. Matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
+현재 WebSocket close는 client connection과 pending input을 제거합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 match cancel로 room을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다.
 
 각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
