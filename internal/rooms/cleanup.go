@@ -240,6 +240,15 @@ func (s *Store) startJanitor() {
 }
 
 func (s *Store) cleanupExpired(now time.Time) int {
+	deleted, resources := s.detachExpiredRooms(now)
+	resources.close(defaultRoomWebSocketCloseMsg)
+	return deleted
+}
+
+// detachExpiredRooms removes expired rooms and returns their lifecycle
+// resources without stopping them. Callers that hold mutationMu can defer the
+// stop until after releasing it.
+func (s *Store) detachExpiredRooms(now time.Time) (int, roomResources) {
 	rooms := s.registeredRooms()
 	deleted := 0
 	var resources roomResources
@@ -261,8 +270,7 @@ func (s *Store) cleanupExpired(now time.Time) int {
 		}
 	}
 
-	resources.close(defaultRoomWebSocketCloseMsg)
-	return deleted
+	return deleted, resources
 }
 
 // isExpired requires r.mu because TTL eligibility depends on room-owned state.
@@ -292,6 +300,13 @@ type roomResources struct {
 	clientObservations []clientObservation
 }
 
+func (r *roomResources) merge(other roomResources) {
+	r.tickers = append(r.tickers, other.tickers...)
+	r.stops = append(r.stops, other.stops...)
+	r.sessions = append(r.sessions, other.sessions...)
+	r.clientObservations = append(r.clientObservations, other.clientObservations...)
+}
+
 // detachGameplayLocked stops future simulation ticks without removing the room
 // or its clients. The caller holds room.mu and invokes stop after unlocking.
 func (r *roomResources) detachGameplayLocked(room *room) {
@@ -302,6 +317,20 @@ func (r *roomResources) detachGameplayLocked(room *room) {
 	if room.stop != nil {
 		r.stops = append(r.stops, room.stop)
 		room.stop = nil
+	}
+}
+
+// detachBotFillLocked removes the one-shot matchmaking bot-fill worker from a
+// room. The caller holds room.mu and stops the returned resources only after
+// releasing every core Store lock.
+func (r *roomResources) detachBotFillLocked(room *room) {
+	if room.botFillTicker != nil {
+		r.tickers = append(r.tickers, room.botFillTicker)
+		room.botFillTicker = nil
+	}
+	if room.botFillStop != nil {
+		r.stops = append(r.stops, room.botFillStop)
+		room.botFillStop = nil
 	}
 }
 
@@ -391,6 +420,7 @@ func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 		r.stops = append(r.stops, room.countdownStop)
 		room.countdownStop = nil
 	}
+	r.detachBotFillLocked(room)
 	if room.ticker != nil {
 		r.tickers = append(r.tickers, room.ticker)
 		room.ticker = nil

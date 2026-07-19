@@ -1515,3 +1515,25 @@ func assertShutdownObserverEndsAtZero(t *testing.T, values []int, name string) {
 		t.Fatalf("expected normal %s observer to end at zero, got %v", name, values)
 	}
 }
+
+func TestStoreShutdownStopsBotFillBeforeDelay(t *testing.T) {
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	room := store.lookupRoom(joined.Room.ID)
+	room.mu.Lock()
+	fillTicker := room.botFillTicker
+	room.mu.Unlock()
+
+	if err := waitStoreShutdown(t, startStoreShutdown(store, context.Background())); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if got := fillTicker.(*fakeTicker).StopCount(); got != 1 {
+		t.Fatalf("stop count=%d want 1", got)
+	}
+}
