@@ -220,11 +220,11 @@ Room store는 in-memory입니다.
 
 현재 WebSocket close는 client connection과 pending input을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. Matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
 
-각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
+각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
 외부 mutation의 lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `matchmakingMu`는 같은 mode의 동시 첫 join이 여러 room을 만들지 않도록 find-or-create 전체를 직렬화합니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
 
-각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 `closeDone`을 모두 기다립니다. Current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 registry, active-room observer, player ID, `room_ended` log, resources를 정리하고 cleanup success signal을 마지막에 닫습니다. Hard TTL과 debug clear/delete는 ending room을 제거하지 않습니다.
+각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 아직 close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 barrier에 남습니다. 그 뒤 registry, active-room observer, player ID, `room_ended` log, resources를 정리하고 cleanup success signal을 마지막에 닫습니다. Hard TTL과 debug clear/delete는 ending room을 제거하지 않습니다.
 
 Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보냅니다. GameEnd close barrier의 forced-teardown 예외로서 close 전에 registry/player ID를 detach할 수 있지만 cleanup worker와 session lifecycle을 join합니다. 이 takeover는 normal cleanup signal을 닫거나 `room_ended`를 기록하지 않으며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
 

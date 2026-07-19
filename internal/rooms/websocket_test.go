@@ -1680,6 +1680,96 @@ func TestTerminalCloseBarrierRetainsRegistryAndPlayerIDs(t *testing.T) {
 	}
 }
 
+func TestTerminalCloseBarrierWaitsForReconnectedHistoricalSession(t *testing.T) {
+	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
+	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))
+
+	historicalSession := harness.sessions[0]
+	historicalCloseStarted, releaseHistoricalClose := harness.blockClose(t, 0)
+	historicalCloseReturned := make(chan struct{})
+	go func() {
+		historicalSession.close(websocket.StatusNormalClosure, "reader disconnected")
+		close(historicalCloseReturned)
+	}()
+	waitShutdownSignal(t, historicalCloseStarted, "historical session transport close entry")
+
+	reconnected := harness.joined[0]
+	reconnectReservation, err := harness.store.reserveClient(
+		harness.room.ID,
+		reconnected.Player.ID,
+		[]string{reconnected.SessionToken},
+	)
+	if err != nil {
+		releaseHistoricalClose()
+		t.Fatalf("reserve reconnect: %v", err)
+	}
+	reconnectConn := newFakeClientConn(false)
+	reconnectSession, attached := harness.store.attachClientSession(reconnectReservation, reconnectConn)
+	if !attached {
+		releaseHistoricalClose()
+		t.Fatal("expected reconnect session to attach while historical transport close blocks")
+	}
+	harness.connections[0] = reconnectConn
+	harness.sessions[0] = reconnectSession
+
+	harness.store.tickRoomState(harness.room)
+	reconnectSnapshot := readFakeGameplaySnapshot(t, reconnectConn)
+	if reconnectSnapshot.Snapshot.Tick != 1 {
+		releaseHistoricalClose()
+		t.Fatalf("expected reconnect terminal snapshot at tick 1, got %d", reconnectSnapshot.Snapshot.Tick)
+	}
+	assertGameEnd(t, readFakeGameEnd(t, reconnectConn), reconnected.Player.ID, gameEndResultLose.String())
+	for index, session := range harness.sessions {
+		select {
+		case <-session.closeDone:
+		case <-time.After(time.Second):
+			releaseHistoricalClose()
+			t.Fatalf("expected current terminal session %d to close", index)
+		}
+	}
+	select {
+	case <-historicalSession.closeDone:
+		releaseHistoricalClose()
+		t.Fatal("expected historical closeDone to remain open while transport close blocks")
+	default:
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		releaseHistoricalClose()
+		t.Fatal("expected terminal cleanup to wait for the historical reconnect generation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := harness.store.lookupRoom(harness.room.ID); got != harness.room {
+		releaseHistoricalClose()
+		t.Fatal("expected room registry to remain until the historical session closes")
+	}
+	harness.store.mu.RLock()
+	for index := range harness.joined {
+		if _, exists := harness.store.playerIDs[harness.playerID(index)]; !exists {
+			harness.store.mu.RUnlock()
+			releaseHistoricalClose()
+			t.Fatalf("expected player ID %s to remain reserved during the historical close barrier", harness.playerID(index))
+		}
+	}
+	harness.store.mu.RUnlock()
+
+	releaseHistoricalClose()
+	select {
+	case <-historicalCloseReturned:
+	case <-time.After(time.Second):
+		t.Fatal("expected historical session close to return after releasing transport")
+	}
+	waitForGameEndCleanup(t, harness.room)
+	if got := harness.store.lookupRoom(harness.room.ID); got != nil {
+		t.Fatal("expected room registry removal after the historical close barrier")
+	}
+	harness.store.mu.RLock()
+	defer harness.store.mu.RUnlock()
+	if got := len(harness.store.playerIDs); got != 0 {
+		t.Fatalf("expected every player ID released after historical close, got %d", got)
+	}
+}
+
 func TestEndingRoomRejectsHardTTLAndDebugRemovalBeforeCloseDone(t *testing.T) {
 	harness := newModeTickHarness(t, simulation.GameModeSolo, nil, nil, 0, 1, 2, 3, 4, 5)
 	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4))

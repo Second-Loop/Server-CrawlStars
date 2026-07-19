@@ -87,6 +87,7 @@ type room struct {
 	state                    simulationStepper
 	pendingInputs            map[string]simulation.InputCommand
 	clients                  map[string]*clientSession
+	closeBarrierSessions     map[*clientSession]struct{}
 	reservations             map[string]*clientReservation
 	finalizedGameEndResults  map[string]gameEndResult
 	finalizedGameEndSessions map[string]*clientSession
@@ -693,6 +694,7 @@ func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *
 		sessions:                 make(map[string]playerSession),
 		pendingInputs:            make(map[string]simulation.InputCommand),
 		clients:                  make(map[string]*clientSession),
+		closeBarrierSessions:     make(map[*clientSession]struct{}),
 		reservations:             make(map[string]*clientReservation),
 		finalizedGameEndResults:  make(map[string]gameEndResult),
 		finalizedGameEndSessions: make(map[string]*clientSession),

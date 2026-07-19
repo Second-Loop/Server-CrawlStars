@@ -703,9 +703,10 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	connectedPublication := s.prepareConnectedClientPublication(connectedClient, connectedTransition)
 	delete(room.reservations, reservation.playerID)
 	room.clients[reservation.playerID] = session
+	room.closeBarrierSessions[session] = struct{}{}
 	lifecycleDone := make(chan struct{})
 	s.activeSessions[session] = lifecycleDone
-	s.monitorClientSession(session, lifecycleDone)
+	s.monitorClientSession(room, session, lifecycleDone)
 	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
 	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
@@ -726,9 +727,12 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	return session, true
 }
 
-func (s *Store) monitorClientSession(session *clientSession, lifecycleDone chan struct{}) {
+func (s *Store) monitorClientSession(room *room, session *clientSession, lifecycleDone chan struct{}) {
 	go func() {
 		<-session.closeDone
+		room.mu.Lock()
+		delete(room.closeBarrierSessions, session)
+		room.mu.Unlock()
 		<-session.writerDone
 		<-session.heartbeatDone
 

@@ -286,9 +286,9 @@ func (r *room) snapshotSessionsWithoutFinalizedGameEnd() []*clientSession {
 }
 
 // clientSessions requires r.mu and captures the terminal close barrier before
-// ending prevents any new attachment. Sessions that received an earlier
-// finalized result stay in this barrier after releaseClient removes them from
-// the current-client map.
+// ending prevents any new attachment. Finalized sessions and any session whose
+// transport close is still owned by the room stay in this barrier after
+// releaseClient removes them from the current-client map.
 func (r *room) clientSessions() []*clientSession {
 	current := make([]*clientSession, 0, len(r.clients))
 	for _, session := range r.clients {
@@ -302,7 +302,13 @@ func (r *room) clientSessions() []*clientSession {
 			finalized = append(finalized, session)
 		}
 	}
-	return uniqueClientSessions(current, finalized)
+	closing := make([]*clientSession, 0, len(r.closeBarrierSessions))
+	for session := range r.closeBarrierSessions {
+		if session != nil {
+			closing = append(closing, session)
+		}
+	}
+	return uniqueClientSessions(current, finalized, closing)
 }
 
 func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfig) []simulation.PlayerData {
