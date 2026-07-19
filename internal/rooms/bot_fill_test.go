@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -408,9 +409,7 @@ func TestBotFillIgnoresStoppedBufferedTick(t *testing.T) {
 	fillTicker := room.botFillTicker
 	beforePlayers := append([]playerResponse(nil), room.Players...)
 	room.mu.Unlock()
-	store.mu.RLock()
-	beforeIDs := len(store.playerIDs)
-	store.mu.RUnlock()
+	beforeIDs := snapshotBotFillPlayerIDs(store)
 
 	store.matchmakingMu.Lock()
 	fillTicker.(*fakeTicker).ticks <- clock.Now()
@@ -437,15 +436,13 @@ func TestBotFillIgnoresStoppedBufferedTick(t *testing.T) {
 	store.matchmakingMu.Unlock()
 	store.workerWG.Wait()
 
-	store.mu.RLock()
-	afterIDs := len(store.playerIDs)
-	store.mu.RUnlock()
+	afterIDs := snapshotBotFillPlayerIDs(store)
 	room.mu.Lock()
 	afterPlayers := append([]playerResponse(nil), room.Players...)
 	status := room.matchStatus
 	room.mu.Unlock()
-	if !slices.Equal(afterPlayers, beforePlayers) || afterIDs != beforeIDs || status != "" {
-		t.Fatalf("stopped buffered tick mutated room: players=%+v->%+v IDs=%d->%d status=%q", beforePlayers, afterPlayers, beforeIDs, afterIDs, status)
+	if !slices.Equal(afterPlayers, beforePlayers) || !maps.Equal(afterIDs, beforeIDs) || status != "" {
+		t.Fatalf("stopped buffered tick mutated room: players=%+v->%+v IDs=%v->%v status=%q", beforePlayers, afterPlayers, beforeIDs, afterIDs, status)
 	}
 	if got := fillTicker.(*fakeTicker).StopCount(); got != 1 {
 		t.Fatalf("stopped buffered ticker stop count=%d want=1", got)
@@ -468,11 +465,19 @@ func TestBotFillTimersAreIndependentAcrossRooms(t *testing.T) {
 	}
 	duelRoom := store.lookupRoom(duel.Room.ID)
 	soloRoom := store.lookupRoom(solo.Room.ID)
+	if duelRoom == nil || soloRoom == nil {
+		t.Fatalf("expected both rooms: duel=%p solo=%p", duelRoom, soloRoom)
+	}
+	if duelRoom.ID == soloRoom.ID {
+		t.Fatalf("independent timer fixture reused room ID %q", duelRoom.ID)
+	}
 	duelRoom.mu.Lock()
 	duelTicker := duelRoom.botFillTicker
+	duelBefore := append([]playerResponse(nil), duelRoom.Players...)
 	duelRoom.mu.Unlock()
 	soloRoom.mu.Lock()
 	soloTicker := soloRoom.botFillTicker
+	soloBefore := append([]playerResponse(nil), soloRoom.Players...)
 	soloRoom.mu.Unlock()
 	if duelTicker == nil || soloTicker == nil || duelTicker == soloTicker {
 		t.Fatalf("rooms did not own independent tickers: duel=%p solo=%p", duelTicker, soloTicker)
@@ -480,20 +485,71 @@ func TestBotFillTimersAreIndependentAcrossRooms(t *testing.T) {
 
 	duelTicker.(*fakeTicker).tick()
 	waitForBotFillMatchStatus(t, duelRoom, MatchStatusMatched)
+	duelRoom.mu.Lock()
+	duelAfterFirstTick := append([]playerResponse(nil), duelRoom.Players...)
+	duelStatus := duelRoom.matchStatus
+	duelRoom.mu.Unlock()
 	soloRoom.mu.Lock()
 	soloStatus := soloRoom.matchStatus
 	retainedSoloTicker := soloRoom.botFillTicker
-	soloPlayers := len(soloRoom.Players)
+	soloAfterFirstTick := append([]playerResponse(nil), soloRoom.Players...)
 	soloRoom.mu.Unlock()
-	if soloStatus != "" || retainedSoloTicker != soloTicker || soloPlayers != 1 || soloTicker.(*fakeTicker).StopCount() != 0 {
-		t.Fatalf("duel deadline affected solo: status=%q ticker=%p want=%p players=%d stops=%d", soloStatus, retainedSoloTicker, soloTicker, soloPlayers, soloTicker.(*fakeTicker).StopCount())
+	if duelStatus != MatchStatusMatched || len(duelAfterFirstTick) != duelRoom.gameConfig.MatchPlayerCount() || !slices.Equal(duelAfterFirstTick[:len(duelBefore)], duelBefore) {
+		t.Fatalf("duel fill changed existing participants: before=%+v after=%+v status=%q", duelBefore, duelAfterFirstTick, duelStatus)
+	}
+	if soloStatus != "" || retainedSoloTicker != soloTicker || !slices.Equal(soloAfterFirstTick, soloBefore) || soloTicker.(*fakeTicker).StopCount() != 0 {
+		t.Fatalf("duel deadline affected solo: status=%q ticker=%p want=%p players=%+v->%+v stops=%d", soloStatus, retainedSoloTicker, soloTicker, soloBefore, soloAfterFirstTick, soloTicker.(*fakeTicker).StopCount())
 	}
 
 	soloTicker.(*fakeTicker).tick()
 	waitForBotFillMatchStatus(t, soloRoom, MatchStatusMatched)
+	duelRoom.mu.Lock()
+	duelAfterSecondTick := append([]playerResponse(nil), duelRoom.Players...)
+	duelStatusAfterSecondTick := duelRoom.matchStatus
+	duelRoom.mu.Unlock()
+	soloRoom.mu.Lock()
+	soloAfterSecondTick := append([]playerResponse(nil), soloRoom.Players...)
+	soloStatusAfterSecondTick := soloRoom.matchStatus
+	soloRoom.mu.Unlock()
+	if !slices.Equal(duelAfterSecondTick, duelAfterFirstTick) || duelStatusAfterSecondTick != duelStatus {
+		t.Fatalf("solo deadline affected already-filled duel: players=%+v->%+v status=%q->%q", duelAfterFirstTick, duelAfterSecondTick, duelStatus, duelStatusAfterSecondTick)
+	}
+	if soloStatusAfterSecondTick != MatchStatusMatched || len(soloAfterSecondTick) != soloRoom.gameConfig.MatchPlayerCount() || !slices.Equal(soloAfterSecondTick[:len(soloBefore)], soloBefore) {
+		t.Fatalf("solo fill changed existing participants: before=%+v after=%+v status=%q", soloBefore, soloAfterSecondTick, soloStatusAfterSecondTick)
+	}
+	duelIDs := botFillParticipantIDs(duelAfterSecondTick)
+	soloIDs := botFillParticipantIDs(soloAfterSecondTick)
+	if len(duelIDs) != len(duelAfterSecondTick) || len(soloIDs) != len(soloAfterSecondTick) {
+		t.Fatalf("bot fill reused participant IDs within a room: duel=%+v solo=%+v", duelAfterSecondTick, soloAfterSecondTick)
+	}
+	for playerID := range duelIDs {
+		if _, overlaps := soloIDs[playerID]; overlaps {
+			t.Fatalf("bot fill reused participant ID across rooms: %q", playerID)
+		}
+	}
+	expectedStoreIDs := make(map[string]struct{}, len(duelIDs)+len(soloIDs))
+	maps.Copy(expectedStoreIDs, duelIDs)
+	maps.Copy(expectedStoreIDs, soloIDs)
+	if actualStoreIDs := snapshotBotFillPlayerIDs(store); !maps.Equal(actualStoreIDs, expectedStoreIDs) {
+		t.Fatalf("store player ID keys=%v want union of room participants=%v", actualStoreIDs, expectedStoreIDs)
+	}
 	if duelTicker.(*fakeTicker).StopCount() != 1 || soloTicker.(*fakeTicker).StopCount() != 1 {
 		t.Fatalf("independent ticker stops duel=%d solo=%d want 1 each", duelTicker.(*fakeTicker).StopCount(), soloTicker.(*fakeTicker).StopCount())
 	}
+}
+
+func snapshotBotFillPlayerIDs(store *Store) map[string]struct{} {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return maps.Clone(store.playerIDs)
+}
+
+func botFillParticipantIDs(players []playerResponse) map[string]struct{} {
+	playerIDs := make(map[string]struct{}, len(players))
+	for _, player := range players {
+		playerIDs[player.ID] = struct{}{}
+	}
+	return playerIDs
 }
 
 type matchmakingJoinResult struct {
@@ -862,9 +918,7 @@ func TestBotFillIgnoresSameIDReplacementRoom(t *testing.T) {
 	beforePlayers := append([]playerResponse(nil), original.Players...)
 	beforeStatus := original.matchStatus
 	original.mu.Unlock()
-	store.mu.RLock()
-	beforeIDs := len(store.playerIDs)
-	store.mu.RUnlock()
+	beforeIDs := snapshotBotFillPlayerIDs(store)
 
 	store.mu.Lock()
 	replacement := store.newRoomLocked(original.ID, original.gameConfig)
@@ -886,17 +940,15 @@ func TestBotFillIgnoresSameIDReplacementRoom(t *testing.T) {
 	replacementPlayers := append([]playerResponse(nil), replacement.Players...)
 	replacementStatus := replacement.matchStatus
 	replacement.mu.Unlock()
-	store.mu.RLock()
-	afterIDs := len(store.playerIDs)
-	store.mu.RUnlock()
+	afterIDs := snapshotBotFillPlayerIDs(store)
 	if registered != replacement {
 		t.Fatalf("registered room=%p want replacement=%p", registered, replacement)
 	}
 	if retainedTicker != fillTicker || fillTicker.(*fakeTicker).StopCount() != 0 {
 		t.Fatalf("stale timer was detached: retained=%p want=%p stops=%d", retainedTicker, fillTicker, fillTicker.(*fakeTicker).StopCount())
 	}
-	if !slices.Equal(afterPlayers, beforePlayers) || afterStatus != beforeStatus || len(replacementPlayers) != 0 || replacementStatus != "" || afterIDs != beforeIDs {
-		t.Fatalf("replacement tick mutated lifecycle: original players=%+v->%+v status=%q->%q replacement players=%+v status=%q IDs=%d->%d", beforePlayers, afterPlayers, beforeStatus, afterStatus, replacementPlayers, replacementStatus, beforeIDs, afterIDs)
+	if !slices.Equal(afterPlayers, beforePlayers) || afterStatus != beforeStatus || len(replacementPlayers) != 0 || replacementStatus != "" || !maps.Equal(afterIDs, beforeIDs) {
+		t.Fatalf("replacement tick mutated lifecycle: original players=%+v->%+v status=%q->%q replacement players=%+v status=%q IDs=%v->%v", beforePlayers, afterPlayers, beforeStatus, afterStatus, replacementPlayers, replacementStatus, beforeIDs, afterIDs)
 	}
 
 	store.mu.Lock()
