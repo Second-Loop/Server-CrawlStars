@@ -4451,6 +4451,36 @@ func TestWebSocketNegativeClientTickReturnsInvalidInputAndPreservesPending(t *te
 	}
 }
 
+func TestWebSocketMalformedClientTickReturnsInvalidInputAndPreservesPending(t *testing.T) {
+	for name, clientTick := range map[string]string{
+		"null":       "null",
+		"fractional": "1.5",
+		"string":     `"12"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newClientTickWebSocketFixture(t, 1)
+			player := fixture.players[0]
+			conn := fixture.connections[0]
+
+			writeWSJSON(t, conn, inputMessage{ClientTick: 12, MoveDir: simulation.Vector2{X: 1}})
+			waitForPendingClientTick(t, fixture.store, fixture.room.ID, player.ID, 12)
+			writeText(t, conn, `{"ClientTick":`+clientTick+`,"MoveDir":{"x":0,"y":1}}`)
+
+			message := readErrorMessage(t, conn)
+			if message.Type != "error" || message.Error.Code != "invalid_input" {
+				t.Fatalf("%s ClientTick error=%+v, want invalid_input", name, message)
+			}
+			room := fixture.store.lookupRoom(fixture.room.ID)
+			room.mu.Lock()
+			pending := room.pendingInputs[player.ID]
+			room.mu.Unlock()
+			if pending.ClientTick != 12 || pending.MoveDir != (simulation.Vector2{X: 1}) {
+				t.Fatalf("%s ClientTick mutated pending input: %+v", name, pending)
+			}
+		})
+	}
+}
+
 func TestWebSocketStaleAndDuplicatePositiveClientTicksAreSilent(t *testing.T) {
 	fixture := newClientTickWebSocketFixture(t, 1)
 	player := fixture.players[0]

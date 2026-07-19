@@ -71,6 +71,21 @@ func TestInputMessageDecodesClientTickAndDefaultsMissingToZero(t *testing.T) {
 	}
 }
 
+func TestInputMessageRejectsExplicitNullOrNonIntegerClientTick(t *testing.T) {
+	for name, payload := range map[string]string{
+		"null":       `{"ClientTick":null}`,
+		"fractional": `{"ClientTick":1.5}`,
+		"string":     `{"ClientTick":"12"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var input inputMessage
+			if err := json.Unmarshal([]byte(payload), &input); err == nil {
+				t.Fatalf("decode %s ClientTick succeeded, want invalid input", name)
+			}
+		})
+	}
+}
+
 func botProjectionFixture(config simulation.GameConfig) (
 	[]simulation.PlayerData,
 	[]readyEventPlayer,
