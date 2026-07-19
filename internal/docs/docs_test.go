@@ -1,8 +1,11 @@
 package docs
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -85,9 +88,9 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.4.0",
+		"version: 0.5.0",
 		"required: [Id, Team, Slot, IsBot, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
+		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -98,6 +101,200 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertStatus(t, docsUI, http.StatusOK)
 	assertBodyContains(t, docsUI, `"IsBot": false`)
 	assertBodyContains(t, docsUI, `"IsBot": true`)
+}
+
+func TestYAMLTopLevelRequiredFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		schema    string
+		want      string
+		wantError bool
+	}{
+		{
+			name: "extracts only the schema-level inline list",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: [MoveDir, ClientTick, AttackDir]",
+				"      properties:",
+				"        Nested:",
+				"          type: object",
+				"          required: [NestedField]",
+			}, "\n"),
+			want: "MoveDir,ClientTick,AttackDir",
+		},
+		{
+			name: "ignores nested required when the schema has none",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      properties:",
+				"        Nested:",
+				"          type: object",
+				"          required: [ClientTick]",
+			}, "\n"),
+			want: "",
+		},
+		{
+			name: "rejects a malformed schema-level list",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: ClientTick",
+			}, "\n"),
+			wantError: true,
+		},
+		{
+			name: "rejects duplicate schema-level lists",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: [MoveDir]",
+				"      required: [AttackDir]",
+			}, "\n"),
+			wantError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fields, err := yamlTopLevelRequiredFields(test.schema)
+			if test.wantError {
+				if err == nil {
+					t.Fatalf("expected malformed required list to fail closed, got %v", fields)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse schema-level required fields: %v", err)
+			}
+			if got := strings.Join(fields, ","); got != test.want {
+				t.Fatalf("schema-level required fields=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerServesClientTickACKContract(t *testing.T) {
+	handler := Handler()
+
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	asyncAPIText := asyncAPI.Body.String()
+
+	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
+	assertStringContains(t, info, "  version: 0.5.0")
+
+	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
+	schemas := extractYAMLNamedBlock(t, components, "  schemas:")
+	inputSchema := extractYAMLNamedBlock(t, schemas, "    InputMessage:")
+	inputProperties := extractYAMLNamedBlock(t, inputSchema, "      properties:")
+	clientTick := extractYAMLNamedBlock(t, inputProperties, "        ClientTick:")
+	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
+		assertStringContains(t, clientTick, marker)
+	}
+	inputRequired, err := yamlTopLevelRequiredFields(inputSchema)
+	if err != nil {
+		t.Fatalf("parse InputMessage required fields: %v", err)
+	}
+	if got := exactStringCount(inputRequired, "ClientTick"); got != 0 {
+		t.Fatalf("InputMessage must keep ClientTick optional, found it %d times in schema-level required fields %v", got, inputRequired)
+	}
+
+	playerSchema := extractYAMLNamedBlock(t, schemas, "    PlayerData:")
+	playerRequired, err := yamlTopLevelRequiredFields(playerSchema)
+	if err != nil {
+		t.Fatalf("parse PlayerData required fields: %v", err)
+	}
+	if got := exactStringCount(playerRequired, "LastProcessedClientTick"); got != 1 {
+		t.Fatalf("PlayerData must require LastProcessedClientTick exactly once, found it %d times in schema-level required fields %v", got, playerRequired)
+	}
+	playerProperties := extractYAMLNamedBlock(t, playerSchema, "      properties:")
+	processedTick := extractYAMLNamedBlock(t, playerProperties, "        LastProcessedClientTick:")
+	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
+		assertStringContains(t, processedTick, marker)
+	}
+
+	messages := extractYAMLNamedBlock(t, components, "  messages:")
+	snapshotMessage := extractYAMLNamedBlock(t, messages, "    SnapshotMessage:")
+	starting := extractYAMLNamedBlock(t, snapshotMessage, "        - name: startingSignal")
+	started := extractYAMLNamedBlock(t, snapshotMessage, "        - name: startedControl")
+	for _, lifecycle := range []struct {
+		name   string
+		block  string
+		status string
+	}{
+		{name: "starting", block: starting, status: "status: starting"},
+		{name: "started", block: started, status: "status: started"},
+	} {
+		assertStringContains(t, lifecycle.block, lifecycle.status)
+		assertStringContains(t, lifecycle.block, "Tick: 0")
+		assertStringContains(t, lifecycle.block, "Players: null")
+	}
+
+	gameplay := extractYAMLNamedBlock(t, snapshotMessage, "        - name: gameplay")
+	gameplayPlayers := extractYAMLSequenceObjects(t, gameplay, "Players")
+	if len(gameplayPlayers) == 0 {
+		t.Fatal("expected gameplay example player objects")
+	}
+	hasPositiveHuman := false
+	hasBot := false
+	for index, player := range gameplayPlayers {
+		if got := strings.Count(player, "LastProcessedClientTick:"); got != 1 {
+			t.Fatalf("gameplay player %d must include ACK exactly once, got %d in %s", index, got, player)
+		}
+		ack := yamlIntegerValue(t, player, "LastProcessedClientTick")
+		if strings.Contains(player, "IsBot: true") {
+			hasBot = true
+			if ack != 0 {
+				t.Fatalf("bot gameplay ACK=%d want=0 in %s", ack, player)
+			}
+		} else if strings.Contains(player, "IsBot: false") && ack > 0 {
+			hasPositiveHuman = true
+		}
+	}
+	if !hasPositiveHuman || !hasBot {
+		t.Fatalf("gameplay example must include a positive human ACK and bot ACK 0: %s", gameplay)
+	}
+
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	assertStatus(t, openAPI, http.StatusOK)
+	assertStringNotContains(t, openAPI.Body.String(), "\n    PlayerData:")
+	assertStringNotContains(t, openAPI.Body.String(), "\n        ClientTick:")
+
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	gameplayArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Gameplay</h3>", "</article>")
+	if got := strings.Count(gameplayArticle, `"LastProcessedClientTick":`); got != 2 {
+		t.Fatalf("expected served gameplay article to include two ACK fields, got %d", got)
+	}
+	gameplayJSON := strings.TrimPrefix(
+		extractYAMLBlock(t, gameplayArticle, "<pre><code>", "</code></pre>"),
+		"<pre><code>",
+	)
+	var servedGameplay struct {
+		Snapshot struct {
+			Players []struct {
+				IsBot                   bool
+				LastProcessedClientTick int64
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(gameplayJSON), &servedGameplay); err != nil {
+		t.Fatalf("decode served gameplay example: %v", err)
+	}
+	servedHasPositiveHuman := false
+	servedHasBotZero := false
+	for _, player := range servedGameplay.Snapshot.Players {
+		if player.IsBot {
+			servedHasBotZero = servedHasBotZero || player.LastProcessedClientTick == 0
+		} else {
+			servedHasPositiveHuman = servedHasPositiveHuman || player.LastProcessedClientTick > 0
+		}
+	}
+	if !servedHasPositiveHuman || !servedHasBotZero {
+		t.Fatalf("served gameplay example must include a positive human ACK and bot ACK 0: %s", gameplayJSON)
+	}
 }
 
 func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
@@ -276,4 +473,146 @@ func extractYAMLBlock(t *testing.T, body, start, end string) string {
 		t.Fatalf("expected YAML block end %q after %q", end, start)
 	}
 	return block[:endIndex]
+}
+
+func extractYAMLNamedBlock(t *testing.T, body, marker string) string {
+	t.Helper()
+
+	lines := strings.Split(body, "\n")
+	start := -1
+	for index, line := range lines {
+		if line == marker {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("expected YAML block marker %q", marker)
+	}
+	indent := len(marker) - len(strings.TrimLeft(marker, " "))
+	end := start + 1
+	for end < len(lines) {
+		line := lines[end]
+		if strings.TrimSpace(line) != "" && len(line)-len(strings.TrimLeft(line, " ")) <= indent {
+			break
+		}
+		end++
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func yamlTopLevelRequiredFields(schema string) ([]string, error) {
+	lines := strings.Split(schema, "\n")
+	rootIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rootIndent = len(line) - len(strings.TrimLeft(line, " "))
+		break
+	}
+	if rootIndent < 0 {
+		return nil, fmt.Errorf("empty schema block")
+	}
+
+	requiredIndent := rootIndent + 2
+	var requiredFields []string
+	found := false
+	for _, line := range lines[1:] {
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		trimmed := strings.TrimSpace(line)
+		if indent != requiredIndent || !strings.HasPrefix(trimmed, "required:") {
+			continue
+		}
+		if found {
+			return nil, fmt.Errorf("duplicate schema-level required list")
+		}
+		found = true
+
+		inlineList := strings.TrimSpace(strings.TrimPrefix(trimmed, "required:"))
+		if len(inlineList) < 2 || inlineList[0] != '[' || inlineList[len(inlineList)-1] != ']' {
+			return nil, fmt.Errorf("schema-level required must be an inline list: %q", trimmed)
+		}
+		contents := strings.TrimSpace(inlineList[1 : len(inlineList)-1])
+		if contents == "" {
+			requiredFields = []string{}
+			continue
+		}
+		for _, field := range strings.Split(contents, ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				return nil, fmt.Errorf("schema-level required contains an empty field: %q", trimmed)
+			}
+			requiredFields = append(requiredFields, field)
+		}
+	}
+	return requiredFields, nil
+}
+
+func exactStringCount(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
+}
+
+func extractYAMLSequenceObjects(t *testing.T, body, propertyName string) []string {
+	t.Helper()
+
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		if strings.TrimSpace(line) != propertyName+":" {
+			continue
+		}
+		propertyIndent := len(line) - len(strings.TrimLeft(line, " "))
+		itemPrefix := strings.Repeat(" ", propertyIndent+2) + "- "
+		var objects []string
+		var current []string
+		for cursor := index + 1; cursor < len(lines); cursor++ {
+			candidate := lines[cursor]
+			candidateIndent := len(candidate) - len(strings.TrimLeft(candidate, " "))
+			if strings.TrimSpace(candidate) != "" && candidateIndent <= propertyIndent {
+				break
+			}
+			if strings.HasPrefix(candidate, itemPrefix) {
+				if len(current) > 0 {
+					objects = append(objects, strings.Join(current, "\n"))
+				}
+				current = []string{candidate}
+			} else if len(current) > 0 {
+				current = append(current, candidate)
+			}
+		}
+		if len(current) > 0 {
+			objects = append(objects, strings.Join(current, "\n"))
+		}
+		return objects
+	}
+	t.Fatalf("expected YAML sequence property %q", propertyName)
+	return nil
+}
+
+func yamlIntegerValue(t *testing.T, body, field string) int64 {
+	t.Helper()
+
+	prefix := field + ":"
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), 10, 64)
+		if err != nil {
+			t.Fatalf("expected %s integer in %q: %v", field, line, err)
+		}
+		if value < 0 {
+			t.Fatalf("expected non-negative %s, got %d", field, value)
+		}
+		return value
+	}
+	t.Fatalf("expected field %s in %s", field, body)
+	return 0
 }

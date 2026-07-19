@@ -610,3 +610,25 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - 10초 fill은 room lifecycle과 함께 시작·정리되고 timer와 human join의 승자가 결정적입니다.
 - Bot identity failure가 wire participant 목록을 부분적으로 바꾸지 않고, human-only Ready/start wire contract가 유지됩니다.
+
+## ADR-0034: SL-94 ClientTick ACK는 Simulation State가 소유
+
+상태: 승인됨
+
+맥락: WebSocket input은 network 지연이나 재전송으로 순서가 바뀌거나 중복될 수 있습니다. Client prediction을 authoritative snapshot과 맞추려면 server가 단순히 수신한 tick이 아니라 실제 gameplay step에서 처리한 마지막 input을 player별로 알려야 합니다. 기존 client는 tick field 없이도 계속 동작해야 하고, match start용 Ready ACK와 gameplay processed input ACK도 섞이지 않아야 합니다.
+
+결정:
+
+- Public `InputMessage.ClientTick`은 optional signed `int64`입니다. 누락/`0`은 legacy input, 음수는 WebSocket `invalid_input`으로 처리합니다.
+- Room은 `room.mu` 아래 양수 tick을 직전 authoritative `lastPlayers[].LastProcessedClientTick`과 현재 positive pending에 비교합니다. 두 값보다 큰 command만 저장하고 stale/duplicate 양수는 error/control frame 없이 무시합니다. Legacy `0`은 기존 last-write-wins로 positive pending도 덮을 수 있지만 ACK는 변경하지 않습니다.
+- `internal/simulation.State`가 `PlayerData.LastProcessedClientTick`의 최종 소유자입니다. Live player, 유한한 방향, non-negative/stale 검사를 통과한 양수 input은 movement collision과 attack effect 판정보다 먼저 ACK합니다. 그래서 visible effect가 없는 유효 input도 ACK하고 unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다.
+- Processed input ACK는 player별로 단조 증가하고 input이 없는 tick에도 유지됩니다. Human `ClientTick`은 bot merge 뒤에도 보존하고 bot command와 bot ACK는 `0`입니다.
+- 같은 started match의 reconnect는 simulation state에 남은 ACK를 이어 쓰며 새 match는 `0`에서 시작합니다. 별도 reconnect grace나 input retransmission buffer는 추가하지 않습니다.
+- Match 시작용 `{"Type":"ready"}` Ready ACK는 human-only quorum이고 `LastProcessedClientTick` processed input ACK와 별개입니다. `starting`과 `started` control snapshot은 계속 `Tick: 0`, `Players: null`이며 첫 gameplay `Tick: 1`부터 모든 `PlayerData`에 ACK를 포함합니다.
+- AsyncAPI 계약 version은 `0.5.0`으로 올리고 input tick은 optional, gameplay player ACK는 required로 둡니다. REST OpenAPI에는 gameplay `PlayerData`나 `ClientTick` schema를 추가하지 않습니다.
+
+결과:
+
+- Client는 snapshot ACK를 기준으로 처리 완료된 prediction input만 제거할 수 있고 network 순서 역전이나 중복 때문에 authoritative state가 되감기지 않습니다.
+- Legacy client는 기존 last-write-wins input을 계속 사용할 수 있으며 ACK 값은 잘못 증가하지 않습니다.
+- ACK의 최종 의미가 simulation 처리 완료로 고정되고 room admission guard는 불필요한 stale command를 Step 전에 줄이는 역할로 제한됩니다.

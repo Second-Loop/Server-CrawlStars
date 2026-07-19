@@ -1,6 +1,12 @@
 package rooms
 
-import "github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+
+	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+)
 
 type roomListResponse struct {
 	Rooms []roomResponse `json:"rooms"`
@@ -70,10 +76,44 @@ type apiError struct {
 }
 
 type inputMessage struct {
+	ClientTick    int64              `json:"ClientTick"`
 	MoveDir       simulation.Vector2 `json:"MoveDir"`
 	AttackDir     simulation.Vector2 `json:"AttackDir"`
 	PressedAttack bool               `json:"PressedAttack"`
 }
+
+func (m *inputMessage) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ClientTick    json.RawMessage    `json:"ClientTick"`
+		MoveDir       simulation.Vector2 `json:"MoveDir"`
+		AttackDir     simulation.Vector2 `json:"AttackDir"`
+		PressedAttack bool               `json:"PressedAttack"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	*m = inputMessage{
+		MoveDir:       wire.MoveDir,
+		AttackDir:     wire.AttackDir,
+		PressedAttack: wire.PressedAttack,
+	}
+	if len(wire.ClientTick) == 0 {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(wire.ClientTick), []byte("null")) {
+		return errors.New("ClientTick must be an integer")
+	}
+	return json.Unmarshal(wire.ClientTick, &m.ClientTick)
+}
+
+type inputDisposition uint8
+
+const (
+	inputIgnored inputDisposition = iota
+	inputStored
+	inputInvalid
+)
 
 type inputEnvelope struct {
 	Type string `json:"Type"`

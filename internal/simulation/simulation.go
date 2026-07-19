@@ -38,24 +38,26 @@ type Vector2 struct {
 
 type InputCommand struct {
 	PlayerID      PlayerID `json:"PlayerId"`
+	ClientTick    int64    `json:"ClientTick"`
 	MoveDir       Vector2  `json:"MoveDir"`
 	AttackDir     Vector2  `json:"AttackDir"`
 	PressedAttack bool     `json:"PressedAttack"`
 }
 
 type PlayerData struct {
-	ID            PlayerID `json:"Id"`
-	Team          Team     `json:"Team"`
-	Slot          int      `json:"Slot"`
-	IsBot         bool     `json:"IsBot"`
-	Pos           Vector2  `json:"Pos"`
-	MoveDir       Vector2  `json:"MoveDir"`
-	AttackDir     Vector2  `json:"AttackDir"`
-	Speed         float64  `json:"Speed"`
-	Radius        float64  `json:"Radius"`
-	HP            float64  `json:"HP"`
-	PressedAttack bool     `json:"PressedAttack"`
-	IsDead        bool     `json:"IsDead"`
+	ID                      PlayerID `json:"Id"`
+	Team                    Team     `json:"Team"`
+	Slot                    int      `json:"Slot"`
+	IsBot                   bool     `json:"IsBot"`
+	Pos                     Vector2  `json:"Pos"`
+	MoveDir                 Vector2  `json:"MoveDir"`
+	AttackDir               Vector2  `json:"AttackDir"`
+	Speed                   float64  `json:"Speed"`
+	Radius                  float64  `json:"Radius"`
+	HP                      float64  `json:"HP"`
+	PressedAttack           bool     `json:"PressedAttack"`
+	IsDead                  bool     `json:"IsDead"`
+	LastProcessedClientTick int64    `json:"LastProcessedClientTick"`
 }
 
 type ProjectileType string
@@ -242,16 +244,21 @@ func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []Playe
 }
 
 func (s *State) applyInput(input InputCommand) {
-	if !isFinite(input.MoveDir) || !isFinite(input.AttackDir) {
-		return
-	}
-
 	for i := range s.players {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
-		if s.players[i].IsDead {
+		if s.players[i].IsDead || !isFinite(input.MoveDir) || !isFinite(input.AttackDir) {
 			return
+		}
+		if input.ClientTick < 0 {
+			return
+		}
+		if input.ClientTick > 0 && input.ClientTick <= s.players[i].LastProcessedClientTick {
+			return
+		}
+		if input.ClientTick > 0 {
+			s.players[i].LastProcessedClientTick = input.ClientTick
 		}
 
 		moveDir := clampDirection(input.MoveDir)

@@ -71,7 +71,7 @@ No-visible-effect table은 wall collision, zero attack direction, exhausted atta
 Run:
 
 ```bash
-rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput)' -count=1
+rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput|UnprocessedInput)' -count=1
 ```
 
 Expected: `ClientTick` 또는 `LastProcessedClientTick` field가 없어 compile failure.
@@ -125,7 +125,7 @@ ACK assignment는 movement collision과 attack effect 판정보다 앞, player/f
 Run:
 
 ```bash
-rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput)' -count=20
+rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput|UnprocessedInput)' -count=20
 rtk go test ./internal/simulation -count=1
 ```
 
@@ -358,7 +358,7 @@ Expected: 기존 version `0.4.0`과 누락된 fields/examples 때문에 FAIL.
 Run:
 
 ```bash
-rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput)' -count=20
+rtk go test ./internal/simulation -run 'TestStep.*(ClientTick|ACK|ProcessedInput|UnprocessedInput)' -count=20
 rtk go test ./internal/rooms -run 'Test(InputMessage|SetInput|WebSocket.*ClientTick|MergedTickInputs.*ClientTick)' -count=20
 rtk go test -race ./internal/rooms ./internal/simulation
 rtk go test ./internal/docs -count=1

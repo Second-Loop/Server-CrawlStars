@@ -42,6 +42,30 @@ func TestMergedTickInputsUsesMapKeyAsAuthoritativePlayerID(t *testing.T) {
 	}
 }
 
+func TestMergedTickInputsPreservesHumanClientTickAndKeepsBotTickZero(t *testing.T) {
+	players := []simulation.PlayerData{
+		{ID: "human", Team: simulation.TeamRed},
+		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 3}, IsBot: true},
+	}
+	pending := map[string]simulation.InputCommand{
+		"human": {PlayerID: "spoof", ClientTick: 17, MoveDir: simulation.Vector2{Y: 1}},
+		"bot":   {PlayerID: "human", ClientTick: 99, MoveDir: simulation.Vector2{X: -99}},
+	}
+
+	got := mergedTickInputs(pending, players)
+	human := playerInputByID(t, got, "human")
+	if human.ClientTick != 17 || human.MoveDir != (simulation.Vector2{Y: 1}) {
+		t.Fatalf("human command lost ClientTick or payload: %+v", human)
+	}
+	bot := playerInputByID(t, got, "bot")
+	if bot.ClientTick != 0 {
+		t.Fatalf("server-owned bot ClientTick=%d, want 0", bot.ClientTick)
+	}
+	if bot.MoveDir == (simulation.Vector2{X: -99}) || !bot.PressedAttack {
+		t.Fatalf("bot command must come from controller: %+v", bot)
+	}
+}
+
 func TestMergedTickInputsDropsIneligibleBotPendingCommands(t *testing.T) {
 	tests := []struct {
 		name    string

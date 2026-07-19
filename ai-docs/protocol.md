@@ -45,11 +45,12 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
 3. 기존 projectile 이동
 4. projectile의 Wall/boundary 충돌 destroy와 selected mode별 player hit 처리
-5. input을 `PlayerID` 오름차순으로 stable sort하고 live player의 유한한 값만 적용해 방향 벡터 검증
-6. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
-7. 공격 입력, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
-8. tick 증가
-9. snapshot 반환
+5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
+6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
+7. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
+8. 공격 입력, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
+9. tick 증가
+10. processed input ACK가 포함된 snapshot 반환
 
 현재 값:
 
@@ -93,7 +94,7 @@ Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다.
 Mode/team rule도 server-only입니다. REST join response와 Room은 선택된 mode ID만 `gameMode`로 노출하고 `friendlyFire`, `teamBehavior`, 전체 catalog는 노출하지 않습니다. Projectile hit은 room-local selected mode rules를 사용합니다. Solo는 owner가 아닌 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 이 동작은 WebSocket message shape를 바꾸지 않습니다.
 Attack charge와 recharge 진행도도 server-only state이며 client config나 snapshot에 새 field로 노출하지 않습니다.
 
-Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge는 계속 `internal/simulation`이 판정합니다.
+Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Human command의 `ClientTick`은 merge 뒤에도 유지하고 bot command는 `ClientTick: 0`을 사용합니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge와 최종 processed input ACK는 계속 `internal/simulation`이 판정합니다.
 
 ## WebSocket 계약
 
@@ -113,7 +114,7 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 - gameplay snapshot은 room이 started가 된 뒤에만 broadcast합니다.
 - payload write는 client별 writer가 수행하며 매번 새 5초 context를 사용합니다.
 
-Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하므로 그 뒤에는 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. Failed HTTP-to-WebSocket upgrade는 reservation만 rollback해 같은 발급 경로로 재시도할 수 있습니다.
+Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하므로 그 뒤에는 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. 같은 started match에 reconnect하면 snapshot의 기존 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내고, 새 match의 ACK는 `0`으로 초기화됩니다. Failed HTTP-to-WebSocket upgrade는 reservation만 rollback해 같은 발급 경로로 재시도할 수 있습니다.
 
 발급 JSON의 `sessionToken`, tokenized `webSocketPath`, inbound query는 모두 같은 raw secret을 담습니다. Raw token과 전체 query 문자열을 log나 telemetry에 남기지 않습니다. Ready/Snapshot/GameEnd payload에는 token이나 digest가 없습니다.
 
@@ -125,6 +126,7 @@ Client input:
 
 ```json
 {
+  "ClientTick": 12,
   "MoveDir": { "x": 1, "y": 0 },
   "AttackDir": { "x": 0, "y": 1 },
   "PressedAttack": false
@@ -152,7 +154,8 @@ Server snapshot:
         "Radius": 0.5,
         "HP": 100,
         "PressedAttack": false,
-        "IsDead": false
+        "IsDead": false,
+        "LastProcessedClientTick": 12
       },
       {
         "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
@@ -166,13 +169,18 @@ Server snapshot:
         "Radius": 0.5,
         "HP": 100,
         "PressedAttack": true,
-        "IsDead": false
+        "IsDead": false,
+        "LastProcessedClientTick": 0
       }
     ],
     "Projectiles": null
   }
 }
 ```
+
+`ClientTick`은 optional `int64`이며 누락/`0`은 legacy input입니다. Room은 `room.mu` 아래 마지막 processed ACK와 positive pending을 비교해 더 큰 양수 command만 저장합니다. Stale/duplicate 양수는 error 없이 무시하고, legacy `0`은 last-write-wins로 positive pending도 덮을 수 있지만 ACK를 변경하지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
+
+`LastProcessedClientTick`은 WebSocket 수신이나 pending 저장이 아니라 `State.Step`이 실제 처리한 마지막 양수 tick입니다. Live player의 유한한 input은 충돌이나 공격 budget 때문에 visible effect가 없어도 ACK합니다. Unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다. ACK는 player별로 단조 증가하며 bot command와 bot ACK는 `0`입니다. Match 시작용 Ready ACK와 processed input ACK는 서로 다른 계약입니다.
 
 Matchmaking room은 선택 mode의 full participant capacity를 채운 뒤 room 내 human participant의 WebSocket session이 모두 연결되면 human session에만 `Ready` event를 보냅니다. Human participant가 0명이면 이 gate는 성립하지 않습니다. 이 event는 client가 map을 렌더하고 bot을 포함한 full participant spawn을 배치하는 기준 데이터입니다.
 
@@ -239,6 +247,8 @@ Starting signal:
 }
 ```
 
+`started` control도 `Tick: 0`, `Players: null`을 유지합니다. 첫 gameplay `Tick: 1`부터 모든 `Players[]`가 required `LastProcessedClientTick`을 가집니다.
+
 Invalid input:
 
 ```json
@@ -252,6 +262,8 @@ Invalid input:
 ```
 
 Invalid input은 connection을 끊지 않습니다.
+
+Malformed JSON과 음수 `ClientTick`은 `invalid_input`을 보내지만 stale/duplicate 양수 tick은 control/error frame 없이 조용히 무시합니다.
 
 GameEnd event:
 
@@ -287,13 +299,19 @@ Solo 중간 탈락은 해당 session에만 `terminal snapshot -> GameEnd -> clos
 
 `MoveDir`은 크기가 `1` 이하면 아날로그 입력을 그대로 보존하고, 더 크면 서버가 크기 `1`로 clamp합니다. 각 player는 4 charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. Zero `AttackDir`, 소진된 charge, 사망한 player input은 projectile을 만들지 않습니다.
 
-같은 tick의 input batch는 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이는 pending input map의 순회 순서와 무관하게 movement와 새 projectile 생성을 결정적으로 만드는 기준입니다.
+`ClientTick`과 `LastProcessedClientTick`은 입력 순서와 처리 완료를 연결합니다.
+
+- input `ClientTick > 0`: room과 simulation의 stale/duplicate guard 대상인 client sequence
+- input `ClientTick = 0` 또는 누락: 기존 last-write-wins를 유지하지만 processed input ACK를 바꾸지 않는 legacy command
+- snapshot `LastProcessedClientTick`: simulation이 처리한 마지막 양수 command이며 receipt/pending ACK가 아님
+
+같은 gameplay `State.Step`의 input batch는 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이는 pending input map의 순회 순서와 무관하게 movement와 새 projectile 생성을 결정적으로 만드는 기준입니다.
 
 기존 projectile은 selected mode rules로 hit eligibility를 판단합니다. Owner와 이미 사망한 player는 제외하고, Solo는 나머지 live player를 모두 적으로 보며, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 여러 eligible target과 동시에 겹치면 player의 join/배정 순서에서 첫 target만 피해를 받습니다. 이 target tie-break는 `PlayerID` input 정렬과 서로 다른 순서입니다.
 
 `IsDead`는 `HP <= 0`에서 유도할 수 있지만 snapshot에는 유지합니다. Client가 death rule을 재해석하지 않아도 되고, future state를 추가하기 쉽기 때문입니다.
 
-이 변경은 기존 input/snapshot field를 그대로 사용하므로 public WebSocket schema를 바꾸지 않습니다. Attack charge 자체를 client에 노출하는 변경은 별도 schema issue에서 다룹니다.
+SL-94는 public WebSocket input에 optional `ClientTick`, gameplay `PlayerData`에 required `LastProcessedClientTick`을 추가합니다. Attack charge 자체는 계속 server-only이고 client에 별도 field로 노출하지 않습니다.
 
 ## Matchmaking 계약
 
@@ -414,14 +432,15 @@ DELETE /rooms/{roomID}
 2. 두 secret-bearing `webSocketPath`로 연결하되 raw path/query를 log에 남기지 않습니다.
 3. 두 connection이 같은 `Type: "Ready"` event를 받고, 이 event의 `Map.map` row가 숫자 배열이어야 합니다.
 4. 두 client가 `{"Type":"ready"}`를 보내면 `starting` 신호를 1번 받고, 중간 countdown broadcast 없이 5초 뒤 `started`를 받아야 합니다.
-5. 한 player가 movement input을 보내면 두 connection이 같은 `Snapshot.Tick`과 player `Pos`를 받아야 합니다.
-6. Red와 blue spawn은 Ready event의 `Players[].SpawnPosition`으로 확인합니다.
-7. Hit tick에서 projectile은 `IsDestroyed: true`, selected mode에서 eligible한 첫 target은 HP 감소로 보여야 합니다.
-8. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
-9. HP가 0이 된 tick의 snapshot 이후 player별 `GameEnd`를 받아야 합니다.
-10. 한 player 사망은 Win/Lose, 같은 tick 동시 사망은 두 player 모두 Draw이며 기존 `duel_1v1` 결과를 유지해야 합니다.
-11. Terminal ticker가 먼저 멈추고 모든 close가 끝난 뒤 room registry와 player ID가 정리되어야 합니다.
-12. invalid JSON 이후에도 다음 snapshot stream은 유지되어야 합니다.
+5. 한 player가 양수 `ClientTick` movement input을 보내면 수신 직후가 아니라 다음 gameplay `State.Step` snapshot에서 `LastProcessedClientTick`이 올라가고 두 connection이 같은 `Snapshot.Tick`, ACK, player `Pos`를 받아야 합니다.
+6. 같은 player의 stale/duplicate 양수 tick은 error 없이 무시되고, 다른 player ACK는 독립적으로 유지되어야 합니다.
+7. Red와 blue spawn은 Ready event의 `Players[].SpawnPosition`으로 확인합니다.
+8. Hit tick에서 projectile은 `IsDestroyed: true`, selected mode에서 eligible한 첫 target은 HP 감소로 보여야 합니다.
+9. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
+10. HP가 0이 된 tick의 snapshot 이후 player별 `GameEnd`를 받아야 합니다.
+11. 한 player 사망은 Win/Lose, 같은 tick 동시 사망은 두 player 모두 Draw이며 기존 `duel_1v1` 결과를 유지해야 합니다.
+12. Terminal ticker가 먼저 멈추고 모든 close가 끝난 뒤 room registry와 player ID가 정리되어야 합니다.
+13. invalid JSON과 음수 `ClientTick` 이후에도 다음 snapshot stream은 유지되어야 합니다.
 
 ## Solo/Team human-only 6인 검증 시나리오
 
@@ -435,7 +454,7 @@ DELETE /rooms/{roomID}
 8. 이미 ready인 player가 ACK를 반복해도 quorum은 5로 유지됩니다.
 9. 여섯 번째 서로 다른 player가 ACK하면 `starting/countdown: 5`를 connection당 한 번 받고 countdown ticker는 하나여야 합니다.
 10. 5초 뒤 `started`를 connection당 한 번 받고 gameplay ticker는 하나여야 합니다.
-11. 첫 gameplay tick은 `Tick: 1`, `Players` 길이 6이고 여섯 connection에서 같은 payload여야 합니다.
+11. 첫 gameplay tick은 `Tick: 1`, `Players` 길이 6이고 여섯 connection에서 같은 payload여야 합니다. 모든 player에 `LastProcessedClientTick` key가 있으며 bot ACK는 `0`이어야 합니다.
 12. Solo projectile은 owner를 제외한 live player를 hit하고, Team projectile은 ally를 통과해 enemy를 hit해야 합니다.
 13. 여러 eligible target이 겹치면 join/배정 순서의 첫 target만 피해를 받고, input 전달 순서를 섞어도 `PlayerID` 오름차순 적용 결과가 같아야 합니다.
 14. Solo 중간 탈락은 해당 player만 Lose와 close를 받고 survivor tick은 계속되어야 합니다. 마지막 생존자는 Win이며, 이전 Lose 뒤 전원 사망이면 이전 Lose는 유지되고 나머지만 Draw여야 합니다.
@@ -443,7 +462,7 @@ DELETE /rooms/{roomID}
 16. Ending room은 hard TTL/debug delete에서 보호되고, 정상 cleanup은 모든 `closeDone` 뒤에 registry/player ID를 정리해야 합니다.
 17. Forced `Shutdown`은 registry/player ID를 먼저 detach할 수 있지만 cleanup worker와 session lifecycle을 join하고 normal cleanup signal/`room_ended`를 만들지 않아야 합니다.
 
-이 시나리오는 bot을 넣지 않은 human-only 회귀 경로입니다. SL-91 timer 경로에서는 첫 human join 뒤 10초에 participant 6명을 채우고 human session만 attach/ACK하며, human에게 전달된 Ready와 gameplay snapshot에는 bot을 포함한 6명 전체가 나타나야 합니다. Start 전 실제 human disconnect는 unmatched이면 deadline과 credential을 유지하고, matched/loading/starting이면 기존 pre-start cancel로 room과 남은 connection을 정리합니다. ClientTick/ACK 확장은 SL-94 범위입니다.
+이 시나리오는 bot을 넣지 않은 human-only 회귀 경로입니다. SL-91 timer 경로에서는 첫 human join 뒤 10초에 participant 6명을 채우고 human session만 attach/Ready ACK하며, human에게 전달된 Ready와 gameplay snapshot에는 bot을 포함한 6명 전체가 나타나야 합니다. Bot의 `LastProcessedClientTick`은 `0`입니다. Start 전 실제 human disconnect는 unmatched이면 deadline과 credential을 유지하고, matched/loading/starting이면 기존 pre-start cancel로 room과 남은 connection을 정리합니다.
 
 자동 검증은 `go test ./internal/rooms`와 `go test ./internal/simulation`이 담당합니다.
 
