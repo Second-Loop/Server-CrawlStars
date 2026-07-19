@@ -123,7 +123,7 @@ func (r *roomResources) detachBotFillLocked(room *room) {
 }
 ```
 
-`removeRoomLocked`가 countdown/gameplay와 함께 `detachBotFillLocked(room)`을 호출하게 합니다. Debug `startRoom`도 room lock 아래에서 bot-fill resource를 detach하고, room/mutation lock을 모두 해제한 뒤 resource를 stop합니다.
+`removeRoomLocked`가 countdown/gameplay와 함께 `detachBotFillLocked(room)`을 호출하게 합니다. Debug `startRoom`도 room lock 아래에서 bot-fill resource를 detach하고, room lock과 `mutationMu`를 모두 해제한 뒤 resource를 stop합니다.
 
 `internal/rooms/store.go`에 다음 계약을 구현합니다.
 
@@ -153,7 +153,25 @@ func (s *Store) runBotFill(room *room, fillTicker ticker, stop <-chan struct{}) 
 }
 ```
 
-`fillMatchmakingBots`는 Task 2에서 완성하되 Task 1에서는 identity를 확인하고 ticker/stop을 detach한 뒤 no-op으로 종료하는 최소 구현으로 둡니다. `tryJoinMatchmakingRoom`과 `createMatchmakingRoom`은 human 수가 `0 -> 1`이면 arm하고, human full이면 bot-fill resource를 detach합니다. 두 함수가 반환한 `roomResources`는 `joinMatchmaking`이 `matchmakingMu`를 해제한 뒤 `stop()`합니다.
+`fillMatchmakingBots`는 Task 2에서 완성하되 Task 1에서는 identity를 확인하고 ticker/stop을 detach한 뒤 no-op으로 종료하는 최소 구현으로 둡니다. `tryJoinMatchmakingRoom`과 `createMatchmakingRoom`은 human 수가 `0 -> 1`이면 arm하고, human full이면 bot-fill resource를 detach합니다.
+
+현재 `joinMatchmaking` 본문은 `joinMatchmakingLocked`로 옮기고 outer wrapper를 아래 순서로 바꿉니다.
+
+```go
+func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error) {
+	if !s.beginMutation() {
+		return matchmakingJoinResponse{}, ErrInternal
+	}
+	s.matchmakingMu.Lock()
+	response, resources, err := s.joinMatchmakingLocked(gameMode)
+	s.matchmakingMu.Unlock()
+	s.endMutation()
+	resources.stop()
+	return response, err
+}
+```
+
+`joinMatchmakingLocked`와 내부 join/create helper는 `roomResources`를 함께 반환합니다. 이 구조로 `matchmakingMu`와 `mutationMu`를 모두 해제한 뒤에만 `ticker.Stop()`과 `close(stop)`을 호출합니다.
 
 - [ ] **Step 4: GREEN과 기존 lifecycle 회귀를 확인합니다**
 
@@ -306,7 +324,7 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 }
 ```
 
-기존 `addBots`도 `appendBotsLocked`를 사용하되 precheck, registry pointer 재검증, `Store.mu` 해제 뒤 Ready delivery라는 기존 의미는 바꾸지 않습니다. Manual `addBots`가 정원을 완성한 경우에는 bot-fill resource를 detach하고 모든 core lock 밖에서 stop하며, 일부 slot만 추가한 경우에는 기존 deadline을 유지합니다.
+기존 `addBots`도 `appendBotsLocked`를 사용하되 precheck, registry pointer 재검증, `Store.mu` 해제 뒤 Ready delivery라는 기존 의미는 바꾸지 않습니다. Manual `addBots`가 정원을 완성한 경우에는 bot-fill resource를 detach하고 room lock 및 `mutationMu`까지 해제한 뒤 stop하며, 일부 slot만 추가한 경우에는 기존 deadline을 유지합니다. 이를 위해 `addBots`의 기존 `defer s.endMutation()`을 명시적 release로 바꾸고 모든 return path가 정확히 한 번 release되는지 테스트합니다.
 
 - [ ] **Step 4: GREEN, repeat, race를 확인합니다**
 
