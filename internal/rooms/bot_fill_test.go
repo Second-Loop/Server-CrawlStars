@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -273,6 +274,72 @@ func TestBotFillLogsEntropyFailure(t *testing.T) {
 	}
 }
 
+func TestBotFillRejectsRegistryReplacementDuringReservation(t *testing.T) {
+	clock := newFakeClock()
+	logs := &lockedLogBuffer{}
+	store := newStore(5, clock, StoreConfig{Logger: jsonTestLogger(logs)})
+	t.Cleanup(store.Close)
+
+	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join matchmaking: %v", err)
+	}
+	original := store.lookupRoom(joined.Room.ID)
+	if original == nil {
+		t.Fatal("expected original room")
+	}
+	replacement := store.newRoomLocked(joined.Room.ID, original.gameConfig)
+	reader := &registryReplacingReader{
+		store:       store,
+		roomID:      joined.Room.ID,
+		replacement: replacement,
+		replaced:    make(chan struct{}),
+		value:       0x73,
+	}
+	store.mu.Lock()
+	beforeIDs := len(store.playerIDs)
+	store.random = reader
+	store.mu.Unlock()
+	original.mu.Lock()
+	beforePlayers := append([]playerResponse(nil), original.Players...)
+	fillTicker := original.botFillTicker
+	original.mu.Unlock()
+
+	clock.TickTicker(matchmakingBotFillDelay, 0)
+	waitBotFillSignal(t, reader.replaced, "registry replacement")
+	waitForBotFillTickerStop(t, fillTicker, 1)
+
+	store.mu.RLock()
+	afterIDs := len(store.playerIDs)
+	current := store.rooms[joined.Room.ID]
+	store.mu.RUnlock()
+	original.mu.Lock()
+	afterPlayers := append([]playerResponse(nil), original.Players...)
+	status := original.matchStatus
+	detached := original.botFillTicker == nil && original.botFillStop == nil
+	original.mu.Unlock()
+	replacement.mu.Lock()
+	replacementPlayers := append([]playerResponse(nil), replacement.Players...)
+	replacementStatus := replacement.matchStatus
+	replacement.mu.Unlock()
+
+	if current != replacement || beforeIDs != afterIDs ||
+		!slices.Equal(beforePlayers, afterPlayers) || status != "" {
+		t.Fatalf("post-reserve rollback current=%p want=%p IDs=%d->%d players=%+v->%+v status=%q", current, replacement, beforeIDs, afterIDs, beforePlayers, afterPlayers, status)
+	}
+	if len(replacementPlayers) != 0 || replacementStatus != "" {
+		t.Fatalf("replacement mutated: players=%+v status=%q", replacementPlayers, replacementStatus)
+	}
+	if !detached {
+		t.Fatal("stale timer remained attached after registry replacement")
+	}
+	assertLogEventCount(t, logs, "bot_fill_failed", 0)
+
+	store.mu.Lock()
+	store.rooms[joined.Room.ID] = original
+	store.mu.Unlock()
+}
+
 func TestBotFillFailureLogRunsOutsideCoreLocks(t *testing.T) {
 	clock := newFakeClock()
 	callbackResult := make(chan string, 1)
@@ -421,6 +488,23 @@ func waitForBotFillLogEvent(t *testing.T, logs *lockedLogBuffer, event string) {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s log in %s", event, logs.String())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func waitForBotFillTickerStop(t *testing.T, fillTicker ticker, want int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		got := fillTicker.(*fakeTicker).StopCount()
+		if got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("bot-fill ticker stops=%d want=%d", got, want)
 		default:
 			time.Sleep(time.Millisecond)
 		}

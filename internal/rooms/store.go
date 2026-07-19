@@ -545,16 +545,6 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	return bots, nil
 }
 
-// appendBotsLocked reserves every bot identity before appending any participant.
-// The caller holds Store.mu and room.mu.
-func (s *Store) appendBotsLocked(room *room, count int) ([]playerResponse, error) {
-	ids, err := s.reserveBotIDsLocked(count)
-	if err != nil {
-		return nil, err
-	}
-	return s.appendReservedBotsLocked(room, ids), nil
-}
-
 func (s *Store) appendReservedBotsLocked(room *room, ids []string) []playerResponse {
 	bots := make([]playerResponse, 0, len(ids))
 	for _, id := range ids {
@@ -733,7 +723,11 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 	defer s.matchmakingMu.Unlock()
 	storeLocked := false
 	roomLocked := false
+	var reservedBotIDs []string
 	defer func() {
+		for _, id := range reservedBotIDs {
+			delete(s.playerIDs, id)
+		}
 		if roomLocked {
 			room.mu.Unlock()
 		}
@@ -753,21 +747,27 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 		room.matchStatus != "" || room.botFillTicker != expectedTicker {
 		return
 	}
-	resources.detachBotFillLocked(room)
 	remaining := room.gameConfig.MatchPlayerCount() - len(room.Players)
 	if remaining > 0 {
-		_, fillErr = s.appendBotsLocked(room, remaining)
+		reservedBotIDs, fillErr = s.reserveBotIDsLocked(remaining)
 	}
-	if fillErr == nil {
-		s.markRoomMatchedIfFullLocked(room)
+	ownedAfterReservation := s.rooms[room.ID] == room &&
+		!room.removed && !room.ending && room.Status == RoomStatusWaiting &&
+		room.matchStatus == "" && room.botFillTicker == expectedTicker
+	if room.botFillTicker == expectedTicker {
+		resources.detachBotFillLocked(room)
 	}
+	if fillErr != nil || !ownedAfterReservation {
+		return
+	}
+	s.appendReservedBotsLocked(room, reservedBotIDs)
+	reservedBotIDs = nil
+	s.markRoomMatchedIfFullLocked(room)
 	s.mu.Unlock()
 	storeLocked = false
 
-	if fillErr == nil {
-		deliveries := s.advanceMatchLoadingLocked(room)
-		failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
-	}
+	deliveries := s.advanceMatchLoadingLocked(room)
+	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 	roomLocked = false
 }
