@@ -240,18 +240,17 @@ func (s *Store) startJanitor() {
 }
 
 func (s *Store) cleanupExpired(now time.Time) int {
-	deleted, resources := s.detachExpiredRooms(now)
-	resources.close(defaultRoomWebSocketCloseMsg)
-	return deleted
+	var resources roomResources
+	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
+	return s.detachExpiredRooms(now, &resources)
 }
 
 // detachExpiredRooms removes expired rooms and returns their lifecycle
-// resources without stopping them. Callers that hold mutationMu can defer the
-// stop until after releasing it.
-func (s *Store) detachExpiredRooms(now time.Time) (int, roomResources) {
+// resources through the caller-owned collector without stopping them. Callers
+// that hold mutationMu defer the stop until after releasing it.
+func (s *Store) detachExpiredRooms(now time.Time, resources *roomResources) int {
 	rooms := s.registeredRooms()
 	deleted := 0
-	var resources roomResources
 	for _, room := range rooms {
 		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
@@ -270,7 +269,7 @@ func (s *Store) detachExpiredRooms(now time.Time) (int, roomResources) {
 		}
 	}
 
-	return deleted, resources
+	return deleted
 }
 
 // isExpired requires r.mu because TTL eligibility depends on room-owned state.
