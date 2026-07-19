@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -101,6 +102,78 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertBodyContains(t, docsUI, `"IsBot": true`)
 }
 
+func TestYAMLTopLevelRequiredFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		schema    string
+		want      string
+		wantError bool
+	}{
+		{
+			name: "extracts only the schema-level inline list",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: [MoveDir, ClientTick, AttackDir]",
+				"      properties:",
+				"        Nested:",
+				"          type: object",
+				"          required: [NestedField]",
+			}, "\n"),
+			want: "MoveDir,ClientTick,AttackDir",
+		},
+		{
+			name: "ignores nested required when the schema has none",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      properties:",
+				"        Nested:",
+				"          type: object",
+				"          required: [ClientTick]",
+			}, "\n"),
+			want: "",
+		},
+		{
+			name: "rejects a malformed schema-level list",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: ClientTick",
+			}, "\n"),
+			wantError: true,
+		},
+		{
+			name: "rejects duplicate schema-level lists",
+			schema: strings.Join([]string{
+				"    InputMessage:",
+				"      type: object",
+				"      required: [MoveDir]",
+				"      required: [AttackDir]",
+			}, "\n"),
+			wantError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fields, err := yamlTopLevelRequiredFields(test.schema)
+			if test.wantError {
+				if err == nil {
+					t.Fatalf("expected malformed required list to fail closed, got %v", fields)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse schema-level required fields: %v", err)
+			}
+			if got := strings.Join(fields, ","); got != test.want {
+				t.Fatalf("schema-level required fields=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHandlerServesClientTickACKContract(t *testing.T) {
 	handler := Handler()
 
@@ -119,11 +192,22 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
 		assertStringContains(t, clientTick, marker)
 	}
-	assertStringNotContains(t, inputSchema, "required: [ClientTick")
-	assertStringNotContains(t, inputSchema, ", ClientTick]")
+	inputRequired, err := yamlTopLevelRequiredFields(inputSchema)
+	if err != nil {
+		t.Fatalf("parse InputMessage required fields: %v", err)
+	}
+	if got := exactStringCount(inputRequired, "ClientTick"); got != 0 {
+		t.Fatalf("InputMessage must keep ClientTick optional, found it %d times in schema-level required fields %v", got, inputRequired)
+	}
 
 	playerSchema := extractYAMLNamedBlock(t, schemas, "    PlayerData:")
-	assertStringContains(t, playerSchema, "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]")
+	playerRequired, err := yamlTopLevelRequiredFields(playerSchema)
+	if err != nil {
+		t.Fatalf("parse PlayerData required fields: %v", err)
+	}
+	if got := exactStringCount(playerRequired, "LastProcessedClientTick"); got != 1 {
+		t.Fatalf("PlayerData must require LastProcessedClientTick exactly once, found it %d times in schema-level required fields %v", got, playerRequired)
+	}
 	playerProperties := extractYAMLNamedBlock(t, playerSchema, "      properties:")
 	processedTick := extractYAMLNamedBlock(t, playerProperties, "        LastProcessedClientTick:")
 	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
@@ -387,6 +471,64 @@ func extractYAMLNamedBlock(t *testing.T, body, marker string) string {
 		end++
 	}
 	return strings.Join(lines[start:end], "\n")
+}
+
+func yamlTopLevelRequiredFields(schema string) ([]string, error) {
+	lines := strings.Split(schema, "\n")
+	rootIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rootIndent = len(line) - len(strings.TrimLeft(line, " "))
+		break
+	}
+	if rootIndent < 0 {
+		return nil, fmt.Errorf("empty schema block")
+	}
+
+	requiredIndent := rootIndent + 2
+	var requiredFields []string
+	found := false
+	for _, line := range lines[1:] {
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		trimmed := strings.TrimSpace(line)
+		if indent != requiredIndent || !strings.HasPrefix(trimmed, "required:") {
+			continue
+		}
+		if found {
+			return nil, fmt.Errorf("duplicate schema-level required list")
+		}
+		found = true
+
+		inlineList := strings.TrimSpace(strings.TrimPrefix(trimmed, "required:"))
+		if len(inlineList) < 2 || inlineList[0] != '[' || inlineList[len(inlineList)-1] != ']' {
+			return nil, fmt.Errorf("schema-level required must be an inline list: %q", trimmed)
+		}
+		contents := strings.TrimSpace(inlineList[1 : len(inlineList)-1])
+		if contents == "" {
+			requiredFields = []string{}
+			continue
+		}
+		for _, field := range strings.Split(contents, ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				return nil, fmt.Errorf("schema-level required contains an empty field: %q", trimmed)
+			}
+			requiredFields = append(requiredFields, field)
+		}
+	}
+	return requiredFields, nil
+}
+
+func exactStringCount(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
 
 func extractYAMLSequenceObjects(t *testing.T, body, propertyName string) []string {
