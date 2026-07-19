@@ -116,6 +116,27 @@ func TestLoadMapDataReadsJSONFixture(t *testing.T) {
 	}
 }
 
+func TestLoadMapDataAcceptsBushAndWaterTiles(t *testing.T) {
+	gameMap, err := LoadMapData(strings.NewReader("{" +
+		"\"width\":4,\"height\":4,\"index\":0,\"maxPlayers\":2,\"tileSize\":1.2," +
+		"\"map\":[[1,1,1,1],[1,3,4,1],[1,0,2,1],[1,1,1,1]]}"))
+	if err != nil {
+		t.Fatalf("load bush/water map data: %v", err)
+	}
+	if gameMap.Map[1][1] != TileBush || gameMap.Map[1][2] != TileWater {
+		t.Fatalf("expected bush/water tiles, got %+v", gameMap.Map[1])
+	}
+}
+
+func TestLoadMapDataRejectsTileOutsideContract(t *testing.T) {
+	_, err := LoadMapData(strings.NewReader("{" +
+		"\"width\":4,\"height\":4,\"index\":0,\"maxPlayers\":2,\"tileSize\":1.2," +
+		"\"map\":[[1,1,1,1],[1,0,5,1],[1,0,2,1],[1,1,1,1]]}"))
+	if err == nil {
+		t.Fatal("expected tile value 5 to be rejected")
+	}
+}
+
 func TestLoadMapDataRejectsInvalidTileGrid(t *testing.T) {
 	_, err := LoadMapData(strings.NewReader(`{
 		"width": 4,
@@ -311,6 +332,65 @@ func TestStepKeepsPlayerPositionWhenMovementHitsWall(t *testing.T) {
 	snapshot := state.Step([]InputCommand{
 		{PlayerID: PlayerID("red-1"), MoveDir: Vector2{X: -1, Y: 0}},
 	})
+
+	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
+}
+
+func TestStepAppliesPlayerTileCollisionPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		tile    TileType
+		blocked bool
+	}{
+		{name: "wall blocks", tile: TileWall, blocked: true},
+		{name: "bush passes", tile: TileBush, blocked: false},
+		{name: "water blocks", tile: TileWater, blocked: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gameMap := collisionPolicyMap(tt.tile)
+			center := gameMap.WorldPos(2, 2)
+			step := DefaultPlayerSpeed * TickDuration
+			start := Vector2{X: center.X - TileSize/2 - DefaultPlayerRadius - step + 0.001, Y: center.Y}
+			state := NewStateWithConfig([]PlayerData{{
+				ID: PlayerID("red-1"), Team: TeamRed, Slot: 0, Pos: start,
+			}}, Config{Map: gameMap})
+
+			snapshot := state.Step([]InputCommand{{
+				PlayerID: PlayerID("red-1"), MoveDir: Vector2{X: 1},
+			}})
+			want := Vector2{X: start.X + step, Y: start.Y}
+			if tt.blocked {
+				want = start
+			}
+			assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, want)
+		})
+	}
+}
+
+func TestStepKeepsPlayerInsideMapBoundary(t *testing.T) {
+	gameMap := MapData{
+		Width: 4, Height: 4, MaxPlayers: 6, TileSize: TileSize,
+		Map: [][]TileType{
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+		},
+	}
+	step := DefaultPlayerSpeed * TickDuration
+	mapMinX := gameMap.WorldPos(0, 0).X - TileSize/2
+	start := Vector2{X: mapMinX + DefaultPlayerRadius + step - 0.001, Y: gameMap.WorldPos(0, 1).Y}
+	state := NewStateWithConfig([]PlayerData{{
+		ID: PlayerID("red-1"), Team: TeamRed, Slot: 0, Pos: start,
+	}}, Config{Map: gameMap})
+	if state.gameMap.Width != gameMap.Width || state.gameMap.Height != gameMap.Height {
+		t.Fatalf("expected 4x4 boundary test map, got %dx%d", state.gameMap.Width, state.gameMap.Height)
+	}
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"), MoveDir: Vector2{X: -1},
+	}})
 
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
 }
@@ -891,6 +971,46 @@ func TestStepDestroysProjectileWhenItLeavesMapBounds(t *testing.T) {
 	if !snapshot.Projectiles[0].IsDestroyed {
 		t.Fatal("expected projectile to be destroyed after leaving map bounds")
 	}
+}
+
+func TestStepAppliesProjectileTileCollisionPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		tile      TileType
+		destroyed bool
+	}{
+		{name: "wall destroys", tile: TileWall, destroyed: true},
+		{name: "bush passes", tile: TileBush, destroyed: false},
+		{name: "water passes", tile: TileWater, destroyed: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gameMap := collisionPolicyMap(tt.tile)
+			center := gameMap.WorldPos(2, 2)
+			step := DefaultProjectileSpeed * TickDuration
+			start := Vector2{X: center.X - TileSize/2 - DefaultProjectileRadius - step + 0.001, Y: center.Y}
+			state := NewStateWithConfig([]PlayerData{{
+				ID: PlayerID("red-1"), Team: TeamRed, Slot: 0, Pos: start,
+			}}, Config{Map: gameMap})
+
+			state.Step([]InputCommand{{
+				PlayerID: PlayerID("red-1"), AttackDir: Vector2{X: 1}, PressedAttack: true,
+			}})
+			snapshot := state.Step(nil)
+			if len(snapshot.Projectiles) != 1 {
+				t.Fatalf("expected one projectile, got %d", len(snapshot.Projectiles))
+			}
+			if snapshot.Projectiles[0].IsDestroyed != tt.destroyed {
+				t.Fatalf("expected destroyed=%t on tile %d, got %+v", tt.destroyed, tt.tile, snapshot.Projectiles[0])
+			}
+		})
+	}
+}
+
+func collisionPolicyMap(center TileType) MapData {
+	gameMap := StaticMapFixture()
+	gameMap.Map[2][2] = center
+	return gameMap
 }
 
 func TestStepProjectileHitReducesTargetHPAndDestroysProjectile(t *testing.T) {

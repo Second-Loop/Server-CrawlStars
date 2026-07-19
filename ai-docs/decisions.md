@@ -431,3 +431,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 한 번의 배포는 하나의 release tag와 exact checksum record에 고정되고 검증 실패 시 현재 release를 바꾸지 않습니다.
 - 안전하지 않은 asset 이름은 root 권한의 filesystem/network side effect 전에 차단됩니다.
 - Same-release checksum은 손상과 asset 혼합을 감지하지만 GitHub release 쓰기 권한 탈취로 package와 manifest가 함께 바뀌는 공격은 방어하지 않습니다.
+
+## ADR-0027: SL-92 Client Map_0를 Runtime 기준으로 고정하고 Entity별 Tile 충돌 정책 분리
+
+상태: 승인됨
+
+맥락: Client SL-79에서 merge된 `Map_0`에는 기존 Ground(0), Wall(1), SpawnPoint(2) 외에 Bush(3)와 Water(4)가 있습니다. Server runtime map과 REST/WebSocket `MapData`가 이 값을 그대로 전달해야 하며, Player는 Water에 막히지만 projectile은 통과하므로 기존 wall-only 판정 하나로는 entity별 규칙을 표현할 수 없습니다.
+
+결정:
+
+- Client SL-79에서 merge된 `Map_0`을 `server-config/game-config.json` runtime map의 값 기준으로 사용합니다.
+- Client/server map artifact 공유나 자동 동기화는 SL-92 범위 밖에 두고, client grid 값을 고정한 exact-grid Go regression으로 현재 drift를 막습니다.
+- Circle-vs-tile 기하 계산과 map boundary 판정은 공유하고, Player와 projectile의 blocking predicate만 분리합니다.
+- Player는 Wall, Water, map boundary에 충돌하고 Bush를 통과합니다. Projectile은 Wall과 map boundary에 충돌하고 Bush와 Water를 통과합니다.
+- Bush visibility와 Water pathfinding/bot AI는 client 또는 bot 후속 범위로 남깁니다.
+
+결과:
+
+- Runtime과 OpenAPI/AsyncAPI `MapData`는 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`를 같은 값으로 사용합니다.
+- REST room response와 WebSocket Ready event가 client `Map_0`의 Bush/Water tile을 JSON number array로 전달합니다.
+- Shared map artifact, client rendering, visibility, pathfinding, bot AI, multi-map은 추가하지 않습니다.

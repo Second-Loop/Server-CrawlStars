@@ -11,7 +11,8 @@ Brawl Stars 스타일 실시간 멀티플레이어 게임을 위한 Go 서버입
 - 기본 비활성화된 `/rooms` debug REST API와 Bearer 보호
 - `WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>` session 인증
 - 30Hz room-local game loop
-- movement, wall collision, projectile movement, hit, HP/death snapshot
+- SL-79 client `Map_0` 기반 movement와 entity별 tile collision(Player는 Wall/Water, projectile은 Wall, boundary는 둘 다)
+- projectile 생성/이동, hit, HP/death snapshot
 - `client-config/game-config.json` client 공유 config artifact
 - `server-config/game-config.json` server runtime config artifact
 - OpenAPI/AsyncAPI raw spec과 docs UI

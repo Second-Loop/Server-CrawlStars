@@ -15,9 +15,10 @@
 - room/player debug REST API
 - debug room 전체/개별 삭제
 - room/player WebSocket 연결
-- server-side movement/attack direction 검증과 wall collision
+- SL-79 client `Map_0`과 Ground/Wall/SpawnPoint/Bush/Water tile 계약
+- server-side movement/attack direction 검증과 player Wall/Water/boundary collision
 - player별 4 attack charge, 30 tick recharge
-- projectile 생성, 이동, wall/boundary destroy
+- projectile 생성·이동, Wall/boundary destroy와 Bush/Water 통과
 - projectile hit, HP 감소, `IsDead` snapshot
 - dead player의 같은 tick input 차단
 - 2-player WebSocket sync regression test
@@ -167,15 +168,15 @@ Started room의 tick 흐름:
 7. GameEnd 이후 room-local ticker와 WebSocket connection을 정리합니다.
 8. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
 
-Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 부족하거나 없는 map에서는 map 크기에서 유도한 fallback 좌표를 쓰며, 기본 5x5 map에서는 기존 red/blue fallback 좌표와 같은 위치가 됩니다.
+기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. spawnPoint가 부족하거나 없는 map에서는 map 크기에서 유도한 fallback 좌표를 쓰며, 기본 5x5 fallback map에서는 기존 red/blue 좌표와 같은 위치가 됩니다.
 
 `internal/simulation.State.Step` 순서:
 
 1. `PressedAttack` transient state 초기화와 attack charge recharge 진행
 2. 기존 projectile 이동
-3. projectile wall/boundary destroy와 hit 처리
+3. projectile의 Wall/boundary 충돌 destroy와 hit 처리
 4. live player의 유한한 input만 적용하고 `MoveDir` clamp, `AttackDir` 정규화
-5. movement는 X축, Y축 순서로 wall collision 검사
+5. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
 6. 공격 요청, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
 7. tick 증가
 8. snapshot clone 반환
@@ -198,9 +199,9 @@ Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다.
 
 Attack charge와 recharge 진행도는 `simulation.State` 내부에만 있습니다. 기존 `PressedAttack` 의미만 승인 결과로 좁혔고 새 field를 추가하지 않았으므로 WebSocket schema는 그대로입니다.
 
-Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`이고, 서버 시작 시 이 config를 로드해 room store에 주입합니다. 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 남아 있습니다.
+Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. Tile은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`이고 `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. Player는 Wall/Water, projectile은 Wall에 충돌하며 map boundary는 둘 다 막습니다. Bush는 둘 다 통과하고 projectile은 Water도 통과합니다.
 
-Gameplay config는 두 파일로 나눕니다. `client-config/game-config.json`은 Unity CI가 서버 repo의 `client-config`만 sparse checkout한 뒤 `Assets/StreamingAssets/GameConfig` 같은 client runtime 경로로 복사하는 공유 config입니다. 이 파일은 `tileSize`, `playerRadius`, `playerTypes`, `projectileRadius`, `projectileTypes`만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config이며 `tickRate`, HP, speed, attack charge/recharge tick, damage, active mode/team rules, map을 담습니다. Client는 최종 gameplay state를 여전히 서버 snapshot에서 받습니다.
+Gameplay config는 두 파일로 나눕니다. `client-config/game-config.json`은 Unity CI가 서버 repo의 `client-config`만 sparse checkout한 뒤 `Assets/StreamingAssets/GameConfig` 같은 client runtime 경로로 복사하는 공유 config입니다. 이 파일은 `tileSize`, `playerRadius`, `playerTypes`, `projectileRadius`, `projectileTypes`만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config이며 `tickRate`, HP, speed, attack charge/recharge tick, damage, active mode/team rules, map을 담습니다. Runtime map은 client SL-79 `Map_0`의 exact grid를 값 기준으로 복사하고 Go regression으로 drift를 막습니다. Client는 최종 gameplay state를 여전히 서버 snapshot에서 받습니다.
 
 ### 8. Cleanup
 

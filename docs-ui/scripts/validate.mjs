@@ -55,6 +55,7 @@ assert(hasLine(openAPIText, "    ErrorResponse:"), "api/openapi.yaml is missing 
 assert(openAPIText.includes("operationId: clearRooms"), "api/openapi.yaml must document DELETE /rooms");
 assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must document DELETE /rooms/{roomID}");
 assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
+assertSchemaContains(openAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
 assert(hasLine(openAPIText, "    DebugBearer:"), "api/openapi.yaml must define DebugBearer");
 assertNamedBlockContains(openAPIText, "    DebugBearer:", ["type: http", "scheme: bearer", "401 `unauthorized`", "404 `not_found`"]);
@@ -143,6 +144,7 @@ for (const marker of ["30초 heartbeat", "90초 deadline", "latest-only", "relia
 for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
+assertSchemaContains(asyncAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
 for (const schemaName of ["ReadyEventMessage", "SnapshotMessage", "Snapshot", "GameEndMessage", "ReadyPlayer", "PlayerData"]) {
   assertNoSecretFields(extractYAMLSchema(asyncAPIText, schemaName), `AsyncAPI ${schemaName}`);
@@ -182,6 +184,9 @@ assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13),
 assert(serverGameConfig.map?.width === 20, "server-config/game-config.json must expose the runtime map width");
 assert(serverGameConfig.map?.height === 20, "server-config/game-config.json must expose the runtime map height");
 assert(serverGameConfig.map?.maxPlayers === 6, "server-config/game-config.json must expose map maxPlayers 6");
+const serverMapTiles = serverGameConfig.map?.map?.flat() ?? [];
+assert(serverMapTiles.includes(3), "server-config/game-config.json must include TileBush value 3");
+assert(serverMapTiles.includes(4), "server-config/game-config.json must include TileWater value 4");
 
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);

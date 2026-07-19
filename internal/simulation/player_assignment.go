@@ -136,6 +136,12 @@ func fallbackSpawnTiles(gameMap MapData) []spawnTile {
 		if seen[tile] {
 			return
 		}
+		if tile.Y < 0 || tile.Y >= len(gameMap.Map) || tile.X < 0 || tile.X >= len(gameMap.Map[tile.Y]) {
+			return
+		}
+		if tileBlocksPlayer(gameMap.Map[tile.Y][tile.X]) {
+			return
+		}
 		seen[tile] = true
 		tiles = append(tiles, tile)
 	}
