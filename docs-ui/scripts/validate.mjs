@@ -301,7 +301,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.4.0"), "api/asyncapi.yaml must publish version 0.4.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.5.0"), "api/asyncapi.yaml must publish version 0.5.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -374,6 +374,7 @@ assertNoBacktickStartedPlainScalars(asyncAPIText, "api/asyncapi.yaml");
 assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 validateBotIdentitySchemas();
+validateClientTickACKContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -596,12 +597,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.4.0"), "AsyncAPI version must be 0.4.0");
+  assert(hasLine(asyncAPIText, "  version: 0.5.0"), "AsyncAPI version must be 0.5.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
+    "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -625,6 +626,121 @@ function validateBotIdentitySchemas() {
   ]) {
     assert(players.some((player) => player.IsBot === false), `${name} must show a human`);
     assert(players.some((player) => player.IsBot === true), `${name} must show a bot`);
+  }
+}
+
+function validateClientTickACKContract() {
+  const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
+  const clientTickProperty = extractSchemaProperty(inputSchema, "ClientTick");
+  for (const marker of ["type: integer", "format: int64", "minimum: 0"]) {
+    assert(clientTickProperty.includes(marker), `InputMessage.ClientTick must include ${marker}`);
+  }
+  assert(!topLevelRequiredFields(inputSchema).includes("ClientTick"), "InputMessage.ClientTick must remain optional");
+
+  const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
+  const playerRequired = topLevelRequiredFields(playerSchema);
+  assert(
+    playerRequired.filter((field) => field === "LastProcessedClientTick").length === 1,
+    "PlayerData must require LastProcessedClientTick exactly once",
+  );
+  const processedTickProperty = extractSchemaProperty(playerSchema, "LastProcessedClientTick");
+  for (const marker of ["type: integer", "format: int64", "minimum: 0"]) {
+    assert(processedTickProperty.includes(marker), `PlayerData.LastProcessedClientTick must include ${marker}`);
+  }
+
+  const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const inputMessage = extractYAMLNamedBlock(messagesBlock, "    InputMessage:");
+  const inputExamples = extractYAMLNamedBlock(inputMessage, "      examples:");
+  assert(inputExamples.includes("ClientTick: 12"), "Input examples must show a positive ClientTick");
+  assert(inputExamples.includes("ClientTick: 0"), "Input examples must show legacy ClientTick 0");
+
+  const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");
+  const startingSignal = extractYAMLNamedBlock(snapshotMessage, "        - name: startingSignal");
+  const startedControl = extractYAMLNamedBlock(snapshotMessage, "        - name: startedControl");
+  const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
+  assertLifecyclePlayersNull(startingSignal, "starting", "startingSignal");
+  assertLifecyclePlayersNull(startedControl, "started", "startedControl");
+
+  const gameplayPlayers = extractYAMLSequenceObjects(gameplay, "Players");
+  assertEveryGameplayPlayerHasClientTickACK(gameplayPlayers, "AsyncAPI gameplay example");
+  assert(gameplayPlayers.some((object) => object.includes("IsBot: false")), "Gameplay ACK example must show a human");
+  assert(gameplayPlayers.some((object) => object.includes("IsBot: true")), "Gameplay ACK example must show a bot");
+  assert(
+    gameplayPlayers.some((object) => object.includes("IsBot: false") && extractExampleACK(object) > 0n),
+    "Gameplay ACK example must show at least one human with a positive processed tick",
+  );
+
+  const openAPISchemas = extractYAMLNamedBlock(openAPIText, "  schemas:");
+  assert(countExactLines(openAPISchemas, "    PlayerData:") === 0, "OpenAPI must not define gameplay PlayerData");
+  assert(countExactLines(openAPISchemas, "    InputMessage:") === 0, "OpenAPI must not define gameplay InputMessage");
+  assert(!openAPIText.includes("ClientTick"), "OpenAPI must not define gameplay ClientTick");
+  assert(!openAPIText.includes("LastProcessedClientTick"), "OpenAPI must not define processed input ACK");
+
+  const docsGameplay = extractDocsJSONExample("Gameplay");
+  assertEveryJSONPlayerHasClientTickACK(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
+}
+
+function assertLifecyclePlayersNull(example, status, name) {
+  assert(example.includes(`status: ${status}`), `${name} must use status ${status}`);
+  assert(hasTrimmedLine(example, "Tick: 0"), `${name} must keep Tick 0`);
+  assert(hasTrimmedLine(example, "Players: null"), `${name} must keep Players null`);
+}
+
+function assertEveryGameplayPlayerHasClientTickACK(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const botFlags = object.match(/^\s+IsBot:\s+(true|false)$/gm) ?? [];
+    const ackFields = [...object.matchAll(/^\s+LastProcessedClientTick:\s+(\d+)$/gm)];
+    assert(botFlags.length === 1, `${name} player ${index} must contain exactly one IsBot`);
+    assert(ackFields.length === 1, `${name} player ${index} must contain exactly one LastProcessedClientTick`);
+    const isBot = botFlags[0].trim().endsWith("true");
+    const ack = BigInt(ackFields[0][1]);
+    assert(ack >= 0n, `${name} player ${index} ACK must be a non-negative integer`);
+    if (isBot) {
+      assert(ack === 0n, `${name} bot player ${index} ACK must be 0`);
+    }
+  }
+}
+
+function extractExampleACK(object) {
+  const matches = [...object.matchAll(/^\s+LastProcessedClientTick:\s+(\d+)$/gm)];
+  assert(matches.length === 1, "gameplay player must expose exactly one ACK before value inspection");
+  return BigInt(matches[0][1]);
+}
+
+function extractSchemaProperty(schema, propertyName) {
+  const properties = extractYAMLNamedBlock(schema, "      properties:");
+  const marker = `        ${propertyName}:`;
+  assert(countExactLines(properties, marker) === 1, `${propertyName} property must appear exactly once`);
+  return extractYAMLNamedBlock(properties, marker);
+}
+
+function topLevelRequiredFields(schema) {
+  const matches = schema.split(/\r?\n/).filter((line) => /^      required: \[.*\]$/.test(line));
+  assert(matches.length <= 1, "schema must have at most one top-level required list");
+  if (matches.length === 0) return [];
+  const line = matches[0];
+  return line
+    .slice(line.indexOf("[") + 1, line.lastIndexOf("]"))
+    .split(",")
+    .map((value) => value.trim());
+}
+
+function countExactLines(text, want) {
+  return text.split(/\r?\n/).filter((line) => line === want).length;
+}
+
+function assertEveryJSONPlayerHasClientTickACK(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.hasOwn(player, "LastProcessedClientTick"), `${name} player ${index} is missing LastProcessedClientTick`);
+    assert(
+      Number.isSafeInteger(player.LastProcessedClientTick) && player.LastProcessedClientTick >= 0,
+      `${name} player ${index} ACK must be a non-negative integer`,
+    );
+    if (player.IsBot === true) {
+      assert(player.LastProcessedClientTick === 0, `${name} bot player ${index} ACK must be 0`);
+    }
   }
 }
 

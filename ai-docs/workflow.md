@@ -29,6 +29,8 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - matchmaking Ready event/ready ACK/countdown/start
 - sessionless server-owned bot participant와 human-only Ready quorum
 - 첫 human join 기준 10초 bot fill, timer/human join first-lock-wins, failure rollback/no-retry
+- optional `ClientTick`, stale/duplicate positive input silent drop, legacy zero compatibility
+- gameplay snapshot의 player별 monotonic `LastProcessedClientTick` processed input ACK
 - unmatched 연결 종료 시 deadline/credential 유지, matched/loading/starting match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
@@ -39,7 +41,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 
 - production matchmaking
 - ready timeout
-- bot replacement, reconnect grace, ClientTick/ACK(SL-94)
+- bot replacement, reconnect grace
 - respawn, score
 - persistence, database, account auth
 - Kubernetes, dashboard, scheduler, runner

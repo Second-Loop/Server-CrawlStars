@@ -1,14 +1,16 @@
 asyncapi: 3.0.0
 info:
   title: Server Crawl Stars WebSocket API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
     Matchmaking room은 selected mode의 full participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 `Type: Ready` 이벤트를 human session에 전달합니다. Ready payload는 full participant list를 포함하므로 human과 server-owned bot의 team/slot/spawn을 함께 보여 줍니다.
     duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
-    같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` gameplay snapshot을 broadcast합니다.
-    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Unmatched human disconnect는 credential과 deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. ClientTick/ACK 확장은 SL-94 범위입니다.
+    같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` control snapshot을 보낸 다음 gameplay snapshot을 broadcast합니다.
+    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Unmatched human disconnect는 credential과 deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다.
+    Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다.
+    `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
     일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
@@ -40,7 +42,8 @@ channels:
       Matchmaking room에서는 selected mode participant capacity가 채워지고 연결된 human session이 모두 attach되면 human WebSocket만 `Type: Ready` 이벤트를 받습니다. Payload의 full participant list에는 bot도 포함됩니다.
       연결된 human session이 각각 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다. Bot은 session, WebSocket, ready ACK, gameplay input이 없습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
-      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하지만 matched/loading/starting disconnect는 pre-start cancel을 사용합니다. ClientTick/ACK 확장은 SL-94 범위입니다.
+      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하지만 matched/loading/starting disconnect는 pre-start cancel을 사용합니다.
+      Optional `ClientTick`의 양수 값은 player별 monotonic input 순서와 processed ACK에 사용합니다. 같은 match에 재연결하면 gameplay snapshot의 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내며 새 match는 0에서 시작합니다.
       일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
     bindings:
       ws:
@@ -78,7 +81,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Send gameplay input
-    summary: started room의 다음 tick에 적용할 player input을 보냅니다.
+    summary: started room의 다음 tick에 적용할 player input을 보냅니다. 양수 ClientTick은 pending/applied 값보다 커야 하며 stale/duplicate는 조용히 무시합니다. 누락 또는 0은 ACK를 바꾸지 않는 legacy last-write-wins input입니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/input"
   receiveReady:
@@ -128,12 +131,13 @@ components:
     InputMessage:
       name: InputMessage
       title: Gameplay input
-      summary: 한 tick 안에 같은 player가 여러 번 보내면 마지막 input만 적용하고, 서버가 방향과 공격 budget을 검증합니다.
+      summary: 양수 ClientTick은 가장 큰 admissible input만 적용하고, 누락 또는 0은 legacy last-write-wins로 적용합니다. 서버가 방향과 공격 budget을 검증합니다.
       payload:
         $ref: "#/components/schemas/InputMessage"
       examples:
         - name: moveRight
           payload:
+            ClientTick: 12
             MoveDir:
               x: 1
               y: 0
@@ -143,6 +147,7 @@ components:
             PressedAttack: false
         - name: attackDown
           payload:
+            ClientTick: 0
             MoveDir:
               x: 0
               y: 0
@@ -231,8 +236,17 @@ components:
               Tick: 0
               Players: null
               Projectiles: null
+        - name: startedControl
+          summary: countdown 종료 직후 gameplay ticker를 시작하기 전에 받는 control snapshot입니다. 아직 player ACK를 전달하지 않습니다.
+          payload:
+            Type: snapshot
+            Snapshot:
+              status: started
+              Tick: 0
+              Players: null
+              Projectiles: null
         - name: gameplay
-          summary: server 내부 countdown 이후 30Hz로 broadcast되는 gameplay snapshot입니다.
+          summary: started control 다음 첫 Tick 1부터 30Hz로 broadcast되는 gameplay snapshot이며 모든 player에 processed input ACK가 있습니다.
           payload:
             Type: snapshot
             Snapshot:
@@ -257,6 +271,7 @@ components:
                   HP: 100
                   PressedAttack: false
                   IsDead: false
+                  LastProcessedClientTick: 12
                 - Id: player_AbCdEfGhIjKlMnOpQrStUv
                   Team: blue
                   Slot: 0
@@ -275,6 +290,7 @@ components:
                   HP: 100
                   PressedAttack: true
                   IsDead: false
+                  LastProcessedClientTick: 0
               Projectiles: null
     GameEndMessage:
       name: GameEndMessage
@@ -301,7 +317,7 @@ components:
     ErrorMessage:
       name: ErrorMessage
       title: Error
-      summary: invalid input은 connection을 끊지 않고 error message로 응답합니다.
+      summary: 음수 ClientTick 등 invalid input은 connection을 끊지 않고 error message로 응답합니다. stale/duplicate 양수 ClientTick은 error 없이 조용히 무시합니다.
       payload:
         $ref: "#/components/schemas/ErrorMessage"
       examples:
@@ -326,11 +342,17 @@ components:
     InputMessage:
       type: object
       description: |
-        Human WebSocket gameplay input입니다. `Type` field를 넣지 않습니다. Bot command는 같은 InputCommand shape를 server 내부 controller가 만들며 WebSocket sender나 ACK가 없습니다.
+        Human WebSocket gameplay input입니다. `Type` field를 넣지 않습니다. Optional `ClientTick`은 누락 또는 0일 때 legacy input이며, bot command는 같은 InputCommand shape를 server 내부 controller가 ClientTick 0으로 만들고 WebSocket sender가 아닙니다.
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
+        양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. Legacy 0은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 ACK를 바꾸지 않습니다. 음수는 `invalid_input`입니다.
         유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
         Player는 server-only 4 attack charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
       properties:
+        ClientTick:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Player가 보낸 optional input sequence입니다. 누락 또는 0은 legacy last-write-wins이고 ACK를 변경하지 않습니다.
         MoveDir:
           $ref: "#/components/schemas/Vector2"
         AttackDir:
@@ -423,7 +445,7 @@ components:
       description: |
         WebSocket server-authoritative snapshot입니다.
         `status`는 lowercase match lifecycle field이고, gameplay data field는 Unity prototype과 맞춰 PascalCase를 유지합니다.
-        `starting`에서는 gameplay tick이 아직 돌지 않아 `Tick`은 0입니다.
+        `starting`과 직후 `started` control에서는 gameplay tick이 아직 돌지 않아 `Tick`은 0이고 `Players`는 null입니다. 첫 gameplay snapshot은 `Tick: 1`부터 모든 player의 processed input ACK를 포함합니다.
       properties:
         status:
           $ref: "#/components/schemas/MatchStatus"
@@ -441,20 +463,20 @@ components:
               items:
                 $ref: "#/components/schemas/PlayerData"
             - type: "null"
-          description: started gameplay snapshot에서는 player state입니다. starting 상태 전이 snapshot에서는 null일 수 있습니다.
+          description: started gameplay snapshot에서는 player state입니다. starting과 started control snapshot에서는 null입니다.
         Projectiles:
           oneOf:
             - type: array
               items:
                 $ref: "#/components/schemas/ProjectileData"
             - type: "null"
-          description: active/destroyed projectile state입니다. projectile이 없거나 starting 상태 전이 snapshot이면 null일 수 있습니다.
+          description: active/destroyed projectile state입니다. projectile이 없거나 starting/started control snapshot이면 null일 수 있습니다.
     MatchStatus:
       type: string
       enum: [starting, started]
       description: |
         starting은 selected mode의 서로 다른 모든 human session이 ready ACK를 보낸 뒤 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다. Bot은 ACK quorum에 들어가지 않습니다.
-        started는 countdown이 끝나고 room의 단일 gameplay ticker와 snapshot stream이 시작된 상태입니다.
+        started는 countdown이 끝나고 room의 단일 gameplay ticker와 snapshot stream이 시작된 상태입니다. 최초 started control은 `Tick: 0`, `Players: null`이고 첫 gameplay snapshot은 `Tick: 1`입니다.
     MapData:
       type: object
       required: [width, height, index, maxPlayers, tileSize, map]
@@ -505,7 +527,7 @@ components:
           $ref: "#/components/schemas/Vector2"
     PlayerData:
       type: object
-      required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]
+      required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]
       properties:
         Id:
           type: string
@@ -538,6 +560,11 @@ components:
           description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 해당 tick 공격을 승인했을 때만 true인 transient 결과입니다.
         IsDead:
           type: boolean
+        LastProcessedClientTick:
+          type: integer
+          format: int64
+          minimum: 0
+          description: State.Step이 실제 처리한 마지막 양수 ClientTick입니다. 유효하지만 눈에 보이는 효과가 없는 input도 ACK하고, legacy-only human과 bot은 0입니다. 같은 match 재연결에서는 유지되고 새 match에서는 0으로 초기화됩니다.
     ProjectileData:
       type: object
       required: [Id, OwnerId, Pos, Dir, Speed, Damage, Radius, Type, IsDestroyed]

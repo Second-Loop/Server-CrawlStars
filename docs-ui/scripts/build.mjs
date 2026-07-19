@@ -61,7 +61,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, ClientTick 처리 ACK, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -95,7 +95,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>5. started</h3>
-            <p>Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 <code>Snapshot.status: started</code>와 gameplay snapshot을 보냅니다.</p>
+            <p>Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 먼저 <code>Snapshot.status: started</code>, <code>Tick: 0</code>, <code>Players: null</code> control을 보냅니다. 첫 gameplay snapshot은 <code>Tick: 1</code>부터 시작합니다.</p>
           </article>
         </div>
       </section>
@@ -146,7 +146,7 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>Input</h3>
-            <p><code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다. Gameplay input에는 <code>Type</code>을 넣지 않습니다.</p>
+            <p>Optional <code>ClientTick</code>과 <code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다. 양수 stale/duplicate는 조용히 무시하고, 누락 또는 0은 ACK를 바꾸지 않는 legacy last-write-wins이며, 음수만 <code>invalid_input</code>입니다. Gameplay input에는 <code>Type</code>을 넣지 않습니다.</p>
           </article>
           <article>
             <h3>Ready Event</h3>
@@ -158,7 +158,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -219,6 +219,18 @@ function renderAsyncAPI(specText) {
 }</code></pre>
           </article>
           <article>
+            <h3>Started Control</h3>
+            <pre><code>{
+  "Type": "snapshot",
+  "Snapshot": {
+    "status": "started",
+    "Tick": 0,
+    "Players": null,
+    "Projectiles": null
+  }
+}</code></pre>
+          </article>
+          <article>
             <h3>Gameplay</h3>
             <pre><code>{
   "Type": "snapshot",
@@ -238,7 +250,8 @@ function renderAsyncAPI(specText) {
         "Radius": 0.5,
         "HP": 100,
         "PressedAttack": false,
-        "IsDead": false
+        "IsDead": false,
+        "LastProcessedClientTick": 12
       },
       {
         "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
@@ -252,7 +265,8 @@ function renderAsyncAPI(specText) {
         "Radius": 0.5,
         "HP": 100,
         "PressedAttack": true,
-        "IsDead": false
+        "IsDead": false,
+        "LastProcessedClientTick": 0
       }
     ],
     "Projectiles": null

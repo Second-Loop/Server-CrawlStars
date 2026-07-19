@@ -3,6 +3,7 @@ package docs
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -85,9 +86,9 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.4.0",
+		"version: 0.5.0",
 		"required: [Id, Team, Slot, IsBot, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
+		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -98,6 +99,90 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertStatus(t, docsUI, http.StatusOK)
 	assertBodyContains(t, docsUI, `"IsBot": false`)
 	assertBodyContains(t, docsUI, `"IsBot": true`)
+}
+
+func TestHandlerServesClientTickACKContract(t *testing.T) {
+	handler := Handler()
+
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	asyncAPIText := asyncAPI.Body.String()
+
+	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
+	assertStringContains(t, info, "  version: 0.5.0")
+
+	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
+	schemas := extractYAMLNamedBlock(t, components, "  schemas:")
+	inputSchema := extractYAMLNamedBlock(t, schemas, "    InputMessage:")
+	inputProperties := extractYAMLNamedBlock(t, inputSchema, "      properties:")
+	clientTick := extractYAMLNamedBlock(t, inputProperties, "        ClientTick:")
+	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
+		assertStringContains(t, clientTick, marker)
+	}
+	assertStringNotContains(t, inputSchema, "required: [ClientTick")
+	assertStringNotContains(t, inputSchema, ", ClientTick]")
+
+	playerSchema := extractYAMLNamedBlock(t, schemas, "    PlayerData:")
+	assertStringContains(t, playerSchema, "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]")
+	playerProperties := extractYAMLNamedBlock(t, playerSchema, "      properties:")
+	processedTick := extractYAMLNamedBlock(t, playerProperties, "        LastProcessedClientTick:")
+	for _, marker := range []string{"type: integer", "format: int64", "minimum: 0"} {
+		assertStringContains(t, processedTick, marker)
+	}
+
+	messages := extractYAMLNamedBlock(t, components, "  messages:")
+	snapshotMessage := extractYAMLNamedBlock(t, messages, "    SnapshotMessage:")
+	starting := extractYAMLNamedBlock(t, snapshotMessage, "        - name: startingSignal")
+	started := extractYAMLNamedBlock(t, snapshotMessage, "        - name: startedControl")
+	for _, lifecycle := range []struct {
+		name   string
+		block  string
+		status string
+	}{
+		{name: "starting", block: starting, status: "status: starting"},
+		{name: "started", block: started, status: "status: started"},
+	} {
+		assertStringContains(t, lifecycle.block, lifecycle.status)
+		assertStringContains(t, lifecycle.block, "Tick: 0")
+		assertStringContains(t, lifecycle.block, "Players: null")
+	}
+
+	gameplay := extractYAMLNamedBlock(t, snapshotMessage, "        - name: gameplay")
+	gameplayPlayers := extractYAMLSequenceObjects(t, gameplay, "Players")
+	if len(gameplayPlayers) == 0 {
+		t.Fatal("expected gameplay example player objects")
+	}
+	hasPositiveHuman := false
+	hasBot := false
+	for index, player := range gameplayPlayers {
+		if got := strings.Count(player, "LastProcessedClientTick:"); got != 1 {
+			t.Fatalf("gameplay player %d must include ACK exactly once, got %d in %s", index, got, player)
+		}
+		ack := yamlIntegerValue(t, player, "LastProcessedClientTick")
+		if strings.Contains(player, "IsBot: true") {
+			hasBot = true
+			if ack != 0 {
+				t.Fatalf("bot gameplay ACK=%d want=0 in %s", ack, player)
+			}
+		} else if strings.Contains(player, "IsBot: false") && ack > 0 {
+			hasPositiveHuman = true
+		}
+	}
+	if !hasPositiveHuman || !hasBot {
+		t.Fatalf("gameplay example must include a positive human ACK and bot ACK 0: %s", gameplay)
+	}
+
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	assertStatus(t, openAPI, http.StatusOK)
+	assertStringNotContains(t, openAPI.Body.String(), "\n    PlayerData:")
+	assertStringNotContains(t, openAPI.Body.String(), "\n        ClientTick:")
+
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	gameplayArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Gameplay</h3>", "</article>")
+	if got := strings.Count(gameplayArticle, `"LastProcessedClientTick":`); got != 2 {
+		t.Fatalf("expected served gameplay article to include two ACK fields, got %d", got)
+	}
 }
 
 func TestHandlerServesBotFillContractsInTheirTransportBlocks(t *testing.T) {
@@ -276,4 +361,88 @@ func extractYAMLBlock(t *testing.T, body, start, end string) string {
 		t.Fatalf("expected YAML block end %q after %q", end, start)
 	}
 	return block[:endIndex]
+}
+
+func extractYAMLNamedBlock(t *testing.T, body, marker string) string {
+	t.Helper()
+
+	lines := strings.Split(body, "\n")
+	start := -1
+	for index, line := range lines {
+		if line == marker {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("expected YAML block marker %q", marker)
+	}
+	indent := len(marker) - len(strings.TrimLeft(marker, " "))
+	end := start + 1
+	for end < len(lines) {
+		line := lines[end]
+		if strings.TrimSpace(line) != "" && len(line)-len(strings.TrimLeft(line, " ")) <= indent {
+			break
+		}
+		end++
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func extractYAMLSequenceObjects(t *testing.T, body, propertyName string) []string {
+	t.Helper()
+
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		if strings.TrimSpace(line) != propertyName+":" {
+			continue
+		}
+		propertyIndent := len(line) - len(strings.TrimLeft(line, " "))
+		itemPrefix := strings.Repeat(" ", propertyIndent+2) + "- "
+		var objects []string
+		var current []string
+		for cursor := index + 1; cursor < len(lines); cursor++ {
+			candidate := lines[cursor]
+			candidateIndent := len(candidate) - len(strings.TrimLeft(candidate, " "))
+			if strings.TrimSpace(candidate) != "" && candidateIndent <= propertyIndent {
+				break
+			}
+			if strings.HasPrefix(candidate, itemPrefix) {
+				if len(current) > 0 {
+					objects = append(objects, strings.Join(current, "\n"))
+				}
+				current = []string{candidate}
+			} else if len(current) > 0 {
+				current = append(current, candidate)
+			}
+		}
+		if len(current) > 0 {
+			objects = append(objects, strings.Join(current, "\n"))
+		}
+		return objects
+	}
+	t.Fatalf("expected YAML sequence property %q", propertyName)
+	return nil
+}
+
+func yamlIntegerValue(t *testing.T, body, field string) int64 {
+	t.Helper()
+
+	prefix := field + ":"
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), 10, 64)
+		if err != nil {
+			t.Fatalf("expected %s integer in %q: %v", field, line, err)
+		}
+		if value < 0 {
+			t.Fatalf("expected non-negative %s, got %d", field, value)
+		}
+		return value
+	}
+	t.Fatalf("expected field %s in %s", field, body)
+	return 0
 }
