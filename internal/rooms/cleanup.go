@@ -267,6 +267,9 @@ func (s *Store) cleanupExpired(now time.Time) int {
 
 // isExpired requires r.mu because TTL eligibility depends on room-owned state.
 func (r *room) isExpired(now time.Time) bool {
+	if r.ending {
+		return false
+	}
 	if !r.createdAt.IsZero() && !now.Before(r.createdAt.Add(defaultHardRoomLifetime)) {
 		return true
 	}
@@ -289,6 +292,79 @@ type roomResources struct {
 	clientObservations []clientObservation
 }
 
+// detachGameplayLocked stops future simulation ticks without removing the room
+// or its clients. The caller holds room.mu and invokes stop after unlocking.
+func (r *roomResources) detachGameplayLocked(room *room) {
+	if room.ticker != nil {
+		r.tickers = append(r.tickers, room.ticker)
+		room.ticker = nil
+	}
+	if room.stop != nil {
+		r.stops = append(r.stops, room.stop)
+		room.stop = nil
+	}
+}
+
+func (s *Store) scheduleGameEndCleanup(room *room, sessions []*clientSession) bool {
+	return s.launchRoomWorker(func() {
+		defer room.signalGameEndCleanupWorkerDone()
+		for _, session := range uniqueClientSessions(sessions) {
+			<-session.closeDone
+		}
+		s.finishGameEnd(room)
+	})
+}
+
+// finishGameEnd owns only normal completion. The shared mutation gate makes
+// normal cleanup and forced shutdown mutually exclusive; shutdown takeover,
+// stale registry ownership, removed rooms, and callback panics never signal
+// successful GameEnd cleanup.
+func (s *Store) finishGameEnd(room *room) {
+	if room == nil {
+		return
+	}
+
+	s.mutationMu.RLock()
+	defer s.mutationMu.RUnlock()
+
+	var resources roomResources
+	var clientTransitions []clientObservationTransition
+	var activeTransition observationTransition
+	var playerIDs []string
+
+	s.mu.Lock()
+	if s.closed || s.rooms[room.ID] != room {
+		s.mu.Unlock()
+		return
+	}
+	room.mu.Lock()
+	if room.removed || !room.ending {
+		room.mu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	clientStart := len(resources.clientObservations)
+	var removed bool
+	playerIDs, removed = resources.removeRoomLocked(room)
+	if !removed {
+		room.mu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	clientTransitions = s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
+	delete(s.rooms, room.ID)
+	activeTransition = s.observation.activeRoomsDelta(-1)
+	room.mu.Unlock()
+	s.mu.Unlock()
+
+	s.publishDisconnectedClients(clientTransitions)
+	s.observation.publish(activeTransition)
+	s.releasePlayerIDs(playerIDs)
+	s.logRoomEvent("room_ended", room.ID)
+	resources.close(defaultGameEndCloseMsg)
+	room.signalGameEndCleanupDone()
+}
+
 type clientObservation struct {
 	roomID   string
 	playerID string
@@ -296,7 +372,8 @@ type clientObservation struct {
 }
 
 // removeRoomLocked marks a room unavailable and detaches resources for closing.
-// The caller must hold room.mu and must release it before touching Store.mu.
+// The caller must hold room.mu. If Store.mu is also needed, it must already be
+// held before room.mu; callers must never acquire Store.mu while holding room.mu.
 func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 	if room.removed {
 		return nil, false

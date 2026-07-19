@@ -4,7 +4,7 @@
 
 ## 한 줄 요약
 
-클라이언트는 `POST /matchmaking/join`의 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 고르고, 같은 mode의 `room`, `player`, `sessionToken`, tokenized `webSocketPath`를 받습니다. 서버는 room-local selected config의 tick에서 `State.Step(inputs) -> Snapshot`을 실행하고 같은 snapshot을 연결된 client에게 broadcast합니다.
+클라이언트는 `POST /matchmaking/join`의 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 고르고, 같은 mode의 `room`, `player`, `sessionToken`, tokenized `webSocketPath`를 받습니다. 서버는 room-local selected config의 tick에서 `State.Step(inputs) -> Snapshot`을 실행하고, 같은 config로 Solo 마지막 생존자와 Team elimination까지 판정합니다.
 
 ## 현재 상태
 
@@ -26,7 +26,8 @@
 - Solo/Team 6 WebSocket, 6 human Ready ACK, 1회 countdown/start regression
 - room-local mode config 기반 team/slot/spawn과 Wall/Water-safe fallback assignment
 - start 전 WebSocket close cancel
-- GameEnd Win/Lose/Draw event와 종료 room 정리
+- `duel_1v1` 호환, Solo 중간 Lose/마지막 생존자, Team elimination을 따르는 GameEnd Win/Lose/Draw
+- Player별 immutable 결과와 terminal close barrier 뒤 room/player ID cleanup
 - client build용 shared game config artifact
 - room 책임별 파일 분리와 `ServeMux` pattern routing
 - random opaque room/player ID와 player session WebSocket 인증
@@ -41,7 +42,6 @@
 
 아직 안 되는 것:
 
-- death snapshot 이후 Solo/Team elimination과 mode별 GameEnd rule (`SL-89`)
 - bot replacement와 별도 reconnect grace
 - respawn, score
 - production matchmaking queue, rating, account auth, persistence
@@ -63,7 +63,7 @@ internal/rooms
   store.go         room/player/match lifecycle
   websocket.go     connection, input, tick, snapshot delivery
   messages.go      REST/WebSocket DTO 변환
-  cleanup.go       in-memory TTL과 resource cleanup
+  cleanup.go       in-memory TTL, GameEnd close barrier, Shutdown teardown
   rate_limit.go    client IP 해석과 matchmaking token bucket
   rooms.go         공통 status, timeout, clock/ticker
   errors.go        lifecycle sentinel error
@@ -114,7 +114,7 @@ Required player가 모두 join해도 REST `room.status`는 `waiting`입니다. S
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
-`room_cap_reached` 409가 나면 debug 환경에서는 API를 명시적으로 활성화하고 Bearer credential로 `DELETE /rooms` 또는 `DELETE /rooms/{roomID}`를 호출합니다. Debug guard는 disabled 404 → enabled unauthenticated 401 → authenticated route result 순서입니다. 삭제 시 room-local ticker와 WebSocket connection도 닫습니다.
+`room_cap_reached` 409가 나면 debug 환경에서는 API를 명시적으로 활성화하고 Bearer credential로 `DELETE /rooms` 또는 `DELETE /rooms/{roomID}`를 호출합니다. Debug guard는 disabled 404 → enabled unauthenticated 401 → authenticated route result 순서입니다. 일반 room 삭제는 room-local ticker와 WebSocket connection도 닫지만 GameEnd ending room은 건드리지 않습니다.
 
 ### 3. WebSocket 연결
 
@@ -166,11 +166,11 @@ Started room의 tick 흐름:
 1. pending input을 복사합니다.
 2. pending input map을 비웁니다.
 3. `room.state.Step(inputs)`를 호출하고 State가 input을 `PlayerID` 오름차순으로 stable sort해 적용합니다.
-4. `{"Type":"snapshot","Snapshot":...}` 형태로 감쌉니다.
-5. Snapshot을 tick당 한 번 marshal하고 client별 latest-only slot에 넣습니다. 각 client writer는 매 payload에 새 5초 context를 사용하므로 느린 client가 tick을 막지 않습니다.
-6. HP가 0이 된 player가 있으면 같은 tick의 snapshot 뒤에 player별 `GameEnd` event를 보냅니다.
-7. GameEnd 이후 room-local ticker와 WebSocket connection을 정리합니다.
-8. room REST detail/list의 `latestSnapshot` summary를 갱신합니다.
+4. Room REST detail/list의 `latestSnapshot` summary를 Step 결과로 바로 갱신합니다.
+5. Room-local mode helper로 새 player 결과와 terminal 여부를 계산하고, player별 첫 결과만 immutable ledger에 확정합니다.
+6. Room terminal이면 `ending`을 예약하고 ticker를 terminal decision 즉시 중단합니다. Tick observer, encode, enqueue는 ticker stop 뒤에 실행합니다.
+7. `{"Type":"snapshot","Snapshot":...}`을 tick당 한 번 marshal합니다. Survivor는 latest-only slot, 새로 결과가 확정된 player는 `terminal snapshot -> GameEnd -> close` handoff를 받습니다.
+8. Solo 중간 탈락이면 loser session만 닫고 survivor room tick은 계속합니다. Room terminal이면 모든 captured close가 끝난 뒤 normal cleanup을 실행합니다.
 
 기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. SpawnPoint가 부족하면 player blocking policy를 재사용해 Wall/Water를 제외한 fallback candidate를 쓰며 Ground/Bush는 유지합니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이어야 하므로 정상 room의 spawn은 겹치지 않습니다.
 
@@ -218,15 +218,17 @@ Room store는 in-memory입니다.
 - hard room lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-현재 WebSocket close는 client connection과 pending input을 제거합니다. started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
+현재 WebSocket close는 client connection과 pending input을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다. Matchmaking start 전 close는 match cancel로 처리해 room을 제거합니다.
 
-각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
+각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
 외부 mutation의 lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `matchmakingMu`는 같은 mode의 동시 첫 join이 여러 room을 만들지 않도록 find-or-create 전체를 직렬화합니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
 
-Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보내며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
+각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 아직 close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 barrier에 남습니다. 그 뒤 registry, active-room observer, player ID, `room_ended` log, resources를 정리하고 cleanup success signal을 마지막에 닫습니다. Hard TTL과 debug clear/delete는 ending room을 제거하지 않습니다.
 
-GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. SL-88은 기존 player-survival fallback을 보존하므로 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Death snapshot 이후 Solo/Team elimination과 mode별 GameEnd는 SL-89에서 다룹니다.
+Shutdown은 새 mutation을 막고 janitor, room ticker, WebSocket writer/heartbeat를 정리합니다. Client에는 `1000 / server shutting down` close를 보냅니다. GameEnd close barrier의 forced-teardown 예외로서 close 전에 registry/player ID를 detach할 수 있고, deadline에는 WebSocket accept에서 캡처한 underlying `net.Conn`을 직접 닫아 진행 중인 graceful close를 중단합니다. 그래도 cleanup worker와 session lifecycle을 join합니다. 이 takeover는 normal cleanup signal을 닫거나 `room_ended`를 기록하지 않으며 최종 active room/client gauge가 0으로 반영될 때까지 기다립니다.
+
+GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로입니다. `duel_1v1` 결과는 유지하고, Solo 중간 탈락은 Lose 후 survivor가 계속하며 마지막 생존자는 Win입니다. 이전 Lose는 이후 Draw로 덮지 않습니다. Team 일부 사망은 계속하고 한 team 전멸은 3 Lose/3 Win, 양 team 같은 tick 전멸은 6 Draw입니다.
 
 ## Linear 흐름
 
@@ -264,6 +266,7 @@ GameEnd는 `Type: "GameEnd"`, `PlayerId`, `Result`를 보냅니다. SL-88은 기
 - `SL-86`: duel/solo/team mode catalog, same-mode waiting pool, room-local selected config, REST `gameMode`
 - `SL-87`: mode별 2/6-player Ready quorum, 6 human ACK, single countdown/start, safe spawn
 - `SL-88`: room-local mode rules 기반 projectile eligibility와 결정적 target/input 순서
+- `SL-89`: mode별 GameEnd, immutable result ledger, terminal close barrier와 Shutdown 예외
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 

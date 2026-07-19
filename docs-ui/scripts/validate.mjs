@@ -216,6 +216,36 @@ assert(asyncAPIText.includes("secret-bearing surface"), "api/asyncapi.yaml must 
 for (const marker of ["30초 heartbeat", "90초 deadline", "latest-only", "reliable control", "terminal snapshot -> GameEnd -> close"]) {
   assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
 }
+const gameEndSchema = extractYAMLSchema(asyncAPIText, "GameEndMessage");
+const gameEndDescription = extractYAMLNamedBlock(gameEndSchema, "      description: |");
+for (const marker of [
+  "duel_1v1",
+  "Solo 중간 탈락",
+  "이전 Lose는 유지",
+  "마지막 생존자",
+  "Team 일부 사망",
+  "패배 team 3명은 Lose, 상대 team 3명은 Win",
+  "양 team이 같은 tick에 전멸하면 6명 모두 Draw",
+  "ticker를 terminal decision 즉시 중단",
+  "terminal snapshot -> GameEnd -> close",
+  "connected-client observer는 close lifecycle에서 반영",
+  "transport closeDone보다 먼저일 수 있습니다.",
+  "앞서 결과가 확정되어 기억한 session의 closeDone을 모두 기다립니다.",
+  "current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다.",
+  "active-room observer를 반영한 다음 player ID를 release하고 room_ended log와 resource close",
+  "cleanup success signal은 마지막",
+  "Hard TTL과 debug removal은 ending room을 제거하지 않습니다.",
+  "Shutdown은 forced-teardown 예외",
+  "normal cleanup signal을 닫지 않고",
+  "room_ended를 기록하지 않습니다.",
+]) {
+  assert(gameEndDescription.includes(marker), `GameEndMessage description must include ${marker}`);
+}
+assertSchemaContains(asyncAPIText, "GameEndMessage", [
+  "required: [Type, PlayerId, Result]",
+  "const: GameEnd",
+  "enum: [Win, Lose, Draw]",
+]);
 for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }

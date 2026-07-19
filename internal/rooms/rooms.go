@@ -19,17 +19,18 @@ const (
 )
 
 const (
-	defaultWaitingRoomIdleTTL    = 10 * time.Minute
-	defaultDisconnectedRoomTTL   = 5 * time.Minute
-	defaultHardRoomLifetime      = time.Hour
-	defaultRoomWebSocketCloseMsg = "room expired"
-	defaultRoomDebugDeleteMsg    = "room deleted"
-	defaultMatchCancelMsg        = "match canceled"
-	defaultGameEndCloseMsg       = "game ended"
-	webSocketWriteTimeout        = 5 * time.Second
-	defaultHeartbeatInterval     = 30 * time.Second
-	defaultHeartbeatTimeout      = 90 * time.Second
-	matchCountdownSeconds        = 5
+	defaultWaitingRoomIdleTTL       = 10 * time.Minute
+	defaultDisconnectedRoomTTL      = 5 * time.Minute
+	defaultHardRoomLifetime         = time.Hour
+	defaultRoomWebSocketCloseMsg    = "room expired"
+	defaultRoomDebugDeleteMsg       = "room deleted"
+	defaultMatchCancelMsg           = "match canceled"
+	defaultGameEndCloseMsg          = "game ended"
+	defaultPlayerEliminatedCloseMsg = "player eliminated"
+	webSocketWriteTimeout           = 5 * time.Second
+	defaultHeartbeatInterval        = 30 * time.Second
+	defaultHeartbeatTimeout         = 90 * time.Second
+	matchCountdownSeconds           = 5
 )
 
 type clock interface {

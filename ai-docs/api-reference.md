@@ -246,7 +246,7 @@ Error response:
 
 ### 409 room cap 회복
 
-Active room cap은 5개입니다. 테스트 중 `room_cap_reached`가 나오면 debug API를 명시적으로 활성화하고 올바른 Bearer credential로 room을 비울 수 있습니다.
+Active room cap은 5개입니다. 테스트 중 `room_cap_reached`가 나오면 debug API를 명시적으로 활성화하고 올바른 Bearer credential로 일반 room을 비울 수 있습니다. GameEnd close barrier에 들어간 ending room은 hard TTL과 debug clear/delete가 제거하지 않습니다.
 
 ```text
 DELETE /rooms
@@ -261,7 +261,7 @@ DELETE /rooms/{roomID}
 }
 ```
 
-삭제 시 해당 room의 ticker와 WebSocket connection도 함께 닫습니다. 서버가 in-memory room만 사용하므로 persistence 삭제는 없습니다.
+삭제 시 해당 일반 room의 ticker와 WebSocket connection도 함께 닫습니다. Ending room은 normal GameEnd cleanup 또는 forced Shutdown이 소유합니다. 서버가 in-memory room만 사용하므로 persistence 삭제는 없습니다.
 
 ## WebSocket
 
@@ -402,7 +402,22 @@ GameEnd event:
 
 Field 이름은 Unity prototype과 맞춰 `MoveDir`, `AttackDir`, `PressedAttack`, `Id`, `OwnerId`, `Pos`, `Dir`, `HP`, `IsDead`, `IsDestroyed`처럼 유지합니다.
 단, match lifecycle field인 `Snapshot.status`와 `Snapshot.countdown`은 REST `room.status`와 맞춰 lowercase입니다. `starting`의 `countdown`은 client fake timer 기준값이며, server는 중간 countdown 값을 broadcast하지 않습니다.
-HP가 0인 player가 생기면 server는 같은 tick의 death snapshot을 먼저 보낸 뒤 player별 `GameEnd` event를 보냅니다. SL-88은 기존 player-survival fallback을 보존하므로 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다. Death snapshot 이후 Solo/Team elimination과 mode별 GameEnd 규칙은 SL-89 범위입니다. Server는 `GameEnd` 이후 room과 WebSocket connection을 정리합니다. Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking이 active room cap에 닿았을 때만 즉시 cleanup을 한 번 수행하고 생성도 한 번만 재시도합니다.
+
+GameEnd wire field와 enum은 그대로이고 판정만 room-local mode를 따릅니다.
+
+| Mode | 결과 |
+| --- | --- |
+| `duel_1v1` | 한 player가 죽으면 survivor Win/dead player Lose, 같은 tick 동시 사망은 둘 다 Draw입니다. |
+| `solo` | Solo 중간 탈락 player는 Lose와 close를 받고 나머지는 계속합니다. 마지막 생존자는 Win입니다. 전원 사망은 새로 결과가 확정되는 player에게 Draw입니다. |
+| `team` | Team 일부 사망은 계속합니다. 한 team 전멸은 패배 team 3명은 Lose, 상대 team 3명은 Win입니다. 양 team이 같은 tick에 전멸하면 6명 모두 Draw입니다. |
+
+Player별 첫 결과는 바뀌지 않습니다. 예를 들어 Solo 이전 Lose는 유지되고, 뒤의 전원 사망 tick에서는 아직 결과가 없던 player만 Draw를 받습니다. 중간 탈락 connection에는 `terminal snapshot -> GameEnd -> close`를 보내지만 room ticker는 계속 실행합니다.
+
+Room terminal decision에서는 ticker를 terminal decision 즉시 중단하고 tick observer, encode, enqueue를 진행합니다. 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 `closeDone`을 모두 기다립니다. 따라서 current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 registry를 분리하고 active-room observer를 반영한 다음 player ID를 release하고 `room_ended` log와 resource close를 수행하며 cleanup success signal은 마지막에 닫습니다. Hard TTL과 debug removal은 ending room을 제거하지 않습니다.
+
+`Shutdown`은 forced-teardown 예외입니다. `closeDone` 전에 registry/player ID를 detach할 수 있지만 GameEnd cleanup worker와 모든 session close/writer/heartbeat/lifecycle을 join합니다. 이 takeover는 normal cleanup signal을 닫지 않고 `room_ended`를 기록하지 않습니다.
+
+Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking이 active room cap에 닿았을 때만 즉시 cleanup을 한 번 수행하고 생성도 한 번만 재시도합니다.
 
 ## 현재 gameplay 값
 
@@ -436,8 +451,9 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 7. 공격이 target에 닿으면 두 연결에서 projectile `IsDestroyed: true`, target `HP` 감소가 보여야 합니다.
 8. HP가 0이 되면 `HP: 0`, `IsDead: true`가 보여야 합니다.
 9. HP가 0이 된 tick의 snapshot 이후 player별 `GameEnd`를 받아야 합니다.
-10. `GameEnd` 이후 해당 room은 정리되어야 합니다.
-11. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
+10. `duel_1v1` 한 player 사망은 Win/Lose, 같은 tick 동시 사망은 둘 다 Draw여야 합니다.
+11. Terminal close가 끝난 뒤 해당 room registry와 player ID가 정리되어야 합니다.
+12. 잘못된 JSON은 `invalid_input` error를 보내고 snapshot stream은 계속되어야 합니다.
 
 자동 회귀는 `go test ./internal/rooms`가 담당합니다.
 

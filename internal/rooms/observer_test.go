@@ -219,6 +219,7 @@ func TestActiveRoomGaugeCoversCreateDeleteExpiryCancelGameEndClearAndClose(t *te
 		})
 		room.mu.Unlock()
 		store.tickRoomState(room)
+		waitForGameEndCleanup(t, room)
 		assertObserverValues(t, observer.activeRoomValues(), []int{1, 0})
 	})
 
@@ -248,6 +249,71 @@ func TestActiveRoomGaugeCoversCreateDeleteExpiryCancelGameEndClearAndClose(t *te
 		store.Close()
 		assertObserverValues(t, observer.activeRoomValues(), []int{1, 2, 1, 0})
 	})
+}
+
+func TestTerminalResourcesStopBeforeObserver(t *testing.T) {
+	observer := newBlockingTickObserver()
+	t.Cleanup(observer.release)
+	harness := newModeTickHarness(t, simulation.GameModeSolo, observer, nil)
+	harness.setSnapshots(t, harness.snapshot(1, 0, 1, 2, 3, 4, 5))
+	harness.room.mu.Lock()
+	gameplayTicker := harness.room.ticker.(*fakeTicker)
+	gameplayStop := harness.room.stop
+	harness.room.mu.Unlock()
+
+	tickDone := make(chan struct{})
+	go func() {
+		harness.store.tickRoomState(harness.room)
+		close(tickDone)
+	}()
+	select {
+	case <-observer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal tick observer to be entered")
+	}
+	if got := gameplayTicker.StopCount(); got != 1 {
+		t.Fatalf("expected gameplay ticker to stop before observer, got %d stops", got)
+	}
+	select {
+	case <-gameplayStop:
+	default:
+		t.Fatal("expected gameplay stop channel to close before observer")
+	}
+
+	observer.release()
+	select {
+	case <-tickDone:
+	case <-time.After(time.Second):
+		t.Fatal("expected terminal tick to finish after observer release")
+	}
+	waitForGameEndCleanup(t, harness.room)
+}
+
+func TestGameEndCleanupSignalRequiresSuccessfulCallbacks(t *testing.T) {
+	observer := &oneShotPanickingActiveRoomObserver{}
+	harness := newModeTickHarness(t, simulation.GameModeSolo, observer, nil)
+	var gameplay roomResources
+	harness.room.mu.Lock()
+	harness.room.ending = true
+	gameplay.detachGameplayLocked(harness.room)
+	harness.room.mu.Unlock()
+	gameplay.stop()
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		harness.store.finishGameEnd(harness.room)
+	}()
+	harness.store.observation.observer = noopObserver{}
+
+	if recovered == nil {
+		t.Fatal("expected active-room observer panic to propagate from finishGameEnd")
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("expected cleanup completion to remain open after callback panic")
+	default:
+	}
 }
 
 func TestConnectedClientGaugeCoversAttachFailureReconnectDetachAndStoreClose(t *testing.T) {
@@ -396,6 +462,7 @@ func TestConnectedClientGaugeCoversAttachFailureReconnectDetachAndStoreClose(t *
 
 		store.tickRoomState(room)
 		<-session.writerDone
+		waitForGameEndCleanup(t, room)
 
 		assertObserverValues(t, observer.connectedClientValues(), []int{1, 0})
 		assertLogEventCount(t, logs, "websocket_connected", 1)
@@ -595,6 +662,21 @@ type blockingActiveRoomsObserver struct {
 	releaseFirst chan struct{}
 	firstOnce    sync.Once
 }
+
+type oneShotPanickingActiveRoomObserver struct {
+	once sync.Once
+}
+
+func (o *oneShotPanickingActiveRoomObserver) SetActiveRooms(count int) {
+	if count != 0 {
+		return
+	}
+	o.once.Do(func() { panic("active-room observer panic") })
+}
+
+func (*oneShotPanickingActiveRoomObserver) SetConnectedClients(int) {}
+
+func (*oneShotPanickingActiveRoomObserver) ObserveTick(time.Duration) {}
 
 func newBlockingActiveRoomsObserver() *blockingActiveRoomsObserver {
 	return &blockingActiveRoomsObserver{

@@ -163,6 +163,8 @@
 
 후속 반영 (SL-81 Stack 3): Token credential은 room/player session이 남아 있는 동안 재사용할 수 있지만 room lifetime을 연장하지 않습니다. Matchmaking pre-start 연결이 실제로 끊기면 room이 취소되고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback하므로 같은 발급 경로로 재시도할 수 있습니다.
 
+후속 반영 (SL-81 Stack 4, SL-89): TTL은 Store당 30초 janitor가 검사합니다. GameEnd `ending` room은 hard lifetime과 debug clear/delete에서 보호하고 ADR-0031의 normal close barrier 또는 forced Shutdown만 제거합니다.
+
 ## ADR-0012: E1 API Docs는 Server-Hosted UI와 Raw Spec으로 제공
 
 상태: 승인됨
@@ -265,6 +267,8 @@
 
 상태: 승인됨
 
+후속 상태: `GameEnd` wire와 `duel_1v1` 결과는 유지합니다. Solo/Team 판정, immutable result, normal close barrier와 Shutdown 예외는 ADR-0031이 현재 동작을 정의합니다.
+
 맥락: SL-63은 HP가 0이 된 뒤 client가 scene 종료와 결과 UI를 처리할 수 있도록 WebSocket 결과 event가 필요합니다. Simulation core는 HP/IsDead snapshot까지만 담당하고, room lifecycle과 WebSocket 종료 처리는 `internal/rooms` boundary에 남겨야 합니다. 같은 tick에 양쪽 player가 동시에 사망하는 상황은 드물지만 v1 결과 계약은 명시해야 합니다.
 
 결정: started room에서 snapshot 이후 HP가 0인 player가 있으면 server는 같은 tick의 snapshot을 먼저 broadcast하고, 이어서 연결된 각 player에게 `{"Type":"GameEnd","PlayerId":...,"Result":"Win|Lose|Draw"}` event를 보냅니다. 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`로 보냅니다. Server는 GameEnd event 전송 후 room-local ticker와 WebSocket connection을 정리하고 room store에서 해당 room을 제거합니다. 마지막 공격자 기준 타이브레이커는 후속 issue에서 별도 논의합니다.
@@ -314,7 +318,7 @@ Spawn은 map의 `TileSpawnPoint(2)`를 tile scan/join 순서로 먼저 사용합
 
 상태: 승인됨
 
-후속 상태: 판정 계산과 delivery 분리는 유지합니다. 단일 active duel 전제는 ADR-0028로 대체됐고, solo/team은 새 mode별 elimination rule 없이 기존 player-survival fallback을 사용합니다.
+후속 상태: 판정 계산과 delivery 분리는 유지합니다. 단일 active duel 전제는 ADR-0028로, Solo/Team의 기존 player-survival fallback과 즉시 room 삭제 순서는 ADR-0031로 대체됐습니다.
 
 맥락: SL-63에서 추가한 GameEnd 흐름은 `internal/rooms` 안에서 snapshot broadcast, Win/Lose/Draw 판정, player별 WebSocket event 생성, room cleanup이 한 흐름에 붙어 있었습니다. SL-71은 wire contract를 바꾸지 않고 판정 계산만 테스트 가능한 경계로 분리하는 리팩터입니다.
 
@@ -373,6 +377,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
+후속 상태: Terminal writer order와 active session registry 원칙은 유지합니다. ADR-0031은 room terminal에서 ticker를 먼저 멈추고 모든 `closeDone` 뒤 normal cleanup을 하며, Shutdown만 forced-teardown 예외로 허용합니다.
+
 맥락: 하나의 Store lock 아래에서 모든 room tick과 WebSocket write를 직렬화하면 느린 client 하나가 다른 room과 client까지 막습니다. 일반 snapshot을 모두 reliable하게 쌓으면 지연된 과거 state가 backlog가 되고, 반대로 Ready/GameEnd 같은 lifecycle message까지 버리면 client state가 깨집니다. Ping/pong이 없으면 silent peer가 connected 상태로 남아 TTL cleanup도 막습니다.
 
 결정:
@@ -395,6 +401,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 ## ADR-0025: SL-81 Application은 Private Metrics와 하나의 Shutdown 경계를 소유
 
 상태: 승인됨
+
+후속 상태: Application의 단일 Shutdown 경계는 유지합니다. GameEnd 중인 room에 대한 registry/player ID 선 detach, cleanup worker/session lifecycle join, normal signal/log 억제는 ADR-0031이 forced-teardown 예외로 정의합니다.
 
 맥락: 기존 process는 `http.ListenAndServe` 하나만 실행해서 SIGTERM 때 Store와 WebSocket worker를 정리하지 못했습니다. Room lifecycle log와 runtime metrics도 없어서 배포 후 상태를 확인하기 어려웠습니다. Metrics를 application HTTP에 그대로 추가하면 Cloudflare Tunnel을 통해 public endpoint가 될 수 있으므로 별도 노출 경계가 필요합니다.
 
@@ -486,6 +494,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
+후속 상태: Ready quorum과 spawn 결정은 유지합니다. 당시 별도 issue로 남긴 Solo/Team GameEnd는 ADR-0031에서 구현됐습니다.
+
 맥락: SL-86은 `duel_1v1`, `solo`, `team`의 waiting pool과 room-local selected config를 제공합니다. 기존 Ready state machine은 required count를 받을 수 있지만 실제 6 WebSocket, 6 human ACK, duplicate ACK, single-start behavior가 end-to-end로 고정되지 않았습니다. 또한 5x5 StaticMap의 preferred fallback 가운데 center `(2,2)`가 Wall이라 다섯 번째 player가 blocking tile에서 시작할 수 있었습니다.
 
 결정:
@@ -511,6 +521,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
+후속 상태: Projectile eligibility와 결정적 순서는 유지합니다. Death snapshot 이후 mode별 GameEnd는 ADR-0031이 현재 동작을 정의합니다.
+
 맥락: SL-86은 각 room이 selected mode config를 immutable하게 소유하도록 했지만 `friendlyFire`와 `teamBehavior`는 아직 projectile 판정에 쓰지 않았습니다. SL-88은 Solo와 Team/Duel의 hit eligibility를 실제 gameplay에 연결하면서, 같은 tick의 input map 순회와 여러 target 동시 overlap이 결과를 흔들지 않도록 결정성 기준도 고정해야 합니다. 다만 가장 가까운 target 같은 새 우선순위를 도입하면 기존 join/assignment 기반 동작이 바뀌고 SL-89의 elimination/GameEnd 범위까지 불필요하게 넓어질 수 있습니다.
 
 결정:
@@ -529,3 +541,28 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Room의 pending input map 순회 순서가 달라도 같은 input batch는 같은 `PlayerID` 적용 순서를 가집니다.
 - Multi-contact target tie-break는 기존 join/assignment order를 유지하므로 기존 duel hit behavior와 wire schema가 바뀌지 않습니다.
 - Projectile로 만든 death snapshot 이후의 match 종료 결과는 SL-89 전까지 기존 GameEnd fallback을 사용합니다.
+
+## ADR-0031: SL-89 Mode별 GameEnd는 Immutable Result와 Close Barrier로 처리
+
+상태: 승인됨
+
+맥락: `duel_1v1`, `solo`, `team`이 실제 room-local mode로 활성화됐지만 기존 player-survival fallback은 한 player 사망만으로 6인 room 전체를 끝냈습니다. Solo는 중간 탈락자만 종료하고 survivor gameplay를 계속해야 하며, Team은 한 명이 아니라 team 전멸을 기준으로 끝나야 합니다. 또 terminal payload를 비동기 writer에 넘긴 직후 room registry와 player ID를 먼저 삭제하면 client close 완료 전에 ID가 재사용되거나 TTL/debug cleanup과 normal GameEnd cleanup이 경쟁할 수 있습니다. 반대로 process Shutdown은 deadline 안에 모든 resource를 회수해야 하므로 normal close barrier만 기다릴 수 없습니다.
+
+결정:
+
+- GameEnd calculator는 immutable `room.gameConfig.SelectedMode`를 사용합니다. `duel_1v1`은 기존 1명 사망 Win/Lose와 같은 tick 동시 사망 Draw를 유지합니다.
+- Solo 중간 탈락은 해당 player의 Lose를 확정하고 그 session만 `terminal snapshot -> GameEnd -> close`로 닫습니다. Survivor room과 ticker는 계속 실행합니다. 마지막 생존자가 생기면 survivor Win과 새 dead player Lose를 확정합니다. 처음 관측한 전원 사망은 모두 Draw입니다.
+- Player별 첫 결과를 room-local ledger에 immutable하게 기록합니다. 이전 Lose는 이후 전원 사망 Draw로 바꾸거나 다시 전송하지 않고, 아직 결과가 없는 player만 새 Draw를 받습니다.
+- Team 일부 사망은 GameEnd 없이 계속합니다. 한 team이 전멸하면 패배 team 3명은 Lose, 상대 team 3명은 Win입니다. 양 team이 같은 tick에 전멸하면 6명 모두 Draw입니다.
+- Room terminal decision은 room을 `ending`으로 예약하고 gameplay ticker를 즉시 detach/stop합니다. Tick observer, snapshot encode, terminal enqueue는 stop 뒤에 실행합니다. Ending 또는 finalized player에는 join, add, start, reserve, attach, input, 추가 tick mutation을 허용하지 않습니다.
+- 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 아직 close가 끝나지 않은 모든 historical session generation의 `closeDone`을 기다립니다. Lifecycle monitor가 각 generation을 `closeDone` 뒤 room-owned barrier에서 제거합니다. 그 뒤 room registry, active-room observer, player ID, `room_ended` log, 남은 resources를 정리하고 cleanup success signal을 마지막에 닫습니다. Stale ownership, callback panic, 이미 제거된 room은 성공으로 표시하지 않습니다.
+- Hard lifetime janitor와 debug clear/delete는 ending room을 제거하지 않습니다.
+- `Shutdown`은 forced-teardown 예외입니다. Store mutation gate를 독점하므로 terminal `closeDone` 전에 registry와 player ID를 detach할 수 있고, deadline에는 WebSocket accept 때 캡처한 underlying `net.Conn`을 직접 닫아 진행 중인 graceful close를 중단합니다. 그래도 GameEnd cleanup worker와 session close/writer/heartbeat/lifecycle을 모두 join합니다. Forced takeover는 normal cleanup signal을 닫지 않고 `room_ended`를 기록하지 않습니다.
+- `GameEnd`의 `Type`, `PlayerId`, `Result`, `Win|Lose|Draw` enum과 OpenAPI/config/simulation contract는 바꾸지 않습니다.
+
+결과:
+
+- Solo 중간 탈락과 마지막 생존자, Team elimination이 room-local mode 의미와 일치합니다.
+- Player는 결과를 한 번만 받고 이전 Lose가 뒤의 Draw로 뒤집히지 않습니다.
+- Normal runtime은 terminal close가 끝난 뒤에만 room과 player ID를 재사용할 수 있고, TTL/debug removal은 close barrier를 우회하지 않습니다.
+- Process Shutdown은 normal success로 위장하지 않으면서도 deadline에 registry와 모든 owned worker/session을 회수합니다.

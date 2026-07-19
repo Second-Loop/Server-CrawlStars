@@ -1,9 +1,11 @@
 package rooms
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -18,7 +20,36 @@ type clientConn interface {
 	Write(context.Context, websocket.MessageType, []byte) error
 	Ping(context.Context) error
 	Close(websocket.StatusCode, string) error
-	CloseNow() error
+	AbortTransport() error
+}
+
+type hijackCaptureResponseWriter struct {
+	http.ResponseWriter
+	transport net.Conn
+}
+
+func (w *hijackCaptureResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("http.ResponseWriter does not implement http.Hijacker")
+	}
+	transport, readWriter, err := hijacker.Hijack()
+	if err == nil {
+		w.transport = transport
+	}
+	return transport, readWriter, err
+}
+
+type acceptedClientConn struct {
+	*websocket.Conn
+	transport net.Conn
+}
+
+func (c *acceptedClientConn) AbortTransport() error {
+	if c.transport == nil {
+		return nil
+	}
+	return c.transport.Close()
 }
 
 type writerCommandKind uint8
@@ -294,6 +325,20 @@ func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason 
 	return true
 }
 
+func (s *clientSession) isTerminalOrDone() bool {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.terminal {
+		return true
+	}
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *clientSession) writeLoop() {
 	defer close(s.writerDone)
 	for {
@@ -426,7 +471,7 @@ func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
 	}
 	s.forceOnce.Do(func() {
 		if s.conn != nil {
-			_ = s.conn.CloseNow()
+			_ = s.conn.AbortTransport()
 		}
 	})
 }
@@ -463,12 +508,19 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, nil)
+	capture := &hijackCaptureResponseWriter{ResponseWriter: w}
+	conn, err := websocket.Accept(capture, r, nil)
 	if err != nil {
 		s.rollbackClientReservation(reservation)
 		return
 	}
-	session, attached := s.attachClientSession(reservation, conn)
+	if capture.transport == nil {
+		s.rollbackClientReservation(reservation)
+		_ = conn.CloseNow()
+		return
+	}
+	clientConn := &acceptedClientConn{Conn: conn, transport: capture.transport}
+	session, attached := s.attachClientSession(reservation, clientConn)
 	if !attached {
 		s.rollbackClientReservation(reservation)
 		_ = conn.Close(websocket.StatusGoingAway, "room unavailable")
@@ -575,7 +627,7 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	}
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if room.removed {
+	if room.removed || room.ending {
 		return nil, ErrRoomNotFound
 	}
 	if !room.hasPlayer(playerID) {
@@ -583,6 +635,9 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	}
 	if len(tokens) != 1 || tokens[0] == "" || !room.authenticatePlayer(playerID, tokens[0]) {
 		return nil, ErrUnauthorized
+	}
+	if room.hasFinalizedGameEndResult(playerID) {
+		return nil, ErrPlayerNotFound
 	}
 	if _, ok := room.clients[playerID]; ok {
 		return nil, ErrPlayerAlreadyConnected
@@ -635,7 +690,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	}
 	room := reservation.room
 	room.mu.Lock()
-	if room.removed || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	if room.removed || room.ending || room.hasFinalizedGameEndResult(reservation.playerID) || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		room.mu.Unlock()
 		s.mu.Unlock()
 		return nil, false
@@ -648,9 +703,10 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	connectedPublication := s.prepareConnectedClientPublication(connectedClient, connectedTransition)
 	delete(room.reservations, reservation.playerID)
 	room.clients[reservation.playerID] = session
+	room.closeBarrierSessions[session] = struct{}{}
 	lifecycleDone := make(chan struct{})
 	s.activeSessions[session] = lifecycleDone
-	s.monitorClientSession(session, lifecycleDone)
+	s.monitorClientSession(room, session, lifecycleDone)
 	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
 	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
@@ -671,9 +727,12 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	return session, true
 }
 
-func (s *Store) monitorClientSession(session *clientSession, lifecycleDone chan struct{}) {
+func (s *Store) monitorClientSession(room *room, session *clientSession, lifecycleDone chan struct{}) {
 	go func() {
 		<-session.closeDone
+		room.mu.Lock()
+		delete(room.closeBarrierSessions, session)
+		room.mu.Unlock()
 		<-session.writerDone
 		<-session.heartbeatDone
 
@@ -746,7 +805,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 	}
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if room.removed || !room.hasPlayer(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
+	if room.removed || room.ending || !room.hasPlayer(playerID) || room.hasFinalizedGameEndResult(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
 		return
 	}
 	room.lastActivityAt = s.clock.Now()
@@ -885,16 +944,14 @@ func (s *Store) tickRoom(roomID string) {
 }
 
 func (s *Store) tickRoomState(room *room) {
-	var resources roomResources
+	var terminalResources roomResources
 	var deliveries []webSocketDelivery
 	var snapshotSessions []*clientSession
-	var snapshotPayload []byte
-	var snapshotMarshalErr error
-	var clientTransitions []clientObservationTransition
-	gameEnded := false
+	var terminalSessions []*clientSession
+	terminal := false
 
 	room.mu.Lock()
-	if room.removed || room.Status != RoomStatusStarted || room.state == nil {
+	if room.removed || room.ending || room.Status != RoomStatusStarted || room.state == nil {
 		room.mu.Unlock()
 		return
 	}
@@ -909,59 +966,61 @@ func (s *Store) tickRoomState(room *room) {
 	stepDuration := s.wallNow().Sub(stepStarted)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
-
-	for _, session := range room.clients {
-		if session != nil {
-			snapshotSessions = append(snapshotSessions, session)
-		}
-	}
-	results := room.gameEndResults(snapshot)
-	var playerIDs []string
-	if len(results) > 0 {
-		snapshotPayload, snapshotMarshalErr = marshalMessage(message)
-		if snapshotMarshalErr == nil {
-			deliveries = append(deliveries, room.gameEndDeliveries(results)...)
-		}
-		for playerID, session := range room.clients {
-			if session != nil {
-				resources.clientObservations = append(resources.clientObservations, clientObservation{
-					roomID: room.ID, playerID: playerID, session: session,
-				})
-			}
-		}
-		clientTransitions = s.clientObservationTransitionsLocked(resources.clientObservations, -1)
-		room.clients = nil
-		playerIDs, gameEnded = resources.removeRoomLocked(room)
-	} else {
-		enqueueSnapshotMessage(snapshotSessions, message)
+	results := room.calculateGameEndResults(snapshot)
+	claimed := room.claimFinalizedGameEndResults(results)
+	snapshotSessions = room.snapshotSessionsWithoutFinalizedGameEnd()
+	deliveries = room.gameEndDeliveries(claimed)
+	terminalSessions = room.clientSessions()
+	terminal = shouldEndGame(room.gameConfig, snapshot)
+	if terminal {
+		room.ending = true
+		terminalResources.detachGameplayLocked(room)
 	}
 	room.mu.Unlock()
-	s.observation.observeTick(stepDuration)
-	s.publishDisconnectedClients(clientTransitions)
 
-	if gameEnded {
-		if s.deleteRoomIfSame(room.ID, room) {
-			s.releasePlayerIDs(playerIDs)
-			s.logRoomEvent("room_ended", room.ID)
-		}
-	}
-	if gameEnded {
-		if snapshotMarshalErr != nil {
-			closeClientSessions(snapshotSessions, "message marshal failed")
-			resources.close(defaultGameEndCloseMsg)
+	terminalResources.stop()
+	s.observation.observeTick(stepDuration)
+
+	snapshotPayload, snapshotMarshalErr := marshalMessage(message)
+	if snapshotMarshalErr != nil {
+		if terminal {
+			closeClientSessions(terminalSessions, "message marshal failed")
+			s.scheduleGameEndCleanup(room, terminalSessions)
 			return
 		}
 		for _, delivery := range deliveries {
-			gameEndPayload, err := marshalMessage(delivery.message)
-			if err != nil {
-				delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
-				continue
-			}
-			delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, defaultGameEndCloseMsg)
+			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
 		}
-		resources.close(defaultGameEndCloseMsg)
 		return
 	}
+	for _, session := range snapshotSessions {
+		session.enqueueSnapshot(snapshotPayload)
+	}
+
+	closeReason := defaultPlayerEliminatedCloseMsg
+	if terminal {
+		closeReason = defaultGameEndCloseMsg
+	}
+	delivered := make(map[*clientSession]struct{}, len(deliveries))
+	for _, delivery := range deliveries {
+		delivered[delivery.session] = struct{}{}
+		gameEndPayload, err := marshalMessage(delivery.message)
+		if err != nil {
+			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
+			continue
+		}
+		delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, closeReason)
+	}
+	if !terminal {
+		return
+	}
+	for _, session := range terminalSessions {
+		if _, ok := delivered[session]; ok || session.isTerminalOrDone() {
+			continue
+		}
+		session.close(websocket.StatusNormalClosure, defaultGameEndCloseMsg)
+	}
+	s.scheduleGameEndCleanup(room, terminalSessions)
 }
 
 type webSocketDelivery struct {

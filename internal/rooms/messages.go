@@ -256,6 +256,10 @@ func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDe
 		if session == nil {
 			continue
 		}
+		if r.finalizedGameEndSessions == nil {
+			r.finalizedGameEndSessions = make(map[string]*clientSession)
+		}
+		r.finalizedGameEndSessions[player.ID] = session
 		deliveries = append(deliveries, webSocketDelivery{
 			session: session,
 			message: gameEndMessage{
@@ -266,6 +270,45 @@ func (r *room) gameEndDeliveries(results map[string]gameEndResult) []webSocketDe
 		})
 	}
 	return deliveries
+}
+
+// snapshotSessionsWithoutFinalizedGameEnd requires r.mu. A finalized player
+// receives the result snapshot through its terminal handoff instead of the
+// replaceable gameplay snapshot queue.
+func (r *room) snapshotSessionsWithoutFinalizedGameEnd() []*clientSession {
+	sessions := make([]*clientSession, 0, len(r.clients))
+	for playerID, session := range r.clients {
+		if session != nil && !r.hasFinalizedGameEndResult(playerID) {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
+}
+
+// clientSessions requires r.mu and captures the terminal close barrier before
+// ending prevents any new attachment. Finalized sessions and any session whose
+// transport close is still owned by the room stay in this barrier after
+// releaseClient removes them from the current-client map.
+func (r *room) clientSessions() []*clientSession {
+	current := make([]*clientSession, 0, len(r.clients))
+	for _, session := range r.clients {
+		if session != nil {
+			current = append(current, session)
+		}
+	}
+	finalized := make([]*clientSession, 0, len(r.finalizedGameEndSessions))
+	for _, session := range r.finalizedGameEndSessions {
+		if session != nil {
+			finalized = append(finalized, session)
+		}
+	}
+	closing := make([]*clientSession, 0, len(r.closeBarrierSessions))
+	for session := range r.closeBarrierSessions {
+		if session != nil {
+			closing = append(closing, session)
+		}
+	}
+	return uniqueClientSessions(current, finalized, closing)
 }
 
 func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfig) []simulation.PlayerData {
