@@ -217,7 +217,7 @@ Mode/team rule:
 - `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다. SpawnPoint를 먼저 쓰고 fallback candidate에서 `tileBlocksPlayer`가 true인 Wall/Water를 제외하며 Ground/Bush는 유지합니다. `ResolveMapData`는 두 후보 집합의 고유 좌표 수가 `map.maxPlayers`보다 작으면 config를 거부합니다.
 - `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 `room.gameConfig`에서 읽습니다.
 - `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
-- `friendlyFire`는 catalog metadata로만 저장하고 projectile team 판정은 이 issue에서 바꾸지 않습니다.
+- `teamBehavior`와 `friendlyFire`는 server-only catalog rule이며 `internal/simulation.State`가 projectile hit eligibility를 판단할 때 사용합니다.
 
 WebSocket:
 
