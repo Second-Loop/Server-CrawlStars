@@ -370,7 +370,7 @@ func TestStepAppliesPlayerTileCollisionPolicy(t *testing.T) {
 
 func TestStepKeepsPlayerInsideMapBoundary(t *testing.T) {
 	gameMap := MapData{
-		Width: 4, Height: 4, MaxPlayers: 2, TileSize: TileSize,
+		Width: 4, Height: 4, MaxPlayers: 6, TileSize: TileSize,
 		Map: [][]TileType{
 			{TileGround, TileGround, TileGround, TileGround},
 			{TileGround, TileGround, TileGround, TileGround},
