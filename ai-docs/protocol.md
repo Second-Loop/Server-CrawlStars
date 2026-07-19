@@ -14,6 +14,7 @@
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
 - session/credential 없는 server-owned bot participant와 결정적 basic controller
+- 첫 human join 기준 room-owned 10초 bot fill과 first-lock-wins late join
 - start 전 match cancel
 - opaque room/player ID와 player session WebSocket 인증
 - 기본 비활성화된 debug REST Bearer guard
@@ -25,7 +26,7 @@
 
 아직 구현하지 않은 것:
 
-- SL-91의 10초 automatic bot fill, bot replacement와 별도 reconnect grace
+- bot replacement와 별도 reconnect grace
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
 - production matchmaking queue
@@ -371,7 +372,9 @@ Human과 bot을 합친 participant가 selected mode의 capacity 2명 또는 6명
 
 Full participant gate를 통과한 뒤 연결된 human participant의 WebSocket session이 모두 attach되면 human session에만 같은 `Type: "Ready"` event를 보냅니다. Ready payload에는 bot을 포함한 full participant list와 JSON number array 형태의 `Map.map`, room-local assignment의 `Players[].Team`, `Slot`, `IsBot`, `SpawnPosition`이 들어갑니다. Bot은 WebSocket sender나 Ready ACK 주체가 아닙니다. 서로 다른 human player가 모두 `{"Type":"ready"}`를 보내야 하며, 같은 player의 중복 ACK는 idempotent하고 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Human-only quorum 뒤 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 human connection당 1번 보내고, 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 1번 보낸 다음 room-local simulation ticker 하나를 시작합니다.
 
-SL-90의 `addBots`는 이미 생성된 waiting room의 남은 participant capacity를 채우는 internal primitive입니다. Bot ID만 예약하며 session token, WebSocket path, Ready ACK를 만들지 않습니다. 언제 몇 명을 채울지 결정하는 10초 automatic fill 정책은 SL-91 범위이고 아직 구현하지 않았습니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement도 없습니다.
+첫 human matchmaking join의 `0 -> 1` 전이에서 room-owned one-shot 10초 deadline을 시작합니다. 후속 human join과 partial manual bot 추가는 deadline을 reset하지 않습니다. Timer worker와 human join은 `mutationMu -> matchmakingMu -> Store.mu -> room.mu` 순서로 직렬화하고, `matchmakingMu`를 먼저 얻은 transition이 이깁니다. Timer-first fill 뒤 late join은 다른 waiting room을 찾거나 만들며 active-room cap이면 기존 `room_cap_reached` 409를 반환합니다.
+
+Deadline worker는 selected mode의 남은 participant slot을 bot으로 원자적으로 채웁니다. Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback해 partial participant를 남기지 않고 `bot_fill_failed` structured error를 한 번 기록하며 retry하지 않습니다. Ticker/stop channel은 room lock 아래에서 detach만 하고 stop, close, worker join은 core lock 밖에서 실행합니다. Bot은 session token, WebSocket path, Ready ACK를 만들지 않습니다. Unmatched disconnect는 deadline과 credential을 유지하고 matched/loading/starting disconnect는 기존 pre-start cancel로 resource를 회수합니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement도 없습니다.
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
@@ -440,7 +443,7 @@ DELETE /rooms/{roomID}
 16. Ending room은 hard TTL/debug delete에서 보호되고, 정상 cleanup은 모든 `closeDone` 뒤에 registry/player ID를 정리해야 합니다.
 17. Forced `Shutdown`은 registry/player ID를 먼저 detach할 수 있지만 cleanup worker와 session lifecycle을 join하고 normal cleanup signal/`room_ended`를 만들지 않아야 합니다.
 
-이 시나리오는 bot을 넣지 않은 human-only 회귀 경로입니다. SL-90의 internal `addBots`를 사용한 경로에서는 participant 6명을 먼저 채우고 human session만 attach/ACK하며, human에게 전달된 Ready와 gameplay snapshot에는 bot을 포함한 6명 전체가 나타나야 합니다. SL-91의 10초 automatic fill은 아직 없습니다. Start 전 실제 human disconnect는 기존 pre-start cancel로 room과 남은 connection을 정리합니다.
+이 시나리오는 bot을 넣지 않은 human-only 회귀 경로입니다. SL-91 timer 경로에서는 첫 human join 뒤 10초에 participant 6명을 채우고 human session만 attach/ACK하며, human에게 전달된 Ready와 gameplay snapshot에는 bot을 포함한 6명 전체가 나타나야 합니다. Start 전 실제 human disconnect는 unmatched이면 deadline과 credential을 유지하고, matched/loading/starting이면 기존 pre-start cancel로 room과 남은 connection을 정리합니다. ClientTick/ACK 확장은 SL-94 범위입니다.
 
 자동 검증은 `go test ./internal/rooms`와 `go test ./internal/simulation`이 담당합니다.
 

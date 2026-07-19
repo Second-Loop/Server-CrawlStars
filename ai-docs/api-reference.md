@@ -160,7 +160,9 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - Ready ACK quorum도 human participant만 셉니다. Human 한 명이라도 ACK하지 않으면 countdown을 시작하지 않고, 연결된 human 전원이 ACK하면 `starting/countdown: 5`를 한 번 보냅니다.
 - 같은 player의 중복 ACK는 quorum을 늘리지 않고 countdown이나 gameplay ticker를 다시 만들지 않습니다.
 - Server는 5초를 내부에서 센 뒤 `started`를 한 번 보내고 room-local 30Hz snapshot을 시작합니다.
-- SL-90은 남은 정원을 채우는 internal `addBots` primitive만 제공합니다. 10초 뒤 자동으로 채우는 정책은 SL-91 범위이며 아직 구현하지 않았습니다.
+- 첫 human matchmaking join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
+- deadline을 먼저 획득하면 selected mode의 남은 slot을 bot으로 원자적으로 채웁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 `room_cap_reached` 409를 반환합니다.
+- Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
 - Ready timeout, reconnect grace, participant replacement는 없습니다. Start 전 실제 human WebSocket close는 match cancel입니다.
 - 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 

@@ -28,6 +28,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - `/matchmaking/join` IP별 token-bucket rate limit
 - matchmaking Ready event/ready ACK/countdown/start
 - sessionless server-owned bot participant와 human-only Ready quorum
+- 첫 human join 기준 10초 bot fill, timer/human join first-lock-wins, failure rollback/no-retry
 - start 전 match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
@@ -38,7 +39,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 
 - production matchmaking
 - ready timeout
-- SL-91의 10초 automatic bot fill, bot replacement, reconnect grace
+- bot replacement, reconnect grace, ClientTick/ACK(SL-94)
 - respawn, score
 - persistence, database, account auth
 - Kubernetes, dashboard, scheduler, runner

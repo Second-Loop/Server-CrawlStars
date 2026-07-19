@@ -266,17 +266,27 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
   ]);
 }
-for (const marker of [
+const completedBotFillMarkers = [
   "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
   "Ready payload는 full participant list를 포함",
   "연결된 human WebSocket session만 attach quorum",
-  "각 human player가 보낸 ready ACK",
-  "중복 ready ACK",
-  "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
+  "첫 human matchmaking join부터 10초",
+  "남은 participant slot을 bot으로 충원",
+  "active-room cap이면 room_cap_reached",
+  "human session만 Ready ACK",
   "Wall과 Water",
   "Ground와 Bush",
-]) {
+];
+for (const marker of completedBotFillMarkers) {
   assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
+}
+for (const marker of [
+  "첫 human matchmaking join부터 10초",
+  "남은 participant slot을 bot으로 충원",
+  "active-room cap이면 room_cap_reached",
+  "human session만 Ready ACK",
+]) {
+  assert(openAPIText.includes(marker), `api/openapi.yaml must document ${marker}`);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
 assert(hasLine(asyncAPIInfo, "  version: 0.4.0"), "api/asyncapi.yaml must publish version 0.4.0");
@@ -503,9 +513,10 @@ function validateBotIdentitySchemas() {
     "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
     "Ready payload는 full participant list를 포함",
     "연결된 human WebSocket session만 attach quorum",
-    "각 human player가 보낸 ready ACK",
-    "중복 ready ACK",
-    "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
+    "첫 human matchmaking join부터 10초",
+    "남은 participant slot을 bot으로 충원",
+    "active-room cap이면 room_cap_reached",
+    "human session만 Ready ACK",
   ]) {
     assert(asyncAPIText.includes(marker), `AsyncAPI must document ${marker}`);
   }

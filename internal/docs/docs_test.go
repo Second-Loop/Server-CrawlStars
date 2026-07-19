@@ -100,7 +100,7 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertBodyContains(t, docsUI, `"IsBot": true`)
 }
 
-func TestHandlerServesBotParticipantReadyContract(t *testing.T) {
+func TestHandlerServesBotFillReadyContract(t *testing.T) {
 	asyncAPI := request(Handler(), http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 
@@ -109,9 +109,10 @@ func TestHandlerServesBotParticipantReadyContract(t *testing.T) {
 		"duel_1v1은 2명, solo와 team은 6명의 participant capacity",
 		"Ready payload는 full participant list를 포함",
 		"연결된 human WebSocket session만 attach quorum",
-		"각 human player가 보낸 ready ACK",
-		"중복 ready ACK",
-		"SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
+		"첫 human matchmaking join부터 10초",
+		"남은 participant slot을 bot으로 충원",
+		"active-room cap이면 room_cap_reached",
+		"human session만 Ready ACK",
 		"Wall과 Water",
 		"Ground와 Bush",
 		"        Players:\n          oneOf:",

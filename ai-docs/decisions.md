@@ -494,7 +494,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
-후속 상태: Ready quorum과 spawn 결정은 유지합니다. 당시 별도 issue로 남긴 Solo/Team GameEnd는 ADR-0031에서 구현됐습니다. ADR-0032는 이 ADR의 “2/6명 전원을 human/WebSocket으로 요구하고 bot fill은 없음” 부분을 human+bot participant capacity와 human-only attach/ACK quorum으로 대체합니다. Human participant가 0명이면 quorum은 성립하지 않으며, 10초 automatic fill은 SL-91 범위로 아직 구현하지 않았습니다. 아래 결정과 결과는 SL-87 당시의 역사적 맥락으로 유지합니다.
+후속 상태: Ready quorum과 spawn 결정은 유지합니다. 당시 별도 issue로 남긴 Solo/Team GameEnd는 ADR-0031에서 구현됐습니다. ADR-0032는 이 ADR의 “2/6명 전원을 human/WebSocket으로 요구하고 bot fill은 없음” 부분을 human+bot participant capacity와 human-only attach/ACK quorum으로 대체했고, ADR-0033이 첫 human join 기준 10초 fill을 추가했습니다. Human participant가 0명이면 quorum은 성립하지 않습니다. 아래 결정과 결과는 SL-87 당시의 역사적 맥락으로 유지합니다.
 
 맥락: SL-86은 `duel_1v1`, `solo`, `team`의 waiting pool과 room-local selected config를 제공합니다. 기존 Ready state machine은 required count를 받을 수 있지만 실제 6 WebSocket, 6 human ACK, duplicate ACK, single-start behavior가 end-to-end로 고정되지 않았습니다. 또한 5x5 StaticMap의 preferred fallback 가운데 center `(2,2)`가 Wall이라 다섯 번째 player가 blocking tile에서 시작할 수 있었습니다.
 
@@ -571,7 +571,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
-맥락: Mode별 participant capacity를 실제 gameplay로 검증하려면 human client를 2개 또는 6개 항상 연결하지 않고도 server-owned participant를 구성할 수 있어야 합니다. 다만 bot이 별도 gameplay state나 credential을 가지거나 room tick 밖에서 movement/combat를 직접 변경하면 server-authoritative simulation과 Ready quorum 경계가 갈라집니다. SL-90은 deterministic한 최소 controller와 internal participant primitive까지만 만들고, 언제 bot을 채울지는 SL-91에 남깁니다.
+맥락: Mode별 participant capacity를 실제 gameplay로 검증하려면 human client를 2개 또는 6개 항상 연결하지 않고도 server-owned participant를 구성할 수 있어야 합니다. 다만 bot이 별도 gameplay state나 credential을 가지거나 room tick 밖에서 movement/combat를 직접 변경하면 server-authoritative simulation과 Ready quorum 경계가 갈라집니다. 이 ADR은 SL-90 당시 deterministic한 최소 controller와 internal participant primitive를 고정한 기록이며, timer policy는 후속 ADR-0033이 정의합니다.
 
 결정:
 
@@ -583,10 +583,30 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Room은 직전 snapshot, pending input, bot merge, simulation state를 `room.mu` 아래 소유합니다. 한 room tick은 공통 `State.Step`을 정확히 한 번 호출하고 반환 snapshot 하나를 다음 authoritative state와 delivery에 사용합니다.
 - Movement, projectile, hit, HP/death, normal attack charge/recharge는 계속 `internal/simulation`이 소유합니다. Bot도 같은 GameEnd result ledger 계산에는 포함되지만 terminal payload와 transport close는 session이 있는 human에게만 수행합니다.
 - `addBots`는 `Store.mu -> room.mu` 순서로 ID를 예약한 뒤 room identity, lifecycle, capacity를 재검증합니다. 실패하면 예약 ID를 모두 rollback하고 partial participant를 남기지 않습니다.
-- Pathfinding, obstacle avoidance, line-of-sight, dodge, ultimate, randomness, disconnect replacement와 10초 automatic fill timer는 추가하지 않습니다. Timer-triggered policy는 SL-91 범위입니다.
+- Pathfinding, obstacle avoidance, line-of-sight, dodge, ultimate, randomness, disconnect replacement는 추가하지 않습니다. 10초 automatic fill timer의 현재 정책은 ADR-0033이 정의합니다.
 
 결과:
 
 - Bot과 human이 같은 Ready/Snapshot identity와 공통 simulation 결과를 사용하므로 별도 bot gameplay truth가 생기지 않습니다.
 - Pending map 순회나 payload ID, 같은 거리 target 때문에 tick 결과가 흔들리지 않고 State/attack charge budget을 우회하지 않습니다.
-- SL-90은 안전한 internal primitive와 one-Step integration을 제공하며 public matchmaking의 10초 fill timing은 SL-91이 별도로 결정할 수 있습니다.
+- SL-90은 안전한 internal primitive와 one-Step integration을 제공하고, public matchmaking의 10초 fill timing은 ADR-0033이 이 primitive를 사용해 정의합니다.
+
+## ADR-0033: SL-91 Matchmaking Bot Fill은 Room-owned One-shot Timer로 처리
+
+상태: 승인됨
+
+맥락: 첫 human join 뒤 정원이 비어 있으면 추가 human join과 timer tick이 동시에 도착할 수 있습니다. 전역 scheduler를 두면 room lifecycle과 별개로 취소·소유권을 맞춰야 하고, partial bot append나 늦은 worker가 replacement room을 바꾸는 위험도 생깁니다.
+
+결정:
+
+- 첫 human matchmaking join의 `0 -> 1` 전이에서만 room이 one-shot 10초 ticker와 stop channel을 소유합니다. 후속 join과 partial manual bot 추가는 deadline을 reset하지 않습니다.
+- Timer worker와 human join은 `mutationMu -> matchmakingMu -> Store.mu -> room.mu` lock 순서를 지키며, `matchmakingMu`를 먼저 얻은 transition이 이깁니다. Timer-first late join은 다른/new waiting room으로 가고 cap이면 기존 `room_cap_reached` 409를 유지합니다.
+- Worker는 registry pointer와 ticker identity를 확인한 뒤 selected mode의 남은 slot을 한 번에 채웁니다. Bot ID 발급 실패는 모든 예약을 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
+- Timer resource는 room lock 아래에서 detach만 합니다. ticker stop, stop channel close, worker join은 모든 core lock을 푼 뒤 실행합니다. Delete, clear, TTL cleanup, debug start, matched pre-start cancel, Shutdown도 같은 cleanup 경로를 사용합니다.
+- Bot-filled Ready payload는 full participant list를 유지하지만 attach와 Ready ACK quorum은 human session만 셉니다. Unmatched disconnect는 deadline/credential을 유지하고 matched/loading/starting disconnect는 기존 pre-start cancel을 유지합니다.
+- ClientTick/ACK 확장은 이 ADR에 포함하지 않고 SL-94 범위로 둡니다. 전역 scheduler, bot replacement, reconnect grace도 추가하지 않습니다.
+
+결과:
+
+- 10초 fill은 room lifecycle과 함께 시작·정리되고 timer와 human join의 승자가 결정적입니다.
+- Bot identity failure가 wire participant 목록을 부분적으로 바꾸지 않고, human-only Ready/start wire contract가 유지됩니다.

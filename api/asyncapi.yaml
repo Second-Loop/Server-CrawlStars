@@ -6,9 +6,11 @@ info:
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
     Matchmaking room은 selected mode의 full participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 `Type: Ready` 이벤트를 human session에 전달합니다. Ready payload는 full participant list를 포함하므로 human과 server-owned bot의 team/slot/spawn을 함께 보여 줍니다.
+    첫 human matchmaking join부터 10초인 room-owned one-shot deadline을 시작합니다. 후속 human join과 partial manual bot 추가는 deadline을 reset하지 않습니다. Deadline worker와 human join은 같은 matchmaking lock을 먼저 얻은 transition이 이기므로, timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 room_cap_reached REST 결과를 받습니다.
+    deadline을 먼저 획득하면 selected mode의 남은 participant slot을 bot으로 충원해 matched로 전이합니다. Bot identity 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 `bot_fill_failed` structured error를 한 번 기록하며 retry하지 않습니다.
     duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
     같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` gameplay snapshot을 broadcast합니다.
-    SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91 범위입니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 아직 제공하지 않습니다. Start 전 실제 human disconnect는 pre-start cancel로 room을 삭제합니다.
+    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Unmatched human disconnect는 credential과 deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. ClientTick/ACK 확장은 SL-94 범위입니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
     일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
@@ -40,7 +42,7 @@ channels:
       Matchmaking room에서는 selected mode participant capacity가 채워지고 연결된 human session이 모두 attach되면 human WebSocket만 `Type: Ready` 이벤트를 받습니다. Payload의 full participant list에는 bot도 포함됩니다.
       연결된 human session이 각각 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다. Bot은 session, WebSocket, ready ACK, gameplay input이 없습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
-      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. SL-90의 internal addBots는 participant primitive이며 SL-91의 10초 automatic fill과 reconnect grace는 아직 제공하지 않습니다.
+      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하지만 matched/loading/starting disconnect는 pre-start cancel을 사용합니다. ClientTick/ACK 확장은 SL-94 범위입니다.
       일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
     bindings:
       ws:
@@ -86,7 +88,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Receive Ready event
-    summary: selected mode의 full participant가 준비되고 human session이 모두 연결된 뒤 map과 participant별 team, slot, bot identity, spawn 정보를 human client가 받습니다.
+    summary: selected mode의 full participant가 준비되고 human session이 모두 연결된 뒤 map과 participant별 team, slot, bot identity, spawn 정보를 human client가 받습니다. Ready payload는 full participant list를 포함하지만 human session만 Ready ACK를 보냅니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyEvent"
   sendReadyAck:

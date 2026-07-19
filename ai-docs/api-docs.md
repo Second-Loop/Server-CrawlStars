@@ -53,7 +53,7 @@ POST /rooms/{roomID}/players
 POST /rooms/{roomID}/start
 ```
 
-`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, human `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 participant capacity는 duel 2명, solo/team 6명이며 human과 internal bot을 합쳐 정원을 채웁니다. 그 뒤 room 내 human session만 attach/Ready ACK quorum에 들어가고 public `room.status: waiting`은 Ready/start 전까지 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
+`POST /matchmaking/join`은 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택하고, Unity client가 top-level `gameMode`, 같은 값의 `room.gameMode`, human `player`, `sessionToken`, tokenized `webSocketPath`를 한 번에 받을 수 있게 하는 simple connector입니다. Body가 없거나 빈 object이거나 `gameMode`가 빈 문자열이면 `duel_1v1`을 사용합니다. 선택 mode의 participant capacity는 duel 2명, solo/team 6명이며, 첫 human join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작하고 deadline은 남은 participant slot을 bot으로 채웁니다. 후속 join이나 partial manual bot 추가는 reset하지 않습니다. Timer와 late human join은 같은 matchmaking lock을 먼저 얻은 transition이 이기며, timer-first late join은 다른 waiting room을 찾거나 만들고 active cap이면 기존 `room_cap_reached` 409를 받습니다. Ready payload는 full participant를 담지만 human session만 attach/Ready ACK quorum에 들어가고 public `room.status: waiting`은 Ready/start 전까지 유지합니다. Production queue, rating, account auth, persistence는 없습니다.
 
 Join raw body가 1024 bytes를 초과하거나 JSON이 잘못되면 400 `invalid_request`, 지원하지 않는 non-empty mode면 400 `invalid_game_mode`를 반환합니다.
 
@@ -190,7 +190,7 @@ Match ready ACK:
 | `solo` | 6 | Room 내 human participant 전원 |
 | `team` | 6 | Room 내 human participant 전원 |
 
-Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. SL-90은 internal `addBots`만 제공하고, 이를 10초 뒤 호출하는 automatic fill은 SL-91 범위입니다.
+Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다. Bot ID 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Timer resource stop과 worker join은 lock 밖에서 수행합니다. ClientTick/ACK 확장은 SL-94 범위라 이 계약에는 추가하지 않습니다.
 
 Solo는 `solo-1`부터 `solo-6`까지 각 slot 0을 사용합니다. Team은 join 순서대로 `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2`를 사용합니다. Ready spawn과 첫 gameplay snapshot position은 같은 room-local `PlayerAssignments` 결과입니다. Fallback map에서는 player collision과 같은 기준으로 Wall과 Water를 spawn candidate에서 제외하고 Ground와 Bush를 허용합니다.
 
