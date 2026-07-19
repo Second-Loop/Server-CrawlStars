@@ -75,6 +75,22 @@ func TestPlayerAssignmentsUseMapDerivedFallbackSpawnsWhenNoSpawnTiles(t *testing
 	})
 }
 
+func TestPlayerAssignmentsSkipBlockingFallbackTiles(t *testing.T) {
+	config := assignmentTestConfig()
+	config.Map = noSpawnAssignmentMap()
+	config.Map.Map[1][1] = TileWater
+	config.Map.Map[config.Map.Height-2][config.Map.Width-2] = TileWall
+
+	assignments := PlayerAssignments([]PlayerID{"player-1"}, config)
+
+	assertPlayerAssignment(t, assignments, 0, PlayerAssignment{
+		ID:            "player-1",
+		Team:          TeamRed,
+		Slot:          0,
+		SpawnPosition: config.Map.WorldPos(config.Map.Width-2, 1),
+	})
+}
+
 func TestPlayerAssignmentsUseFallbackOnlyAfterSpawnPointsAreExhausted(t *testing.T) {
 	config := assignmentTestConfig()
 	config.Map = noSpawnAssignmentMap()

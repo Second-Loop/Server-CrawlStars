@@ -368,6 +368,33 @@ func TestStepAppliesPlayerTileCollisionPolicy(t *testing.T) {
 	}
 }
 
+func TestStepKeepsPlayerInsideMapBoundary(t *testing.T) {
+	gameMap := MapData{
+		Width: 4, Height: 4, MaxPlayers: 2, TileSize: TileSize,
+		Map: [][]TileType{
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+		},
+	}
+	step := DefaultPlayerSpeed * TickDuration
+	mapMinX := gameMap.WorldPos(0, 0).X - TileSize/2
+	start := Vector2{X: mapMinX + DefaultPlayerRadius + step - 0.001, Y: gameMap.WorldPos(0, 1).Y}
+	state := NewStateWithConfig([]PlayerData{{
+		ID: PlayerID("red-1"), Team: TeamRed, Slot: 0, Pos: start,
+	}}, Config{Map: gameMap})
+	if state.gameMap.Width != gameMap.Width || state.gameMap.Height != gameMap.Height {
+		t.Fatalf("expected 4x4 boundary test map, got %dx%d", state.gameMap.Width, state.gameMap.Height)
+	}
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID: PlayerID("red-1"), MoveDir: Vector2{X: -1},
+	}})
+
+	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, start)
+}
+
 func TestStepClampsDiagonalMovementWhenOtherAxisHitsWall(t *testing.T) {
 	component := 1 / math.Sqrt(2)
 	stepDistance := DefaultPlayerSpeed * TickDuration * component
