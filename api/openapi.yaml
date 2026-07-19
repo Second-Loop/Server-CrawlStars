@@ -39,8 +39,8 @@ paths:
         Raw request body가 1024 bytes를 초과하면 400 `invalid_request`로 거부합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
-        선택 mode의 required player 수가 차도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다.
-        모든 matched client가 WebSocket에 연결하면 `Type: Ready` 이벤트로 map과 player spawn 정보를 받고, 모두 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 room config의 tick rate로 snapshot broadcast를 시작합니다.
+        선택 mode의 participant capacity가 차도 REST 응답 shape는 유지하며 room은 `status: waiting`으로 남습니다. Room participant에는 human과 server-owned bot이 함께 들어갈 수 있습니다.
+        연결된 human WebSocket session이 attach quorum을 만족하면 각 human이 `Type: Ready` 이벤트로 bot을 포함한 full participant의 spawn 정보를 받습니다. 모든 human이 `Type: ready` ACK를 보내면 server가 countdown 시작 신호를 1번 보냅니다. Bot은 token, WebSocket, Ready ACK가 없습니다. Client는 fake timer를 표시하고, server는 5초를 내부에서 센 뒤 room을 `started`로 바꾸고 room config의 tick rate로 snapshot broadcast를 시작합니다.
         1명만으로 디버그하려면 `POST /rooms/{roomID}/start`를 호출합니다.
       operationId: joinMatchmaking
       requestBody:
@@ -286,7 +286,7 @@ paths:
       summary: debug room에 player 발급
       description: |
         수동 room 검증용 player를 추가하고, 최초 응답에서만 raw player session token을 발급합니다. 현재 fixture 기준 최대 player 수는 6명입니다.
-        Matchmaking room은 selected mode의 required player가 모두 들어와 lifecycle이 잠기면 추가 player를 받지 않습니다.
+        Matchmaking room은 selected mode의 participant capacity가 human과 bot으로 모두 차 lifecycle이 잠기면 추가 player를 받지 않습니다.
         Debug API는 기본 비활성화이며, 비활성화 상태에서는 route 자체가 없는 것처럼 404를 반환합니다.
       operationId: createRoomPlayer
       security:
@@ -330,7 +330,7 @@ paths:
       summary: debug room 시뮬레이션 시작
       description: |
         player가 1명 이상 있는 room을 `started`로 바꾸고 30Hz snapshot broadcast를 시작합니다.
-        매칭 flow에서는 선택 mode의 required player join 뒤 모든 WebSocket client가 Ready ACK를 보내고 server 내부 5초 countdown이 끝나면 자동으로 같은 전이가 일어납니다.
+        매칭 flow에서는 선택 mode의 participant capacity가 채워진 뒤 연결된 모든 human WebSocket client가 Ready ACK를 보내고 server 내부 5초 countdown이 끝나면 자동으로 같은 전이가 일어납니다.
         Debug API는 기본 비활성화이며, 비활성화 상태에서는 route 자체가 없는 것처럼 404를 반환합니다.
       operationId: startRoom
       security:
@@ -441,7 +441,7 @@ components:
         room:
           $ref: "#/components/schemas/Room"
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/HumanPlayer"
         sessionToken:
           $ref: "#/components/schemas/PlayerSessionToken"
         webSocketPath:
@@ -454,7 +454,7 @@ components:
       description: Debug player 발급 응답입니다. Server가 raw session token을 내보내는 발급 응답이며, 같은 secret이 `sessionToken`과 tokenized `webSocketPath` 두 field에 나타납니다. 공개 Room/Player payload에는 포함되지 않습니다.
       properties:
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/HumanPlayer"
         sessionToken:
           $ref: "#/components/schemas/PlayerSessionToken"
         webSocketPath:
@@ -482,7 +482,7 @@ components:
           enum: [waiting, started]
         players:
           type: array
-          description: room에 발급된 player 목록입니다.
+          description: human과 server-owned bot을 포함할 수 있는 room participant 목록입니다.
           items:
             $ref: "#/components/schemas/Player"
         maxPlayers:
@@ -496,7 +496,8 @@ components:
           $ref: "#/components/schemas/SnapshotSummary"
     Player:
       type: object
-      required: [id, team, slot]
+      description: Room에 참여하는 generic participant입니다. Human과 server-owned bot을 모두 나타낼 수 있습니다.
+      required: [id, team, slot, isBot]
       properties:
         id:
           $ref: "#/components/schemas/OpaquePlayerID"
@@ -508,6 +509,19 @@ components:
           type: integer
           description: team 안에서의 slot입니다.
           minimum: 0
+        isBot:
+          type: boolean
+          description: 서버가 소유해 session과 WebSocket credential이 없는 bot participant인지 나타냅니다.
+    HumanPlayer:
+      allOf:
+        - $ref: "#/components/schemas/Player"
+        - type: object
+          required: [isBot]
+          properties:
+            isBot:
+              type: boolean
+              const: false
+              description: Credential 발급 응답은 human player만 반환합니다.
     SnapshotSummary:
       type: object
       required: [tick, playerCount, projectileCount]

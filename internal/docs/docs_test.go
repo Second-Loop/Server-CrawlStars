@@ -67,17 +67,51 @@ func TestHandlerServesRawSpecs(t *testing.T) {
 	}
 }
 
-func TestHandlerServesModeAwareSixPlayerReadyContract(t *testing.T) {
+func TestHandlerServesBotIdentityContracts(t *testing.T) {
+	handler := Handler()
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	assertStatus(t, openAPI, http.StatusOK)
+	for _, marker := range []string{
+		"required: [id, team, slot, isBot]",
+		"HumanPlayer:",
+		"const: false",
+	} {
+		assertBodyContains(t, openAPI, marker)
+	}
+	if got := strings.Count(openAPI.Body.String(), `$ref: "#/components/schemas/HumanPlayer"`); got != 2 {
+		t.Fatalf("expected two credential-bearing HumanPlayer references, got %d", got)
+	}
+
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	for _, marker := range []string{
+		"version: 0.4.0",
+		"required: [Id, Team, Slot, IsBot, SpawnPosition]",
+		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
+		"IsBot: false",
+		"IsBot: true",
+	} {
+		assertBodyContains(t, asyncAPI, marker)
+	}
+
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	assertBodyContains(t, docsUI, `"IsBot": false`)
+	assertBodyContains(t, docsUI, `"IsBot": true`)
+}
+
+func TestHandlerServesBotParticipantReadyContract(t *testing.T) {
 	asyncAPI := request(Handler(), http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 
 	for _, want := range []string{
-		"version: 0.3.0",
-		"duel_1v1은 2명, solo와 team은 6명",
-		"6개의 서로 다른 WebSocket connection",
-		"각 player가 보낸 ready ACK",
+		"version: 0.4.0",
+		"duel_1v1은 2명, solo와 team은 6명의 participant capacity",
+		"Ready payload는 full participant list를 포함",
+		"연결된 human WebSocket session만 attach quorum",
+		"각 human player가 보낸 ready ACK",
 		"중복 ready ACK",
-		"Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다.",
+		"SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
 		"Wall과 Water",
 		"Ground와 Bush",
 		"        Players:\n          oneOf:",

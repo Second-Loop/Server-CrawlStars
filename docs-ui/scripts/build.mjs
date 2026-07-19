@@ -83,15 +83,15 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>2. Ready</h3>
-            <p>선택 mode의 required player가 모두 WebSocket에 붙으면 <code>Type: Ready</code>와 함께 숫자 배열 map, player별 <code>SpawnPosition</code>을 받습니다. <code>duel_1v1</code>은 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
+            <p>선택 mode의 participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 human client가 <code>Type: Ready</code>를 받습니다. Payload에는 bot을 포함한 full participant의 <code>IsBot</code>과 <code>SpawnPosition</code>이 들어갑니다. <code>duel_1v1</code> capacity는 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
           </article>
           <article>
             <h3>3. ready</h3>
-            <p>각 client는 준비가 끝나면 <code>{"Type":"ready"}</code>를 보냅니다.</p>
+            <p>각 human client는 준비가 끝나면 <code>{"Type":"ready"}</code>를 보냅니다. Bot은 WebSocket session과 ready ACK가 없습니다.</p>
           </article>
           <article>
             <h3>4. starting</h3>
-            <p>모두 ready면 countdown 시작 신호로 <code>Snapshot.status: starting</code>과 <code>Snapshot.countdown: 5</code>를 1번 받습니다.</p>
+            <p>연결된 human session이 모두 ready면 countdown 시작 신호로 <code>Snapshot.status: starting</code>과 <code>Snapshot.countdown: 5</code>를 1번 받습니다.</p>
           </article>
           <article>
             <h3>5. started</h3>
@@ -150,7 +150,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Ready Event</h3>
-            <p>Server가 <code>Type: Ready</code>, <code>Map</code>, <code>Players[].SpawnPosition</code>을 보냅니다.</p>
+            <p>Server가 human session에 <code>Type: Ready</code>, <code>Map</code>, bot을 포함한 <code>Players[].IsBot</code>과 <code>Players[].SpawnPosition</code>을 보냅니다.</p>
           </article>
           <article>
             <h3>Ready ACK</h3>
@@ -186,7 +186,15 @@ function renderAsyncAPI(specText) {
       "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
       "Team": "red",
       "Slot": 0,
+      "IsBot": false,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
+    },
+    {
+      "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
+      "Team": "blue",
+      "Slot": 0,
+      "IsBot": true,
+      "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
 }</code></pre>
@@ -217,7 +225,36 @@ function renderAsyncAPI(specText) {
   "Snapshot": {
     "status": "started",
     "Tick": 1,
-    "Players": [],
+    "Players": [
+      {
+        "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
+        "Team": "red",
+        "Slot": 0,
+        "IsBot": false,
+        "Pos": { "x": -1.2, "y": 1.2 },
+        "MoveDir": { "x": 0, "y": 0 },
+        "AttackDir": { "x": 0, "y": 0 },
+        "Speed": 2,
+        "Radius": 0.5,
+        "HP": 100,
+        "PressedAttack": false,
+        "IsDead": false
+      },
+      {
+        "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Team": "blue",
+        "Slot": 0,
+        "IsBot": true,
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "MoveDir": { "x": -1, "y": 0 },
+        "AttackDir": { "x": -1, "y": 0 },
+        "Speed": 2,
+        "Radius": 0.5,
+        "HP": 100,
+        "PressedAttack": true,
+        "IsDead": false
+      }
+    ],
     "Projectiles": null
   }
 }</code></pre>

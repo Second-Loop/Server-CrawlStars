@@ -13,6 +13,7 @@
 - selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP, death snapshot
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
+- session/credential 없는 server-owned bot participant와 결정적 basic controller
 - start 전 match cancel
 - opaque room/player ID와 player session WebSocket 인증
 - 기본 비활성화된 debug REST Bearer guard
@@ -24,7 +25,8 @@
 
 아직 구현하지 않은 것:
 
-- bot replacement와 별도 reconnect grace
+- SL-91의 10초 automatic bot fill, bot replacement와 별도 reconnect grace
+- pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
 - production matchmaking queue
 
@@ -90,6 +92,8 @@ Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다.
 Mode/team rule도 server-only입니다. REST join response와 Room은 선택된 mode ID만 `gameMode`로 노출하고 `friendlyFire`, `teamBehavior`, 전체 catalog는 노출하지 않습니다. Projectile hit은 room-local selected mode rules를 사용합니다. Solo는 owner가 아닌 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 이 동작은 WebSocket message shape를 바꾸지 않습니다.
 Attack charge와 recharge 진행도도 server-only state이며 client config나 snapshot에 새 field로 노출하지 않습니다.
 
+Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge는 계속 `internal/simulation`이 판정합니다.
+
 ## WebSocket 계약
 
 ```text
@@ -134,13 +138,42 @@ Server snapshot:
   "Snapshot": {
     "status": "started",
     "Tick": 1,
-    "Players": [],
-    "Projectiles": []
+    "Players": [
+      {
+        "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
+        "Team": "red",
+        "Slot": 0,
+        "IsBot": false,
+        "Pos": { "x": -1.2, "y": 1.2 },
+        "MoveDir": { "x": 0, "y": 0 },
+        "AttackDir": { "x": 0, "y": 0 },
+        "Speed": 2,
+        "Radius": 0.5,
+        "HP": 100,
+        "PressedAttack": false,
+        "IsDead": false
+      },
+      {
+        "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Team": "blue",
+        "Slot": 0,
+        "IsBot": true,
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "MoveDir": { "x": -1, "y": 0 },
+        "AttackDir": { "x": -1, "y": 0 },
+        "Speed": 2,
+        "Radius": 0.5,
+        "HP": 100,
+        "PressedAttack": true,
+        "IsDead": false
+      }
+    ],
+    "Projectiles": null
   }
 }
 ```
 
-Matchmaking room은 선택 mode의 matched player가 모두 WebSocket에 연결되면 먼저 `Ready` event를 보냅니다. 이 event는 client가 map을 렌더하고 player spawn을 배치하는 기준 데이터입니다.
+Matchmaking room은 선택 mode의 full participant capacity를 채운 뒤 room 내 human participant의 WebSocket session이 모두 연결되면 human session에만 `Ready` event를 보냅니다. Human participant가 0명이면 이 gate는 성립하지 않습니다. 이 event는 client가 map을 렌더하고 bot을 포함한 full participant spawn을 배치하는 기준 데이터입니다.
 
 Ready event:
 
@@ -166,19 +199,21 @@ Ready event:
       "Id": "player_VuTsRqPoNmLkJiHgFeDcBa",
       "Team": "red",
       "Slot": 0,
+      "IsBot": false,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
     },
     {
       "Id": "player_AbCdEfGhIjKlMnOpQrStUv",
       "Team": "blue",
       "Slot": 0,
+      "IsBot": true,
       "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
 }
 ```
 
-예시는 exact 2-player duel cardinality와 5x5 fallback map 기준입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
+예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 5x5 fallback map 기준입니다. Ready는 human session에만 전달하지만 payload의 `Players`는 bot을 포함한 full participant list입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
 
 Ready ACK:
 
@@ -288,7 +323,8 @@ Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"
       {
         "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
         "team": "solo-1",
-        "slot": 0
+        "slot": 0,
+        "isBot": false
       }
     ],
     "maxPlayers": 6,
@@ -315,7 +351,8 @@ Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"
   "player": {
     "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
     "team": "solo-1",
-    "slot": 0
+    "slot": 0,
+    "isBot": false
   },
   "sessionToken": "<player-session-token>",
   "webSocketPath": "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
@@ -330,15 +367,17 @@ Join handler는 `client IP resolve → token-bucket quota 평가/소비 → body
 
 Immediate peer가 `TRUSTED_PROXY_CIDRS`에 속하고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 forwarded client IP를 씁니다. Header가 absent/malformed/multiple이면 peer bucket으로 fallback하고 `X-Forwarded-For`는 무시합니다.
 
-선택 mode의 required player 수가 차도 `room.status`는 `waiting`입니다. 해당 room은 matchmaking match로 잠겨 late join 대상에서 빠집니다.
+Human과 bot을 합친 participant가 selected mode의 capacity 2명 또는 6명을 채워도 `room.status`는 `waiting`입니다. 해당 room은 matchmaking match로 잠겨 late join 대상에서 빠집니다.
 
-Selected mode의 required player 2명 또는 6명이 각각 서로 다른 WebSocket에 연결하면 모든 connection이 같은 `Type: "Ready"` event를 받습니다. Ready event에는 JSON number array 형태의 `Map.map`과 room-local assignment의 `Players[].Team`, `Slot`, `SpawnPosition`이 들어갑니다. Duel은 서로 다른 2명, Solo/Team은 서로 다른 6명의 human player session이 `{"Type":"ready"}`를 보내야 합니다. 같은 player의 중복 ACK는 idempotent하며 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Quorum 뒤 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 connection당 1번 보내고, 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 1번 보낸 다음 room-local simulation ticker 하나를 시작합니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 없습니다.
+Full participant gate를 통과한 뒤 연결된 human participant의 WebSocket session이 모두 attach되면 human session에만 같은 `Type: "Ready"` event를 보냅니다. Ready payload에는 bot을 포함한 full participant list와 JSON number array 형태의 `Map.map`, room-local assignment의 `Players[].Team`, `Slot`, `IsBot`, `SpawnPosition`이 들어갑니다. Bot은 WebSocket sender나 Ready ACK 주체가 아닙니다. 서로 다른 human player가 모두 `{"Type":"ready"}`를 보내야 하며, 같은 player의 중복 ACK는 idempotent하고 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Human-only quorum 뒤 server는 `Snapshot.status: "starting"`과 `Snapshot.countdown: 5`를 human connection당 1번 보내고, 5초를 내부에서 센 뒤 `Snapshot.status: "started"`를 1번 보낸 다음 room-local simulation ticker 하나를 시작합니다.
+
+SL-90의 `addBots`는 이미 생성된 waiting room의 남은 participant capacity를 채우는 internal primitive입니다. Bot ID만 예약하며 session token, WebSocket path, Ready ACK를 만들지 않습니다. 언제 몇 명을 채울지 결정하는 10초 automatic fill 정책은 SL-91 범위이고 아직 구현하지 않았습니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement도 없습니다.
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
 Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 runtime source가 아니라 테스트와 legacy 호환 확인용 fixture입니다.
 
-`room.maxPlayers`와 `room.map.maxPlayers`는 map/debug room capacity를 뜻하며 runtime map과 5x5 fallback map 모두 6입니다. Matchmaking required players는 room-local selected mode의 `playersPerMatch`입니다. `duel_1v1`은 2명, `solo`와 `team`은 6명이며 다른 mode끼리는 waiting room을 공유하지 않습니다. Solo team 값은 `solo-1`부터 `solo-6`, team mode assignment는 `red/0, blue/0, red/1, blue/1, red/2, blue/2`입니다.
+`room.maxPlayers`와 `room.map.maxPlayers`는 map/debug room capacity를 뜻하며 runtime map과 5x5 fallback map 모두 6입니다. Matchmaking required participant 수는 room-local selected mode의 `playersPerMatch`입니다. `duel_1v1`은 2명, `solo`와 `team`은 6명이며 다른 mode끼리는 waiting room을 공유하지 않습니다. Solo team 값은 `solo-1`부터 `solo-6`, team mode assignment는 `red/0, blue/0, red/1, blue/1, red/2, blue/2`입니다.
 
 `SL-58`에서는 당시 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message를 추가했습니다. `SL-81` Stack 3은 transport credential을 위해 `sessionToken`과 tokenized `webSocketPath`를 발급합니다. REST polling이나 SSE는 늘리지 않습니다.
 
@@ -381,7 +420,7 @@ DELETE /rooms/{roomID}
 11. Terminal ticker가 먼저 멈추고 모든 close가 끝난 뒤 room registry와 player ID가 정리되어야 합니다.
 12. invalid JSON 이후에도 다음 snapshot stream은 유지되어야 합니다.
 
-## Solo/Team 6인 검증 시나리오
+## Solo/Team human-only 6인 검증 시나리오
 
 1. 같은 `gameMode`로 `POST /matchmaking/join`을 6번 호출하고 여섯 응답의 `room.id`와 `gameMode`가 같은지 확인합니다.
 2. 여섯 secret-bearing `webSocketPath`로 서로 다른 WebSocket connection을 열고 raw token/query를 log에 남기지 않습니다.
@@ -401,7 +440,7 @@ DELETE /rooms/{roomID}
 16. Ending room은 hard TTL/debug delete에서 보호되고, 정상 cleanup은 모든 `closeDone` 뒤에 registry/player ID를 정리해야 합니다.
 17. Forced `Shutdown`은 registry/player ID를 먼저 detach할 수 있지만 cleanup worker와 session lifecycle을 join하고 normal cleanup signal/`room_ended`를 만들지 않아야 합니다.
 
-Ready timeout, reconnect grace, reconnect participant replacement, bot fill은 이 흐름에 없습니다. Start 전 실제 disconnect는 기존 pre-start cancel로 room과 남은 connection을 정리합니다.
+이 시나리오는 bot을 넣지 않은 human-only 회귀 경로입니다. SL-90의 internal `addBots`를 사용한 경로에서는 participant 6명을 먼저 채우고 human session만 attach/ACK하며, human에게 전달된 Ready와 gameplay snapshot에는 bot을 포함한 6명 전체가 나타나야 합니다. SL-91의 10초 automatic fill은 아직 없습니다. Start 전 실제 human disconnect는 기존 pre-start cancel로 room과 남은 connection을 정리합니다.
 
 자동 검증은 `go test ./internal/rooms`와 `go test ./internal/simulation`이 담당합니다.
 

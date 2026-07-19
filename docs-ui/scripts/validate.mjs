@@ -84,8 +84,8 @@ for (const operationID of debugOperationIDs) {
 }
 const startRoomOperation = extractOpenAPIOperation(openAPIText, "startRoom");
 assert(
-  startRoomOperation.includes("선택 mode의 required player"),
-  "startRoom must describe matchmaking start using the selected mode player count",
+  startRoomOperation.includes("선택 mode의 participant capacity") && startRoomOperation.includes("human WebSocket client"),
+  "startRoom must distinguish participant capacity from the human Ready quorum",
 );
 assert(
   !startRoomOperation.includes("두 WebSocket client"),
@@ -267,18 +267,19 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 for (const marker of [
-  "duel_1v1은 2명, solo와 team은 6명",
-  "6개의 서로 다른 WebSocket connection",
-  "각 player가 보낸 ready ACK",
+  "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
+  "Ready payload는 full participant list를 포함",
+  "연결된 human WebSocket session만 attach quorum",
+  "각 human player가 보낸 ready ACK",
   "중복 ready ACK",
-  "Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다.",
+  "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
   "Wall과 Water",
   "Ground와 Bush",
 ]) {
   assert(asyncAPIText.includes(marker), `api/asyncapi.yaml must document ${marker}`);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.3.0"), "api/asyncapi.yaml must publish version 0.3.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.4.0"), "api/asyncapi.yaml must publish version 0.4.0");
 const modeTeamEnum = "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]";
 assert(
   countOccurrences(asyncAPIText, modeTeamEnum) === 2,
@@ -297,12 +298,12 @@ assert(
   "Ready Players must allow only exact array cardinalities 2 or 6",
 );
 assert(
-  asyncAPIText.includes("선택 mode의 required player"),
-  "api/asyncapi.yaml must describe Ready using the selected mode player count",
+  asyncAPIText.includes("participant capacity") && asyncAPIText.includes("human session"),
+  "api/asyncapi.yaml must distinguish participant capacity from the human session quorum",
 );
 assert(
-  !asyncAPIText.includes("두 matched client") && !asyncAPIText.includes("두 client가 모두 연결"),
-  "api/asyncapi.yaml must not hard-code the duel Ready client count",
+  !asyncAPIText.includes("두 matched client") && !asyncAPIText.includes("두 client가 모두 연결") && !asyncAPIText.includes("6개의 서로 다른 WebSocket connection"),
+  "api/asyncapi.yaml must not describe participant capacity as an all-human connection count",
 );
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
 for (const schemaName of ["ReadyEventMessage", "SnapshotMessage", "Snapshot", "GameEndMessage", "ReadyPlayer", "PlayerData"]) {
@@ -313,6 +314,8 @@ assertOpaqueIDExamples(asyncAPIText, "api/asyncapi.yaml");
 assertNoBacktickStartedPlainScalars(asyncAPIText, "api/asyncapi.yaml");
 assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
+validateBotIdentitySchemas();
+
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
 assert(
@@ -320,14 +323,14 @@ assert(
   "docs UI must show the selected gameMode in the join response",
 );
 assert(
-  docsBuildText.includes("선택 mode의 required player"),
-  "docs UI must describe Ready using the selected mode player count",
+  docsBuildText.includes("선택 mode의 participant capacity") && docsBuildText.includes("human WebSocket session"),
+  "docs UI must distinguish participant capacity from the human WebSocket quorum",
 );
 assert(
-  !docsBuildText.includes("두 player가 모두 WebSocket"),
-  "docs UI must not hard-code the duel Ready player count",
+  !docsBuildText.includes("6 human connection") && !docsBuildText.includes("bot fill 없음"),
+  "docs UI must not describe the participant capacity as all-human or claim bot absence",
 );
-for (const marker of ["optional `gameMode`", "선택 mode의 required player", "raw body가 1024 bytes"]) {
+for (const marker of ["optional `gameMode`", "participant capacity", "human session", "raw body가 1024 bytes"]) {
   assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
 }
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
@@ -414,6 +417,122 @@ function extractYAMLNamedBlock(text, marker) {
     end += 1;
   }
   return lines.slice(start, end).join("\n");
+}
+
+function extractYAMLSequenceObjects(text, propertyName) {
+  const lines = text.split(/\r?\n/);
+  const objects = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = new RegExp(`^(\\s*)${propertyName}:$`).exec(lines[index]);
+    if (!match) continue;
+    const itemIndent = match[1].length + 2;
+    const itemPrefix = `${" ".repeat(itemIndent)}- `;
+    let cursor = index + 1;
+    let current = [];
+    while (cursor < lines.length) {
+      const line = lines[cursor];
+      const indent = line.length - line.trimStart().length;
+      if (line.trim() && indent <= match[1].length) break;
+      if (line.startsWith(itemPrefix)) {
+        if (current.length > 0) objects.push(current.join("\n"));
+        current = [line];
+      } else if (current.length > 0) {
+        current.push(line);
+      }
+      cursor += 1;
+    }
+    if (current.length > 0) objects.push(current.join("\n"));
+  }
+  return objects;
+}
+
+function assertEveryExamplePlayerHasIsBot(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const flags = object.match(/^\s+IsBot:\s+(?:true|false)$/gm) ?? [];
+    assert(flags.length === 1, `${name} player ${index} must contain exactly one boolean IsBot`);
+  }
+}
+
+function extractDocsJSONExample(heading) {
+  const examplesStart = docsBuildText.indexOf("<h2>예시</h2>");
+  assert(examplesStart >= 0, "docs UI must include examples section");
+  const headingStart = docsBuildText.indexOf(`<h3>${heading}</h3>`, examplesStart);
+  assert(headingStart >= 0, `docs UI is missing ${heading} example`);
+  const opening = "<pre><code>";
+  const codeStart = docsBuildText.indexOf(opening, headingStart);
+  const codeEnd = docsBuildText.indexOf("</code></pre>", codeStart);
+  assert(codeStart >= 0 && codeEnd > codeStart, `docs UI ${heading} JSON is missing`);
+  return JSON.parse(docsBuildText.slice(codeStart + opening.length, codeEnd));
+}
+
+function assertEveryJSONPlayerHasIsBot(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.hasOwn(player, "IsBot"), `${name} player ${index} is missing IsBot`);
+    assert(typeof player.IsBot === "boolean", `${name} player ${index} IsBot must be boolean`);
+  }
+}
+
+function validateBotIdentitySchemas() {
+  assertSchemaContains(openAPIText, "Player", [
+    "required: [id, team, slot, isBot]",
+    "isBot:",
+    "type: boolean",
+  ]);
+  assertSchemaContains(openAPIText, "HumanPlayer", [
+    '$ref: "#/components/schemas/Player"',
+    "const: false",
+  ]);
+  assertSchemaContains(openAPIText, "MatchmakingJoin", [
+    '$ref: "#/components/schemas/HumanPlayer"',
+  ]);
+  assertSchemaContains(openAPIText, "PlayerSessionResponse", [
+    '$ref: "#/components/schemas/HumanPlayer"',
+  ]);
+  assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
+
+  assert(hasLine(asyncAPIText, "  version: 0.4.0"), "AsyncAPI version must be 0.4.0");
+  assertSchemaContains(asyncAPIText, "ReadyPlayer", [
+    "required: [Id, Team, Slot, IsBot, SpawnPosition]",
+  ]);
+  assertSchemaContains(asyncAPIText, "PlayerData", [
+    "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]",
+  ]);
+  for (const marker of [
+    "duel_1v1은 2명, solo와 team은 6명의 participant capacity",
+    "Ready payload는 full participant list를 포함",
+    "연결된 human WebSocket session만 attach quorum",
+    "각 human player가 보낸 ready ACK",
+    "중복 ready ACK",
+    "SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91",
+  ]) {
+    assert(asyncAPIText.includes(marker), `AsyncAPI must document ${marker}`);
+  }
+
+  const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
+  const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");
+  const readyPlayers = extractYAMLSequenceObjects(readyMessage, "Players");
+  const gameplayPlayers = extractYAMLSequenceObjects(snapshotMessage, "Players");
+  assertEveryExamplePlayerHasIsBot(readyPlayers, "AsyncAPI Ready examples");
+  assertEveryExamplePlayerHasIsBot(gameplayPlayers, "AsyncAPI gameplay examples");
+  assert(readyPlayers.some((object) => object.includes("IsBot: false")), "Ready must show a human");
+  assert(readyPlayers.some((object) => object.includes("IsBot: true")), "Ready must show a bot");
+  assert(gameplayPlayers.some((object) => object.includes("IsBot: false")), "Gameplay must show a human");
+  assert(gameplayPlayers.some((object) => object.includes("IsBot: true")), "Gameplay must show a bot");
+
+  const docsReady = extractDocsJSONExample("Ready Event");
+  const docsGameplay = extractDocsJSONExample("Gameplay");
+  assertEveryJSONPlayerHasIsBot(docsReady.Players, "docs UI Ready example");
+  assertEveryJSONPlayerHasIsBot(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
+  for (const [players, name] of [
+    [docsReady.Players, "docs UI Ready example"],
+    [docsGameplay.Snapshot.Players, "docs UI Gameplay example"],
+  ]) {
+    assert(players.some((player) => player.IsBot === false), `${name} must show a human`);
+    assert(players.some((player) => player.IsBot === true), `${name} must show a bot`);
+  }
 }
 
 function assertSchemaContains(text, schemaName, markers) {
