@@ -580,7 +580,17 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 			}
 			continue
 		}
-		s.setInput(roomID, playerID, input, session)
+		if s.setInput(roomID, playerID, input, session) == inputInvalid {
+			if !enqueueControlMessage(session, errorMessage{
+				Type: "error",
+				Error: apiError{
+					Code:    "invalid_input",
+					Message: "invalid input",
+				},
+			}) {
+				return
+			}
+		}
 	}
 }
 
@@ -786,28 +796,50 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 	}
 }
 
-func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) {
+func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) inputDisposition {
 	if !s.beginMutation() {
-		return
+		return inputIgnored
 	}
 	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
 	if room == nil {
-		return
+		return inputIgnored
 	}
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if room.removed || room.ending || !room.hasPlayer(playerID) || room.hasFinalizedGameEndResult(playerID) || expectedSession == nil || room.clients[playerID] != expectedSession {
-		return
+		return inputIgnored
+	}
+	if input.ClientTick < 0 {
+		return inputInvalid
+	}
+	playerTick := lastProcessedClientTick(room.lastPlayers, simulation.PlayerID(playerID))
+	if input.ClientTick > 0 && input.ClientTick <= playerTick {
+		return inputIgnored
+	}
+	if pending, ok := room.pendingInputs[playerID]; ok &&
+		input.ClientTick > 0 && pending.ClientTick > 0 && input.ClientTick <= pending.ClientTick {
+		return inputIgnored
 	}
 	room.lastActivityAt = s.clock.Now()
 	room.pendingInputs[playerID] = simulation.InputCommand{
 		PlayerID:      simulation.PlayerID(playerID),
+		ClientTick:    input.ClientTick,
 		MoveDir:       input.MoveDir,
 		AttackDir:     input.AttackDir,
 		PressedAttack: input.PressedAttack,
 	}
+	return inputStored
+}
+
+func lastProcessedClientTick(players []simulation.PlayerData, playerID simulation.PlayerID) int64 {
+	for _, player := range players {
+		if player.ID == playerID {
+			return player.LastProcessedClientTick
+		}
+	}
+	return 0
 }
 
 func (s *Store) markClientReady(roomID string, playerID string, expectedSession *clientSession) {

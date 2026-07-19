@@ -70,10 +70,19 @@ type apiError struct {
 }
 
 type inputMessage struct {
+	ClientTick    int64              `json:"ClientTick"`
 	MoveDir       simulation.Vector2 `json:"MoveDir"`
 	AttackDir     simulation.Vector2 `json:"AttackDir"`
 	PressedAttack bool               `json:"PressedAttack"`
 }
+
+type inputDisposition uint8
+
+const (
+	inputIgnored inputDisposition = iota
+	inputStored
+	inputInvalid
+)
 
 type inputEnvelope struct {
 	Type string `json:"Type"`

@@ -55,6 +55,14 @@ type modeTickHarness struct {
 	writeRelease  map[int]func()
 }
 
+type clientTickWebSocketFixture struct {
+	clock       *fakeClock
+	store       *Store
+	room        roomResponse
+	players     []issuedPlayer
+	connections []*websocket.Conn
+}
+
 type countingJSONMessage struct {
 	calls *atomic.Int32
 }
@@ -4336,6 +4344,254 @@ func TestWaitingRoomAcceptsInputButDoesNotBroadcastSnapshot(t *testing.T) {
 	}
 }
 
+func TestSetInputKeepsHighestPositiveClientTick(t *testing.T) {
+	store, room, playerID, session := inputSelectionFixture(t)
+
+	for _, test := range []struct {
+		tick int64
+		move simulation.Vector2
+		want inputDisposition
+	}{
+		{tick: 10, move: simulation.Vector2{X: 1}, want: inputStored},
+		{tick: 11, move: simulation.Vector2{Y: 1}, want: inputStored},
+		{tick: 12, move: simulation.Vector2{X: -1}, want: inputStored},
+		{tick: 11, move: simulation.Vector2{Y: -1}, want: inputIgnored},
+		{tick: 12, move: simulation.Vector2{Y: -1}, want: inputIgnored},
+	} {
+		if got := store.setInput(room.ID, playerID, inputMessage{
+			ClientTick: test.tick,
+			MoveDir:    test.move,
+		}, session); got != test.want {
+			t.Fatalf("setInput tick %d disposition=%v, want %v", test.tick, got, test.want)
+		}
+	}
+
+	room.mu.Lock()
+	got := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if got.ClientTick != 12 || got.MoveDir != (simulation.Vector2{X: -1}) {
+		t.Fatalf("pending input=%+v, want tick 12 with its complete command", got)
+	}
+}
+
+func TestSetInputDropsPositiveTickAtOrBelowLastProcessed(t *testing.T) {
+	store, room, playerID, session := inputSelectionFixture(t)
+	room.mu.Lock()
+	for index := range room.lastPlayers {
+		if string(room.lastPlayers[index].ID) == playerID {
+			room.lastPlayers[index].LastProcessedClientTick = 12
+		}
+	}
+	room.mu.Unlock()
+
+	for _, tick := range []int64{11, 12} {
+		if got := store.setInput(room.ID, playerID, inputMessage{ClientTick: tick}, session); got != inputIgnored {
+			t.Fatalf("setInput processed tick %d disposition=%v, want ignored", tick, got)
+		}
+	}
+	room.mu.Lock()
+	_, staleStored := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if staleStored {
+		t.Fatal("positive tick at or below applied ACK must not become pending")
+	}
+
+	if got := store.setInput(room.ID, playerID, inputMessage{ClientTick: 13}, session); got != inputStored {
+		t.Fatalf("setInput higher tick disposition=%v, want stored", got)
+	}
+	room.mu.Lock()
+	pending := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if pending.ClientTick != 13 {
+		t.Fatalf("pending ClientTick=%d, want 13", pending.ClientTick)
+	}
+}
+
+func TestSetInputLetsLegacyZeroOverwritePendingClientTick(t *testing.T) {
+	store, room, playerID, session := inputSelectionFixture(t)
+	if got := store.setInput(room.ID, playerID, inputMessage{
+		ClientTick: 12,
+		MoveDir:    simulation.Vector2{X: 1},
+	}, session); got != inputStored {
+		t.Fatalf("setInput positive disposition=%v, want stored", got)
+	}
+	if got := store.setInput(room.ID, playerID, inputMessage{
+		MoveDir: simulation.Vector2{Y: 1},
+	}, session); got != inputStored {
+		t.Fatalf("setInput legacy zero disposition=%v, want stored", got)
+	}
+
+	room.mu.Lock()
+	pending := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if pending.ClientTick != 0 || pending.MoveDir != (simulation.Vector2{Y: 1}) {
+		t.Fatalf("pending input=%+v, want legacy zero command to overwrite positive pending", pending)
+	}
+}
+
+func TestWebSocketNegativeClientTickReturnsInvalidInputAndPreservesPending(t *testing.T) {
+	fixture := newClientTickWebSocketFixture(t, 1)
+	player := fixture.players[0]
+	conn := fixture.connections[0]
+
+	writeWSJSON(t, conn, inputMessage{ClientTick: 12, MoveDir: simulation.Vector2{X: 1}})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, player.ID, 12)
+	writeWSJSON(t, conn, inputMessage{ClientTick: -1, MoveDir: simulation.Vector2{Y: 1}})
+
+	message := readErrorMessage(t, conn)
+	if message.Type != "error" || message.Error.Code != "invalid_input" {
+		t.Fatalf("negative ClientTick error=%+v, want invalid_input", message)
+	}
+	room := fixture.store.lookupRoom(fixture.room.ID)
+	room.mu.Lock()
+	pending := room.pendingInputs[player.ID]
+	room.mu.Unlock()
+	if pending.ClientTick != 12 || pending.MoveDir != (simulation.Vector2{X: 1}) {
+		t.Fatalf("negative ClientTick mutated pending input: %+v", pending)
+	}
+}
+
+func TestWebSocketStaleAndDuplicatePositiveClientTicksAreSilent(t *testing.T) {
+	fixture := newClientTickWebSocketFixture(t, 1)
+	player := fixture.players[0]
+	conn := fixture.connections[0]
+
+	writeWSJSON(t, conn, inputMessage{ClientTick: 12, MoveDir: simulation.Vector2{X: 1}})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, player.ID, 12)
+	fixture.clock.TickTicker(gameplayInterval, 0)
+	first := readSnapshotMessage(t, conn)
+	if got := findSnapshotPlayer(t, first.Snapshot, simulation.PlayerID(player.ID)).LastProcessedClientTick; got != 12 {
+		t.Fatalf("first ACK=%d, want 12", got)
+	}
+
+	writeWSJSON(t, conn, inputMessage{ClientTick: 11, MoveDir: simulation.Vector2{Y: 1}})
+	writeWSJSON(t, conn, inputMessage{ClientTick: 12, MoveDir: simulation.Vector2{Y: 1}})
+	writeWSJSON(t, conn, inputMessage{ClientTick: 13, MoveDir: simulation.Vector2{X: -1}})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, player.ID, 13)
+	fixture.clock.TickTicker(gameplayInterval, 0)
+
+	payload := readWebSocketPayload(t, conn)
+	var second snapshotMessage
+	if err := json.Unmarshal(payload, &second); err != nil {
+		t.Fatalf("decode snapshot after silent stale inputs: %v", err)
+	}
+	if second.Type != "snapshot" {
+		t.Fatalf("stale/duplicate positive tick emitted control payload instead of staying silent: %s", payload)
+	}
+	updated := findSnapshotPlayer(t, second.Snapshot, simulation.PlayerID(player.ID))
+	if updated.LastProcessedClientTick != 13 || updated.MoveDir != (simulation.Vector2{X: -1}) {
+		t.Fatalf("next admissible input was not processed intact: %+v", updated)
+	}
+}
+
+func TestWebSocketAcknowledgesClientTickOnlyAfterGameplayStep(t *testing.T) {
+	fixture := newClientTickWebSocketFixture(t, 1)
+	player := fixture.players[0]
+	conn := fixture.connections[0]
+
+	writeWSJSON(t, conn, inputMessage{ClientTick: 7})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, player.ID, 7)
+	room := fixture.store.lookupRoom(fixture.room.ID)
+	room.mu.Lock()
+	before := lastProcessedClientTick(room.lastPlayers, simulation.PlayerID(player.ID))
+	room.mu.Unlock()
+	if before != 0 {
+		t.Fatalf("ACK before gameplay Step=%d, want 0", before)
+	}
+
+	fixture.clock.TickTicker(gameplayInterval, 0)
+	after := readSnapshotMessage(t, conn)
+	if got := findSnapshotPlayer(t, after.Snapshot, simulation.PlayerID(player.ID)).LastProcessedClientTick; got != 7 {
+		t.Fatalf("ACK after gameplay Step=%d, want 7", got)
+	}
+}
+
+func TestWebSocketClientTickACKsAreIndependent(t *testing.T) {
+	fixture := newClientTickWebSocketFixture(t, 2)
+	red, blue := fixture.players[0], fixture.players[1]
+	redConn, blueConn := fixture.connections[0], fixture.connections[1]
+
+	writeWSJSON(t, redConn, inputMessage{ClientTick: 7})
+	writeWSJSON(t, blueConn, inputMessage{ClientTick: 11})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, red.ID, 7)
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, blue.ID, 11)
+	first := tickAndReadMatchingSnapshots(t, fixture.clock, redConn, blueConn)
+	if got := findSnapshotPlayer(t, first.Snapshot, simulation.PlayerID(red.ID)).LastProcessedClientTick; got != 7 {
+		t.Fatalf("red ACK=%d, want 7", got)
+	}
+	if got := findSnapshotPlayer(t, first.Snapshot, simulation.PlayerID(blue.ID)).LastProcessedClientTick; got != 11 {
+		t.Fatalf("blue ACK=%d, want 11", got)
+	}
+
+	writeWSJSON(t, redConn, inputMessage{ClientTick: 8})
+	waitForPendingClientTick(t, fixture.store, fixture.room.ID, red.ID, 8)
+	second := tickAndReadMatchingSnapshots(t, fixture.clock, redConn, blueConn)
+	if got := findSnapshotPlayer(t, second.Snapshot, simulation.PlayerID(red.ID)).LastProcessedClientTick; got != 8 {
+		t.Fatalf("red second ACK=%d, want 8", got)
+	}
+	if got := findSnapshotPlayer(t, second.Snapshot, simulation.PlayerID(blue.ID)).LastProcessedClientTick; got != 11 {
+		t.Fatalf("blue ACK changed without input: %d, want 11", got)
+	}
+}
+
+func TestWebSocketClientTickLifecycleKeepsControlPlayersNull(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	defer store.Close()
+
+	joined := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	conn := dialIssuedPlayer(t, server.URL, joined.WebSocketPath)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForAttachedClient(t, store, joined.Room.ID, joined.Player.ID)
+	if bots, err := store.addBots(joined.Room.ID, 1); err != nil || len(bots) != 1 {
+		t.Fatalf("fill Duel with bot: bots=%+v err=%v", bots, err)
+	}
+	_ = readReadyEventMessage(t, conn)
+
+	writeWSJSON(t, conn, inputMessage{ClientTick: 9})
+	waitForPendingClientTick(t, store, joined.Room.ID, joined.Player.ID, 9)
+	writeWSJSON(t, conn, readyMessage{Type: "ready"})
+	waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarting, 1, 1)
+	startingPayload := readWebSocketPayload(t, conn)
+	assertControlSnapshotPlayersNull(t, startingPayload, MatchStatusStarting)
+
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+	waitForMatchLifecycleState(t, store, joined.Room.ID, MatchStatusStarted, 1, 1)
+	startedPayload := readWebSocketPayload(t, conn)
+	assertControlSnapshotPlayersNull(t, startedPayload, MatchStatusStarted)
+
+	fakeClock.TickTicker(gameplayInterval, 0)
+	gameplayPayload := readWebSocketPayload(t, conn)
+	var gameplay snapshotMessage
+	if err := json.Unmarshal(gameplayPayload, &gameplay); err != nil {
+		t.Fatalf("decode first gameplay snapshot: %v", err)
+	}
+	if gameplay.Type != "snapshot" || gameplay.Snapshot.Tick != 1 {
+		t.Fatalf("first gameplay payload=%s, want snapshot Tick 1", gameplayPayload)
+	}
+	if got := findSnapshotPlayer(t, gameplay.Snapshot, simulation.PlayerID(joined.Player.ID)).LastProcessedClientTick; got != 9 {
+		t.Fatalf("first gameplay ACK=%d, want 9", got)
+	}
+	var envelope struct {
+		Snapshot struct {
+			Players []map[string]json.RawMessage `json:"Players"`
+		} `json:"Snapshot"`
+	}
+	if err := json.Unmarshal(gameplayPayload, &envelope); err != nil {
+		t.Fatalf("decode gameplay JSON object: %v", err)
+	}
+	for index, player := range envelope.Snapshot.Players {
+		if _, ok := player["LastProcessedClientTick"]; !ok {
+			t.Fatalf("gameplay player %d missing required ACK key: %s", index, gameplayPayload)
+		}
+	}
+}
+
 func TestWebSocketAppliesValidInputOnNextBroadcastTick(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := NewStoreWithClock(5, fakeClock)
@@ -4996,6 +5252,76 @@ func createStartedRoomInStore(t *testing.T, store *Store) roomResponse {
 	return started
 }
 
+func inputSelectionFixture(t *testing.T) (*Store, *room, string, *clientSession) {
+	t.Helper()
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	started := createStartedRoomInStore(t, store)
+	room := store.lookupRoom(started.ID)
+	if room == nil || len(started.Players) != 1 {
+		t.Fatalf("invalid input selection fixture room=%v players=%+v", room, started.Players)
+	}
+	playerID := started.Players[0].ID
+	session := newClientSession(newFakeClientConn(false), nil)
+	t.Cleanup(func() { session.close(websocket.StatusNormalClosure, "test complete") })
+	room.mu.Lock()
+	room.clients[playerID] = session
+	room.mu.Unlock()
+	return store, room, playerID, session
+}
+
+func newClientTickWebSocketFixture(t *testing.T, playerCount int) *clientTickWebSocketFixture {
+	t.Helper()
+	clock := newFakeClock()
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	created := createRoom(t, handler)
+	players := make([]issuedPlayer, 0, playerCount)
+	for range playerCount {
+		players = append(players, issuePlayer(t, handler, created.ID))
+	}
+	startRoom(t, handler, created.ID)
+
+	connections := make([]*websocket.Conn, 0, playerCount)
+	for _, player := range players {
+		conn := dialIssuedPlayer(t, server.URL, player.WebSocketPath)
+		connections = append(connections, conn)
+		t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+		waitForAttachedClient(t, store, created.ID, player.ID)
+	}
+	return &clientTickWebSocketFixture{
+		clock:       clock,
+		store:       store,
+		room:        created,
+		players:     players,
+		connections: connections,
+	}
+}
+
+func assertControlSnapshotPlayersNull(t *testing.T, payload []byte, status MatchStatus) {
+	t.Helper()
+	var message struct {
+		Type     string `json:"Type"`
+		Snapshot struct {
+			Status  MatchStatus     `json:"status"`
+			Tick    simulation.Tick `json:"Tick"`
+			Players json.RawMessage `json:"Players"`
+		} `json:"Snapshot"`
+	}
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode %s control snapshot: %v", status, err)
+	}
+	if message.Type != "snapshot" || message.Snapshot.Status != status || message.Snapshot.Tick != 0 {
+		t.Fatalf("control payload=%s, want %s Tick 0", payload, status)
+	}
+	if string(message.Snapshot.Players) != "null" {
+		t.Fatalf("%s control Players=%s, want null; payload=%s", status, message.Snapshot.Players, payload)
+	}
+}
+
 func newModeTickHarness(
 	t *testing.T,
 	mode string,
@@ -5473,6 +5799,32 @@ func waitForPendingInput(t *testing.T, store *Store, roomID string, playerID str
 	}
 
 	t.Fatalf("expected pending input for player %s", playerID)
+}
+
+func waitForPendingClientTick(t *testing.T, store *Store, roomID string, playerID string, want int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	var got int64
+	for time.Now().Before(deadline) {
+		room := store.lookupRoom(roomID)
+		found := false
+		if room != nil {
+			room.mu.Lock()
+			input, ok := room.pendingInputs[playerID]
+			room.mu.Unlock()
+			if ok {
+				found = true
+				got = input.ClientTick
+			}
+		}
+		if found && got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("expected pending ClientTick %d for player %s, got %d", want, playerID, got)
 }
 
 func waitForMatchLifecycleState(t *testing.T, store *Store, roomID string, wantStatus MatchStatus, wantClients int, wantReady int) {

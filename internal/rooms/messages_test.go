@@ -53,6 +53,24 @@ func TestBotIdentityProjectsToReadyAndSnapshotMessages(t *testing.T) {
 	}
 }
 
+func TestInputMessageDecodesClientTickAndDefaultsMissingToZero(t *testing.T) {
+	var withTick inputMessage
+	if err := json.Unmarshal([]byte(`{"ClientTick":42,"MoveDir":{"x":1,"y":0}}`), &withTick); err != nil {
+		t.Fatalf("decode input with ClientTick: %v", err)
+	}
+	if withTick.ClientTick != 42 {
+		t.Fatalf("ClientTick=%d, want 42", withTick.ClientTick)
+	}
+
+	var withoutTick inputMessage
+	if err := json.Unmarshal([]byte(`{"MoveDir":{"x":1,"y":0}}`), &withoutTick); err != nil {
+		t.Fatalf("decode legacy input without ClientTick: %v", err)
+	}
+	if withoutTick.ClientTick != 0 {
+		t.Fatalf("missing ClientTick decoded as %d, want 0", withoutTick.ClientTick)
+	}
+}
+
 func botProjectionFixture(config simulation.GameConfig) (
 	[]simulation.PlayerData,
 	[]readyEventPlayer,
