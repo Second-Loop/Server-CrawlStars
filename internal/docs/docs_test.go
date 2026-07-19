@@ -15,6 +15,20 @@ func TestHandlerServesRawSpecs(t *testing.T) {
 	assertContentType(t, openAPI, "application/yaml")
 	assertBodyContains(t, openAPI, "openapi: 3.1.0")
 	assertBodyContains(t, openAPI, "/rooms/{roomID}")
+	for _, marker := range []string{
+		"MatchmakingJoinRequest:",
+		"gameMode:",
+		"enum: [duel_1v1, solo, team]",
+		"const: \"\"",
+		"default: duel_1v1",
+		"invalid_game_mode",
+		"invalid_request",
+		"required: [gameMode, room, player, sessionToken, webSocketPath]",
+		"required: [id, gameMode, status, players, maxPlayers, map, latestSnapshot]",
+		"enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
+	} {
+		assertBodyContains(t, openAPI, marker)
+	}
 
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)

@@ -79,11 +79,11 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>1. join</h3>
-            <p><code>POST /matchmaking/join</code> 응답은 <code>{ room, player, sessionToken, webSocketPath }</code>입니다. 같은 raw secret이 <code>sessionToken</code>과 tokenized <code>webSocketPath</code>에 나타나며, path를 client 내부에서만 사용해 연결합니다.</p>
+            <p><code>POST /matchmaking/join</code>은 optional <code>gameMode</code>로 <code>duel_1v1</code>, <code>solo</code>, <code>team</code>을 선택하며 생략하거나 빈 문자열이면 duel을 사용합니다. 응답은 <code>{ gameMode, room, player, sessionToken, webSocketPath }</code>이고 top-level <code>gameMode</code>와 <code>room.gameMode</code>는 같습니다. 같은 raw secret이 <code>sessionToken</code>과 tokenized <code>webSocketPath</code>에 나타나며, path를 client 내부에서만 사용해 연결합니다.</p>
           </article>
           <article>
             <h3>2. Ready</h3>
-            <p>두 player가 모두 WebSocket에 붙으면 <code>Type: Ready</code>와 함께 숫자 배열 map, player별 <code>SpawnPosition</code>을 받습니다.</p>
+            <p>선택 mode의 required player가 모두 WebSocket에 붙으면 <code>Type: Ready</code>와 함께 숫자 배열 map, player별 <code>SpawnPosition</code>을 받습니다. <code>duel_1v1</code>은 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
           </article>
           <article>
             <h3>3. ready</h3>

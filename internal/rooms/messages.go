@@ -6,8 +6,13 @@ type roomListResponse struct {
 	Rooms []roomResponse `json:"rooms"`
 }
 
+type matchmakingJoinRequest struct {
+	GameMode string `json:"gameMode"`
+}
+
 type roomResponse struct {
 	ID             string           `json:"id"`
+	GameMode       string           `json:"gameMode"`
 	Status         RoomStatus       `json:"status"`
 	Players        []playerResponse `json:"players"`
 	MaxPlayers     int              `json:"maxPlayers"`
@@ -37,6 +42,7 @@ type playerSessionResponse struct {
 }
 
 type matchmakingJoinResponse struct {
+	GameMode      string         `json:"gameMode"`
 	Room          roomResponse   `json:"room"`
 	Player        playerResponse `json:"player"`
 	SessionToken  string         `json:"sessionToken"`
@@ -120,6 +126,7 @@ func (r *room) toResponse(gameMap simulation.MapData) roomResponse {
 	}
 	return roomResponse{
 		ID:             r.ID,
+		GameMode:       r.gameConfig.SelectedMode.ID,
 		Status:         r.Status,
 		Players:        players,
 		MaxPlayers:     gameMap.MaxPlayers,
@@ -193,11 +200,11 @@ func (r *room) matchSnapshotMessage(status MatchStatus, countdown int) roomSnaps
 	}
 }
 
-func (r *room) readyEventDeliveries(gameConfig simulation.GameConfig) []webSocketDelivery {
+func (r *room) readyEventDeliveries() []webSocketDelivery {
 	message := readyEventMessage{
 		Type:    "Ready",
-		Map:     mapResponseFromSimulation(gameConfig.Map),
-		Players: readyEventPlayers(r.Players, gameConfig),
+		Map:     mapResponseFromSimulation(r.gameConfig.Map),
+		Players: readyEventPlayers(r.Players, r.gameConfig),
 	}
 	deliveries := make([]webSocketDelivery, 0, len(r.clients))
 	for _, session := range r.clients {

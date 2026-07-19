@@ -171,29 +171,43 @@ Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tic
 
 Room/player ID는 16 random bytes를 Raw URL Base64로 바꾼 22자 payload와 prefix를 사용합니다. Player session token은 32 random bytes 기반 43자이며, 발급 응답의 `sessionToken`과 tokenized `webSocketPath`에 같은 raw secret으로 나타납니다. Room private state는 SHA-256 digest만 저장합니다. Public Room/Player/Ready/Snapshot/GameEnd DTO에는 raw token이나 digest가 없습니다.
 
-`cmd/server`는 시작할 때 embed된 `server-config/game-config.json`을 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. config를 읽지 못하거나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map fallback을 사용합니다.
+`cmd/server`는 시작할 때 embed된 `server-config/game-config.json`을 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. config를 읽지 못하거나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map fallback을 사용합니다. Resolved `GameConfig`는 `ModeCatalog` 전체와 default로 고른 `SelectedMode`를 가집니다.
+
+Mode config 소유권은 다음 한 방향으로 흐릅니다.
+
+```text
+Store GameConfig.ModeCatalog/default
+  -> join request의 gameMode를 canonical config로 선택
+  -> 같은 mode waiting pool 탐색 또는 room 생성
+  -> immutable room.gameConfig
+  -> capacity/team-slot/Ready/State/tick/GameEnd
+```
+
+Store의 config는 catalog와 새 room의 default source일 뿐, 생성된 room의 gameplay 판단에 다시 사용하지 않습니다. Room은 생성 시 selected config를 고정하고 lifecycle 전체에서 같은 config를 사용합니다.
 
 Simple matchmaking:
 
 - `POST /matchmaking/join`
-- waiting room을 찾거나 만듭니다.
+- Optional body의 `gameMode`로 `duel_1v1`, `solo`, `team`을 선택합니다.
+- Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`로 처리합니다.
+- 같은 mode의 waiting room 탐색과 없을 때의 room 생성을 하나의 serialized find-or-create transition으로 처리합니다. 동시 첫 join도 같은 pool을 재사용합니다.
 - player를 발급합니다.
-- server runtime config의 active mode는 현재 `duel_1v1`입니다.
-- active mode의 `playersPerMatch = 2`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
-- 두 WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
-- 두 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
-- response는 `room`, `player`, `sessionToken`, tokenized `webSocketPath`를 포함합니다.
+- selected mode의 `playersPerMatch`가 되면 room을 matched 상태로 잠그고 late join을 막습니다.
+- 모든 matched WebSocket client가 연결되면 `Type: Ready` event로 map과 player별 spawn 위치를 보냅니다.
+- 모든 client가 `Type: ready`를 보내면 starting 신호를 1번 보내고, server 내부 5초 countdown 후 room을 start합니다.
+- response는 top-level `gameMode`, 같은 값의 nested `room.gameMode`, `player`, `sessionToken`, tokenized `webSocketPath`를 포함합니다.
 - Join 전에 process-local per-IP token bucket을 평가합니다. 기본은 10 requests/minute, burst 4이며 quota가 없으면 429가 store의 409/500보다 먼저 나갑니다. 허용된 409/500 요청도 quota를 소비합니다.
 - Immediate peer가 trusted CIDR이고 `CF-Connecting-IP`가 정확히 하나의 valid IP일 때만 그 값을 client IP로 씁니다. 그 외에는 peer로 fallback하고 `X-Forwarded-For`는 무시합니다.
 
-`map.maxPlayers = 6`은 map/debug room capacity입니다. 현재 active matchmaking size는 mode config의 `playersPerMatch = 2`이고, 6인 solo나 3v3 team mode는 활성화하지 않습니다.
+`map.maxPlayers = 6`과 REST `room.maxPlayers`는 계속 map/debug room capacity입니다. Matchmaking size는 room-local selected mode가 소유하며 duel은 2명, solo와 team은 6명입니다.
 
 Mode/team rule:
 
-- `internal/simulation.GameConfig.Mode`가 active mode id, match size, team 목록, friendly-fire/team behavior 같은 rule metadata를 가집니다.
+- `internal/simulation.GameConfig.ModeCatalog`가 default와 세 canonical mode를, `SelectedMode`가 해당 room의 mode id, match size, team 목록, friendly-fire/team behavior metadata를 가집니다.
 - `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다.
-- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 resolved `GameConfig`에서 읽습니다.
+- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 `room.gameConfig`에서 읽습니다.
 - `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
+- `friendlyFire`는 catalog metadata로만 저장하고 projectile team 판정은 이 issue에서 바꾸지 않습니다.
 
 WebSocket:
 
@@ -205,9 +219,9 @@ WebSocket:
 - matchmaking ready 단계는 `Type: Ready` event로 렌더 준비 데이터를 보내고, starting 단계는 `Type: snapshot` wrapper 안에서 lowercase `Snapshot.status`와 `Snapshot.countdown: 5`를 1번 보냅니다.
 - started room은 `Snapshot.status: started`와 함께 30Hz gameplay snapshot을 broadcast합니다.
 - HP가 0인 player가 생기면 같은 tick의 snapshot 뒤 player별 `Type: GameEnd` event를 보내고 room을 정리합니다.
-- 한 명만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`입니다. 같은 tick에 양쪽 player가 동시에 사망하면 양쪽 모두 `Draw`입니다.
-- GameEnd 판정 계산은 `internal/rooms`의 순수 helper가 맡고, WebSocket delivery는 player별 `GameEnd` message 변환만 맡습니다.
-- 현재 active GameEnd mode는 `duel_1v1`입니다. N-player solo, team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 아직 활성 규칙이 아니며 후속 issue에서 mode별 helper로 확장합니다.
+- 일부 player만 사망하면 생존 player는 `Win`, 사망 player는 `Lose`이고 같은 tick에 모든 player가 사망하면 모두 `Draw`입니다.
+- GameEnd 판정 계산은 `internal/rooms`의 순수 helper가 room-local selected config를 받아 처리하고, WebSocket delivery는 player별 `GameEnd` message 변환만 맡습니다.
+- Duel은 기존 player-survival 결과를 사용하고 solo/team도 SL-86에서는 같은 fallback을 유지합니다. Mode별 마지막 생존자/team elimination, score, respawn, 마지막 공격자 기준 tie-breaker는 후속 issue입니다.
 - 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다. 일반 gameplay snapshot은 크기 1 latest-only slot에서 coalescing해 느린 client가 room tick이나 다른 client를 막지 않습니다.
 - `Ready`, `starting`, `started`, `error`는 크기 8 reliable control queue에서 순서를 보존합니다. Terminal handoff는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 실행합니다.
 - 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
@@ -215,7 +229,7 @@ WebSocket:
 
 Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Matchmaking pre-start 실제 disconnect는 room을 취소하고, started room은 all-disconnected TTL과 hard lifetime을 따릅니다. Failed upgrade는 reservation만 rollback해 같은 경로로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query와 전체 query 문자열은 secret으로 취급하고 log에 남기지 않습니다.
 
-동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
+동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create 전체를, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 gameplay/client/countdown 상태를, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. Attach는 Store close 판정과 active session 등록을 원자적으로 처리합니다. Session lifecycle monitor는 room에서 먼저 분리된 terminal session도 connection close, writer, heartbeat가 모두 끝날 때까지 추적합니다. Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고, `State.Step`, fanout, network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
 
 ## Cleanup
 
@@ -241,4 +255,4 @@ Room store는 in-memory라 TTL이 중요합니다.
 - bot replacement
 - reconnect grace
 
-Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, active mode/team rules, map을 담습니다. Attack charge 상태는 `simulation.State` 내부에만 있고 public snapshot schema는 바뀌지 않습니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, `mode.default`와 `mode.catalog`, map을 담습니다. Attack charge 상태와 mode rule metadata는 server-only이고 public WebSocket snapshot schema는 바뀌지 않습니다.

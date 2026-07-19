@@ -655,10 +655,10 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
-	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached(s.matchCapacity()) {
+	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached() {
 		room.matchStatus = MatchStatusLoading
-		deliveries = append(deliveries, room.readyEventDeliveries(s.gameConfig)...)
-		if room.allMatchPlayersReady(s.matchCapacity()) {
+		deliveries = append(deliveries, room.readyEventDeliveries()...)
+		if room.allMatchPlayersReady() {
 			s.startMatchCountdownLocked(room)
 			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 		}
@@ -780,7 +780,7 @@ func (s *Store) markClientReady(roomID string, playerID string, expectedSession 
 	}
 	room.readyPlayers[playerID] = true
 	room.lastActivityAt = s.clock.Now()
-	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady(s.matchCapacity()) {
+	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady() {
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
@@ -915,7 +915,7 @@ func (s *Store) tickRoomState(room *room) {
 			snapshotSessions = append(snapshotSessions, session)
 		}
 	}
-	results := calculateGameEndResults(s.gameConfig, snapshot)
+	results := room.gameEndResults(snapshot)
 	var playerIDs []string
 	if len(results) > 0 {
 		snapshotPayload, snapshotMarshalErr = marshalMessage(message)
@@ -1026,7 +1026,8 @@ func (r *room) hasPreStartMatch() bool {
 	return r.Status != RoomStatusStarted && r.matchStatus != ""
 }
 
-func (r *room) allMatchClientsAttached(matchPlayerCount int) bool {
+func (r *room) allMatchClientsAttached() bool {
+	matchPlayerCount := r.gameConfig.MatchPlayerCount()
 	if len(r.Players) < matchPlayerCount {
 		return false
 	}
@@ -1039,7 +1040,8 @@ func (r *room) allMatchClientsAttached(matchPlayerCount int) bool {
 	return true
 }
 
-func (r *room) allMatchPlayersReady(matchPlayerCount int) bool {
+func (r *room) allMatchPlayersReady() bool {
+	matchPlayerCount := r.gameConfig.MatchPlayerCount()
 	if len(r.Players) < matchPlayerCount {
 		return false
 	}

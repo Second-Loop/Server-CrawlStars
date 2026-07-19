@@ -1,17 +1,21 @@
 package rooms
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 )
+
+const matchmakingJoinRequestBodyLimit int64 = 1024
 
 type HandlerConfig struct {
 	EnableDebugAPI       bool
@@ -115,8 +119,21 @@ func newRouterWithDebugGuard(
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 			return
 		}
-		joined, err := store.joinMatchmaking()
+		r.Body = http.MaxBytesReader(w, r.Body, matchmakingJoinRequestBodyLimit)
+		joinRequest, err := decodeMatchmakingJoinRequest(r.Body)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", ErrInvalidRequest.Error())
+			return
+		}
+		if joinRequest.GameMode == "" {
+			joinRequest.GameMode = store.defaultGameMode()
+		}
+		joined, err := store.joinMatchmaking(joinRequest.GameMode)
+		if err != nil {
+			if errors.Is(err, ErrInvalidGameMode) {
+				writeError(w, http.StatusBadRequest, "invalid_game_mode", err.Error())
+				return
+			}
 			if errors.Is(err, ErrInternal) {
 				writeInternalError(w)
 				return
@@ -252,6 +269,44 @@ func newRouterWithDebugGuard(
 		writeRouteNotFound(w)
 	})
 	return mux
+}
+
+func decodeMatchmakingJoinRequest(body io.Reader) (matchmakingJoinRequest, error) {
+	decoder := json.NewDecoder(body)
+	var rawRequest json.RawMessage
+	if err := decoder.Decode(&rawRequest); err != nil {
+		if errors.Is(err, io.EOF) {
+			return matchmakingJoinRequest{}, nil
+		}
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	if bytes.Equal(bytes.TrimSpace(rawRequest), []byte("null")) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var fields struct {
+		GameMode json.RawMessage `json:"gameMode"`
+	}
+	if err := json.Unmarshal(rawRequest, &fields); err != nil {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	if fields.GameMode == nil {
+		return matchmakingJoinRequest{}, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(fields.GameMode), []byte("null")) {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+
+	var request matchmakingJoinRequest
+	if err := json.Unmarshal(fields.GameMode, &request.GameMode); err != nil {
+		return matchmakingJoinRequest{}, ErrInvalidRequest
+	}
+	return request, nil
 }
 
 func requestWithDecodedPathSegments(r *http.Request) *http.Request {

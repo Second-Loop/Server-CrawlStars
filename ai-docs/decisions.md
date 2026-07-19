@@ -279,6 +279,8 @@
 
 상태: 승인됨
 
+후속 상태: SL-86의 ADR-0028이 duel-only 활성화 결론을 `duel_1v1`/`solo`/`team` room-local 선택으로 대체합니다. 이 ADR의 server-only config와 map/debug capacity 분리 배경은 이력으로 유지합니다.
+
 맥락: `internal/rooms`가 matchmaking required player 수 `2`와 red/blue team assignment를 직접 하드코딩하고 있었습니다. 동시에 map fixture의 `maxPlayers = 6`은 map/debug room capacity인데, 이를 active matchmaking size로 해석하면 6인 solo나 3v3 team mode가 의도치 않게 켜질 수 있습니다. SL-70은 mode/team rule boundary를 만들되 실제 6인 mode를 구현하지 않는 범위입니다.
 
 결정: `server-config/game-config.json`과 `internal/simulation.GameConfig`에 server-only `mode`를 둡니다. 현재 active mode는 `duel_1v1`, `playersPerMatch = 2`, red/blue team 각각 size 1입니다. `mode.rules`에는 `teamBehavior`와 `friendlyFire`를 두어 free-for-all/team behavior와 friendly fire 정책을 나중에 확장할 수 있게 합니다. `internal/rooms`는 resolved `GameConfig`에서 match size와 team/slot 발급 규칙을 읽고, room lifecycle과 REST/WebSocket transport adapter 역할에 집중합니다. `internal/simulation.State.Step`은 player의 `Team`과 `Slot`을 state data로 보존하지만 matchmaking size, room 구성, 6인 mode 활성화는 적용하지 않습니다.
@@ -292,6 +294,8 @@
 ## ADR-0020: SL-72 Capacity와 Player Assignment 경계 분리
 
 상태: 승인됨
+
+후속 상태: Capacity와 assignment 단일 source 결정은 유지합니다. “6-player mode/client selection 비활성”과 REST schema 불변 결론만 SL-86의 ADR-0028로 대체됐습니다.
 
 맥락: `map.maxPlayers`는 debug room capacity이고 `mode.playersPerMatch`는 active matchmaking size입니다. 두 값을 같은 숫자처럼 쓰면 기본 1v1 matchmaking이 6명 match로 확장되거나, 반대로 debug room이 2명으로 줄어드는 regression이 생길 수 있습니다. 또한 Ready event의 spawn 위치와 실제 simulation 초기 위치가 다른 helper를 타면 client render와 서버 판정이 갈라질 수 있습니다.
 
@@ -309,6 +313,8 @@ Spawn은 map의 `TileSpawnPoint(2)`를 tile scan/join 순서로 먼저 사용합
 ## ADR-0021: SL-71 GameEnd 판정 계산과 WebSocket Delivery 분리
 
 상태: 승인됨
+
+후속 상태: 판정 계산과 delivery 분리는 유지합니다. 단일 active duel 전제는 ADR-0028로 대체됐고, solo/team은 새 mode별 elimination rule 없이 기존 player-survival fallback을 사용합니다.
 
 맥락: SL-63에서 추가한 GameEnd 흐름은 `internal/rooms` 안에서 snapshot broadcast, Win/Lose/Draw 판정, player별 WebSocket event 생성, room cleanup이 한 흐름에 붙어 있었습니다. SL-71은 wire contract를 바꾸지 않고 판정 계산만 테스트 가능한 경계로 분리하는 리팩터입니다.
 
@@ -451,3 +457,27 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Runtime과 OpenAPI/AsyncAPI `MapData`는 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`를 같은 값으로 사용합니다.
 - REST room response와 WebSocket Ready event가 client `Map_0`의 Bush/Water tile을 JSON number array로 전달합니다.
 - Shared map artifact, client rendering, visibility, pathfinding, bot AI, multi-map은 추가하지 않습니다.
+
+## ADR-0028: SL-86 Match Mode 선택은 Room-local Config로 고정
+
+상태: 승인됨
+
+맥락: ADR-0019는 기본 1v1만 활성화해 mode/team boundary를 먼저 만들었고, ADR-0020은 match capacity와 map/debug capacity를 분리했습니다. SL-86은 `duel_1v1`, `solo`, `team`을 실제 matchmaking 선택지로 열어야 합니다. Store의 global selected mode를 매 lifecycle 단계에서 다시 읽으면 이미 생성된 room의 capacity, Ready assignment, simulation, GameEnd가 나중의 default나 다른 request에 따라 달라질 수 있습니다.
+
+결정:
+
+- `server-config/game-config.json`은 `mode.default = duel_1v1`과 세 canonical `mode.catalog` entry를 소유합니다.
+- `POST /matchmaking/join`은 optional `gameMode`를 받습니다. Body 없음, 빈 object, 빈 문자열은 기존 client 호환을 위해 default duel로 처리하고, unknown non-empty mode는 `invalid_game_mode`, malformed JSON은 `invalid_request`로 거부합니다.
+- Store는 request mode를 catalog에서 canonical `GameConfig`로 한 번 선택하고 같은 selected mode의 waiting room만 재사용합니다.
+- 새 room은 선택된 `gameConfig`를 immutable하게 소유합니다. Match capacity, team/slot, Ready quorum과 payload, simulation State, gameplay tick rate, GameEnd calculator는 모두 `room.gameConfig`만 사용합니다.
+- Store의 `gameConfig`는 catalog와 새 debug/matchmaking room의 default source로만 남고 이미 생성된 room의 gameplay 판단에는 사용하지 않습니다.
+- Join response의 top-level `gameMode`와 nested `room.gameMode`는 같은 selected ID를 required field로 반환합니다.
+- `room.maxPlayers`와 `room.map.maxPlayers`는 계속 map/debug capacity 6을 뜻합니다. Selected mode의 match size 2/6/6과 합치지 않습니다.
+- `friendlyFire`와 `teamBehavior`는 server-only catalog metadata입니다. SL-86은 projectile friendly-fire 판정이나 mode별 새 GameEnd rule, WebSocket message shape를 추가하지 않습니다.
+
+결과:
+
+- Duel, solo, team request는 서로 waiting room을 공유하지 않으며 같은 mode request만 같은 pool에서 합쳐집니다.
+- Room이 생성된 뒤에는 Store default와 무관하게 lifecycle 전체가 하나의 canonical selected config를 사용합니다.
+- No-body client는 계속 duel 1v1로 동작하고 새 client는 REST `gameMode`로 선택과 응답을 명시적으로 확인할 수 있습니다.
+- ADR-0019의 “duel만 활성” 결정은 이 ADR로 확장되고, ADR-0020의 map/debug capacity 분리와 assignment 단일 source 원칙은 유지됩니다.

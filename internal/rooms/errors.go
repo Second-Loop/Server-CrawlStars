@@ -10,5 +10,7 @@ var (
 	ErrRoomFull               = errors.New("room full")
 	ErrRoomHasNoPlayers       = errors.New("room has no players")
 	ErrActiveRoomCapReached   = errors.New("active room cap reached")
+	ErrInvalidRequest         = errors.New("invalid request")
+	ErrInvalidGameMode        = errors.New("invalid game mode")
 	ErrInternal               = errors.New("internal server error")
 )

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
+const apiDocsText = await readFile(new URL("../../ai-docs/api-docs.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
@@ -81,6 +82,15 @@ for (const operationID of debugOperationIDs) {
   assert(operation.includes("기본 비활성화"), `${operationID} must say that debug API is disabled by default`);
   assert(operation.includes("not_found"), `${operationID} disabled 404 must name not_found`);
 }
+const startRoomOperation = extractOpenAPIOperation(openAPIText, "startRoom");
+assert(
+  startRoomOperation.includes("선택 mode의 required player"),
+  "startRoom must describe matchmaking start using the selected mode player count",
+);
+assert(
+  !startRoomOperation.includes("두 WebSocket client"),
+  "startRoom must not hard-code the duel Ready client count",
+);
 
 for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"]) {
   const operation = extractOpenAPIOperation(openAPIText, operationID);
@@ -89,9 +99,37 @@ for (const operationID of ["joinMatchmaking", "createRoom", "createRoomPlayer"])
 }
 
 const matchmakingJoinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+assert(
+  matchmakingJoinOperation.includes("1024 bytes"),
+  "joinMatchmaking must document the raw 1024-byte request body limit",
+);
+const matchmakingJoinRequestBody = extractYAMLNamedBlock(matchmakingJoinOperation, "      requestBody:");
+assert(
+  !matchmakingJoinRequestBody.includes("required: true"),
+  "joinMatchmaking request body must remain optional",
+);
+assert(
+  matchmakingJoinRequestBody.includes('$ref: "#/components/schemas/MatchmakingJoinRequest"'),
+  "joinMatchmaking request body must use MatchmakingJoinRequest",
+);
+const matchmakingJoinBadRequest = extractYAMLNamedBlock(matchmakingJoinOperation, '        "400":');
+const invalidGameModeExample = extractYAMLNamedBlock(matchmakingJoinBadRequest, "                invalidGameMode:");
+const invalidRequestExample = extractYAMLNamedBlock(matchmakingJoinBadRequest, "                invalidRequest:");
+for (const [example, errorCode] of [
+  [invalidGameModeExample, "invalid_game_mode"],
+  [invalidRequestExample, "invalid_request"],
+]) {
+  assert(hasTrimmedLine(example, "value:"), `${errorCode} example must include value`);
+  assert(hasTrimmedLine(example, "error:"), `${errorCode} example must include error`);
+  assert(hasTrimmedLine(example, `code: ${errorCode}`), `${errorCode} example must use its exact error code`);
+}
 assert(matchmakingJoinOperation.includes('"429":'), "joinMatchmaking must document 429");
 assert(matchmakingJoinOperation.includes("Retry-After"), "joinMatchmaking 429 must document Retry-After");
 assert(matchmakingJoinOperation.includes("rate_limited"), "joinMatchmaking 429 must name rate_limited");
+assert(
+  matchmakingJoinOperation.includes("request body decode와 store join보다 먼저"),
+  "joinMatchmaking must document quota-before-body-decode ordering",
+);
 assert(matchmakingJoinOperation.includes("store join보다 먼저"), "joinMatchmaking must document quota-before-store ordering");
 assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must document 429 precedence over 409/500");
 
@@ -100,8 +138,38 @@ assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0
 assertSchemaContains(openAPIText, "PlayerSessionToken", ['pattern: "^[A-Za-z0-9_-]{43}$"']);
 assertSchemaContains(openAPIText, "PlayerSessionToken", ["sessionToken", "tokenized `webSocketPath`", "Failed upgrade"]);
 assertSchemaContains(openAPIText, "PlayerSessionResponse", ["required: [player, sessionToken, webSocketPath]"]);
-assertSchemaContains(openAPIText, "MatchmakingJoin", ["required: [room, player, sessionToken, webSocketPath]"]);
-assertSchemaContains(openAPIText, "APIError", ["unauthorized", "rate_limited", "internal_error"]);
+assertSchemaContains(openAPIText, "MatchmakingJoinRequest", [
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+  'const: ""',
+  "default: duel_1v1",
+]);
+assertSchemaContains(openAPIText, "MatchmakingJoin", [
+  "required: [gameMode, room, player, sessionToken, webSocketPath]",
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+]);
+assertSchemaContains(openAPIText, "Room", [
+  "required: [id, gameMode, status, players, maxPlayers, map, latestSnapshot]",
+  "gameMode:",
+  "enum: [duel_1v1, solo, team]",
+]);
+assertSchemaContains(openAPIText, "Player", [
+  "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
+]);
+assertSchemaContains(openAPIText, "APIError", [
+  "invalid_game_mode",
+  "invalid_request",
+  "unauthorized",
+  "rate_limited",
+  "internal_error",
+]);
+for (const errorCode of ["invalid_game_mode", "invalid_request"]) {
+  assert(
+    hasLine(openAPIText, `            - ${errorCode}`),
+    `APIError enum must list ${errorCode} at the schema enum indentation`,
+  );
+}
 assert(
   openAPIText.includes("?token=<player-session-token>"),
   "api/openapi.yaml must show a redacted tokenized webSocketPath",
@@ -145,6 +213,19 @@ for (const field of requiredWebSocketFields) {
 	assert(asyncAPIText.includes(field), `api/asyncapi.yaml is missing ${field}`);
 }
 assertSchemaContains(asyncAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
+for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
+  assertSchemaContains(asyncAPIText, schemaName, [
+    "enum: [red, blue, solo-1, solo-2, solo-3, solo-4, solo-5, solo-6]",
+  ]);
+}
+assert(
+  asyncAPIText.includes("선택 mode의 required player"),
+  "api/asyncapi.yaml must describe Ready using the selected mode player count",
+);
+assert(
+  !asyncAPIText.includes("두 matched client") && !asyncAPIText.includes("두 client가 모두 연결"),
+  "api/asyncapi.yaml must not hard-code the duel Ready client count",
+);
 assert(asyncAPIText.includes("invalid_input"), "api/asyncapi.yaml must document invalid_input");
 for (const schemaName of ["ReadyEventMessage", "SnapshotMessage", "Snapshot", "GameEndMessage", "ReadyPlayer", "PlayerData"]) {
   assertNoSecretFields(extractYAMLSchema(asyncAPIText, schemaName), `AsyncAPI ${schemaName}`);
@@ -156,6 +237,21 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
+assert(
+  docsBuildText.includes("{ gameMode, room, player, sessionToken, webSocketPath }"),
+  "docs UI must show the selected gameMode in the join response",
+);
+assert(
+  docsBuildText.includes("선택 mode의 required player"),
+  "docs UI must describe Ready using the selected mode player count",
+);
+assert(
+  !docsBuildText.includes("두 player가 모두 WebSocket"),
+  "docs UI must not hard-code the duel Ready player count",
+);
+for (const marker of ["optional `gameMode`", "선택 mode의 required player", "raw body가 1024 bytes"]) {
+  assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
+}
 assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must not persist debug authorization");
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
@@ -190,6 +286,10 @@ assert(serverMapTiles.includes(4), "server-config/game-config.json must include 
 
 function hasLine(text, want) {
 	return text.split(/\r?\n/).some((line) => line === want);
+}
+
+function hasTrimmedLine(text, want) {
+  return text.split(/\r?\n/).some((line) => line.trim() === want);
 }
 
 function countOccurrences(text, needle) {

@@ -27,22 +27,79 @@
     ]
   },
   "mode": {
-    "id": "duel_1v1",
-    "playersPerMatch": 2,
-    "teams": [
+    "default": "duel_1v1",
+    "catalog": [
       {
-        "name": "red",
-        "size": 1
+        "id": "duel_1v1",
+        "playersPerMatch": 2,
+        "teams": [
+          {
+            "name": "red",
+            "size": 1
+          },
+          {
+            "name": "blue",
+            "size": 1
+          }
+        ],
+        "rules": {
+          "teamBehavior": "two_teams",
+          "friendlyFire": false
+        }
       },
       {
-        "name": "blue",
-        "size": 1
+        "id": "solo",
+        "playersPerMatch": 6,
+        "teams": [
+          {
+            "name": "solo-1",
+            "size": 1
+          },
+          {
+            "name": "solo-2",
+            "size": 1
+          },
+          {
+            "name": "solo-3",
+            "size": 1
+          },
+          {
+            "name": "solo-4",
+            "size": 1
+          },
+          {
+            "name": "solo-5",
+            "size": 1
+          },
+          {
+            "name": "solo-6",
+            "size": 1
+          }
+        ],
+        "rules": {
+          "teamBehavior": "free_for_all",
+          "friendlyFire": false
+        }
+      },
+      {
+        "id": "team",
+        "playersPerMatch": 6,
+        "teams": [
+          {
+            "name": "red",
+            "size": 3
+          },
+          {
+            "name": "blue",
+            "size": 3
+          }
+        ],
+        "rules": {
+          "teamBehavior": "two_teams",
+          "friendlyFire": false
+        }
       }
-    ],
-    "rules": {
-      "teamBehavior": "two_teams",
-      "friendlyFire": false
-    }
+    ]
   },
   "map": {
     "width": 20,

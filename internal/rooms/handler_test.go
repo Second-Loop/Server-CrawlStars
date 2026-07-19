@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -243,7 +244,7 @@ func TestStoreReturnsTypedErrors(t *testing.T) {
 				t.Fatalf("fill matchmaking room: %v", err)
 			}
 		}
-		_, err = store.joinMatchmaking()
+		_, err = store.joinMatchmaking(store.defaultGameMode())
 		if !errors.Is(err, ErrActiveRoomCapReached) {
 			t.Fatalf("expected ErrActiveRoomCapReached, got %v", err)
 		}
@@ -984,7 +985,7 @@ func TestStoreDeleteRoomIfSamePreservesReplacement(t *testing.T) {
 	original := store.lookupRoom(created.ID)
 
 	store.mu.Lock()
-	replacement := store.newRoomLocked(created.ID)
+	replacement := store.newRoomLocked(created.ID, store.gameConfig)
 	store.rooms[created.ID] = replacement
 	store.mu.Unlock()
 
@@ -1010,7 +1011,7 @@ func TestStoreJanitorCleanupDoesNotDeleteReplacementFromStaleSnapshot(t *testing
 
 	const staleSnapshotKey = "stale-snapshot-entry"
 	store.mu.Lock()
-	replacement := store.newRoomLocked(created.ID)
+	replacement := store.newRoomLocked(created.ID, store.gameConfig)
 	store.rooms[created.ID] = replacement
 	store.rooms[staleSnapshotKey] = original
 	store.mu.Unlock()
@@ -1340,7 +1341,7 @@ func TestStoreBelowCapDoesNotCleanExpiredRooms(t *testing.T) {
 		clock.Advance(defaultWaitingRoomIdleTTL)
 		clock.ResetNowCalls()
 
-		joined, err := store.joinMatchmaking()
+		joined, err := store.joinMatchmaking(store.defaultGameMode())
 		if err != nil {
 			t.Fatalf("join matchmaking below cap: %v", err)
 		}
@@ -1585,7 +1586,7 @@ func TestStoreRemovedRoomRejectsNewStateAccess(t *testing.T) {
 	if store.attachClient(reservation, nil) {
 		t.Fatal("expected removed room reservation not to attach")
 	}
-	joined, err := store.joinMatchmaking()
+	joined, err := store.joinMatchmaking(store.defaultGameMode())
 	if err != nil {
 		t.Fatalf("join matchmaking after removed room: %v", err)
 	}
@@ -1622,6 +1623,267 @@ func TestHandlerDeletesSingleRoomAndStopsResources(t *testing.T) {
 		t.Fatalf("expected deleted room status 404, got %d", rec.Code)
 	}
 	assertError(t, rec, "room_not_found")
+}
+
+func TestMatchmakingJoinGameMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantMode   string
+		wantCode   string
+	}{
+		{name: "no body defaults", body: "", wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
+		{name: "empty object defaults", body: `{}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
+		{name: "empty mode defaults", body: `{"gameMode":""}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
+		{name: "solo", body: `{"gameMode":"solo"}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
+		{name: "team", body: `{"gameMode":"team"}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeTeam},
+		{name: "trailing whitespace", body: "{\"gameMode\":\"solo\"} \n\t", wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
+		{name: "unknown", body: `{"gameMode":"ranked"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
+		{name: "whitespace mode", body: `{"gameMode":" "}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
+		{name: "top-level null", body: `null`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "null mode", body: `{"gameMode":null}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "malformed", body: `{"gameMode":`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "trailing JSON", body: `{"gameMode":"solo"} {}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			handler := debugHandler(t, store)
+
+			rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				assertError(t, rec, tt.wantCode)
+				if got := len(store.listRooms().Rooms); got != 0 {
+					t.Fatalf("expected rejected join not to create a room, got %d", got)
+				}
+				store.mu.RLock()
+				playerIDCount := len(store.playerIDs)
+				store.mu.RUnlock()
+				if playerIDCount != 0 {
+					t.Fatalf("expected rejected join not to create player state, got %d player IDs", playerIDCount)
+				}
+				return
+			}
+
+			var response matchmakingJoinResponse
+			decodeResponse(t, rec, &response)
+			if response.GameMode != tt.wantMode || response.Room.GameMode != tt.wantMode {
+				t.Fatalf("expected top-level and room mode %q, got %+v", tt.wantMode, response)
+			}
+			if response.GameMode != response.Room.GameMode {
+				t.Fatalf("expected matching response modes, got %q and %q", response.GameMode, response.Room.GameMode)
+			}
+			if response.Room.MaxPlayers != simulation.StaticMapFixture().MaxPlayers {
+				t.Fatalf("expected map/debug capacity %d, got %d", simulation.StaticMapFixture().MaxPlayers, response.Room.MaxPlayers)
+			}
+
+			stored := store.lookupRoom(response.Room.ID)
+			if stored == nil {
+				t.Fatalf("expected room %q in store", response.Room.ID)
+			}
+			stored.mu.Lock()
+			selectedMode := stored.gameConfig.SelectedMode.ID
+			stored.mu.Unlock()
+			if selectedMode != tt.wantMode {
+				t.Fatalf("expected room-owned selected mode %q, got %q", tt.wantMode, selectedMode)
+			}
+		})
+	}
+}
+
+func TestMatchmakingJoinSeparatesModePools(t *testing.T) {
+	store := NewStore(5)
+	handler := debugHandler(t, store)
+
+	duel := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	firstSolo := joinMatchmakingWithMode(t, handler, simulation.GameModeSolo)
+	team := joinMatchmakingWithMode(t, handler, simulation.GameModeTeam)
+	secondSolo := joinMatchmakingWithMode(t, handler, simulation.GameModeSolo)
+	thirdSolo := joinMatchmakingWithMode(t, handler, simulation.GameModeSolo)
+
+	if duel.Room.ID == firstSolo.Room.ID || duel.Room.ID == team.Room.ID || firstSolo.Room.ID == team.Room.ID {
+		t.Fatalf("expected duel, solo, and team to use different rooms, got %q, %q, and %q", duel.Room.ID, firstSolo.Room.ID, team.Room.ID)
+	}
+	if secondSolo.Room.ID != firstSolo.Room.ID {
+		t.Fatalf("expected solo joins to reuse room %q, got %q", firstSolo.Room.ID, secondSolo.Room.ID)
+	}
+	if len(secondSolo.Room.Players) != 2 {
+		t.Fatalf("expected reused solo room to contain two players, got %+v", secondSolo.Room.Players)
+	}
+	if thirdSolo.Room.ID != firstSolo.Room.ID || len(thirdSolo.Room.Players) != 3 {
+		t.Fatalf("expected solo room %q to use mode capacity beyond duel size, got %+v", firstSolo.Room.ID, thirdSolo.Room)
+	}
+	wantSoloTeams := []string{"solo-1", "solo-2", "solo-3"}
+	for index, player := range thirdSolo.Room.Players {
+		if player.Team != wantSoloTeams[index] || player.Slot != 0 {
+			t.Fatalf("expected solo player %d assignment %s slot 0, got %+v", index, wantSoloTeams[index], player)
+		}
+	}
+}
+
+func TestConcurrentMatchmakingJoinsReuseSingleModeRoom(t *testing.T) {
+	const playerCount = 6
+	for attempt := 0; attempt < 25; attempt++ {
+		store := NewStore(10)
+		start := make(chan struct{})
+		responses := make([]matchmakingJoinResponse, playerCount)
+		errs := make([]error, playerCount)
+		var workers sync.WaitGroup
+		workers.Add(playerCount)
+		for index := 0; index < playerCount; index++ {
+			go func() {
+				defer workers.Done()
+				<-start
+				responses[index], errs[index] = store.joinMatchmaking(simulation.GameModeSolo)
+			}()
+		}
+
+		close(start)
+		workers.Wait()
+		for index, err := range errs {
+			if err != nil {
+				store.Close()
+				t.Fatalf("attempt %d join %d: %v", attempt, index, err)
+			}
+		}
+
+		roomID := responses[0].Room.ID
+		for index, response := range responses[1:] {
+			if response.Room.ID != roomID {
+				store.Close()
+				t.Fatalf("attempt %d split same-mode joins between %q and join %d room %q", attempt, roomID, index+1, response.Room.ID)
+			}
+		}
+		rooms := store.listRooms().Rooms
+		store.Close()
+		if len(rooms) != 1 || len(rooms[0].Players) != playerCount {
+			t.Fatalf("attempt %d expected one full solo room, got %+v", attempt, rooms)
+		}
+	}
+}
+
+func TestMatchmakingJoinResponseMode(t *testing.T) {
+	store := NewStore(5)
+	handler := debugHandler(t, store)
+	joined := joinMatchmakingWithMode(t, handler, simulation.GameModeTeam)
+
+	listRec := request(handler, http.MethodGet, "/rooms")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected room list status 200, got %d", listRec.Code)
+	}
+	var listed roomListResponse
+	decodeResponse(t, listRec, &listed)
+	if len(listed.Rooms) != 1 || listed.Rooms[0].GameMode != joined.GameMode {
+		t.Fatalf("expected room list mode %q, got %+v", joined.GameMode, listed.Rooms)
+	}
+
+	detailRec := request(handler, http.MethodGet, "/rooms/"+joined.Room.ID)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected room detail status 200, got %d", detailRec.Code)
+	}
+	var detail roomResponse
+	decodeResponse(t, detailRec, &detail)
+	if detail.GameMode != joined.GameMode || detail.GameMode != joined.Room.GameMode {
+		t.Fatalf("expected join/list/detail mode %q, got join room %q and detail %q", joined.GameMode, joined.Room.GameMode, detail.GameMode)
+	}
+}
+
+func TestMatchmakingJoinGameModeRateLimitPrecedesBodyDecode(t *testing.T) {
+	store := NewStore(5)
+	defer store.Close()
+	handler, err := HandlerWithConfig(store, HandlerConfig{
+		JoinLimiter: NewIPRateLimiter(10, 1, nil),
+	})
+	if err != nil {
+		t.Fatalf("create handler: %v", err)
+	}
+
+	first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", "")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("expected first join status 201, got %d", first.Code)
+	}
+	malformed := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":`)
+	if malformed.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected rate limit before malformed body decode, got %d: %s", malformed.Code, malformed.Body.String())
+	}
+	assertError(t, malformed, "rate_limited")
+}
+
+func TestMatchmakingJoinRejectsOversizedBody(t *testing.T) {
+	oversizedBody := `{"gameMode":"solo","padding":"` + strings.Repeat("x", 2*1024) + `"}`
+
+	t.Run("accepted request is capped", func(t *testing.T) {
+		store := NewStore(5)
+		handler := debugHandler(t, store)
+
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", oversizedBody)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected oversized body status 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		assertError(t, rec, "invalid_request")
+		if got := len(store.listRooms().Rooms); got != 0 {
+			t.Fatalf("expected oversized body not to create room state, got %d rooms", got)
+		}
+		store.mu.RLock()
+		playerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		if playerIDCount != 0 {
+			t.Fatalf("expected oversized body not to create player state, got %d player IDs", playerIDCount)
+		}
+	})
+
+	t.Run("rate limit is evaluated first", func(t *testing.T) {
+		store := NewStore(5)
+		defer store.Close()
+		handler, err := HandlerWithConfig(store, HandlerConfig{
+			JoinLimiter: NewIPRateLimiter(10, 1, nil),
+		})
+		if err != nil {
+			t.Fatalf("create handler: %v", err)
+		}
+
+		first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", "")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("expected first join status 201, got %d", first.Code)
+		}
+		roomCount := len(store.listRooms().Rooms)
+		store.mu.RLock()
+		playerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", oversizedBody)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected rate limit before oversized body decode, got %d: %s", rec.Code, rec.Body.String())
+		}
+		assertError(t, rec, "rate_limited")
+		if got := len(store.listRooms().Rooms); got != roomCount {
+			t.Fatalf("expected rate-limited oversized request not to mutate rooms, got %d before and %d after", roomCount, got)
+		}
+		store.mu.RLock()
+		gotPlayerIDCount := len(store.playerIDs)
+		store.mu.RUnlock()
+		if gotPlayerIDCount != playerIDCount {
+			t.Fatalf("expected rate-limited oversized request not to mutate player IDs, got %d before and %d after", playerIDCount, gotPlayerIDCount)
+		}
+	})
+}
+
+func TestDebugRoomUsesDefaultMode(t *testing.T) {
+	store := NewStore(5)
+	handler := debugHandler(t, store)
+
+	created := createRoom(t, handler)
+	if created.GameMode != simulation.GameModeDuel1v1 {
+		t.Fatalf("expected debug room default mode %q, got %q", simulation.GameModeDuel1v1, created.GameMode)
+	}
+	stored := store.lookupRoom(created.ID)
+	if stored == nil || stored.gameConfig.SelectedMode.ID != simulation.GameModeDuel1v1 {
+		t.Fatalf("expected debug room to own default selected config, got %+v", stored)
+	}
 }
 
 func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t *testing.T) {
@@ -1714,7 +1976,10 @@ func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T)
 
 func TestHandlerUsesConfiguredMapForResponseCapacityAndStart(t *testing.T) {
 	gameMap := customRoomMap()
-	store := newStore(5, newFakeClock(), StoreConfig{Map: gameMap})
+	store := newStore(5, newFakeClock(), StoreConfig{
+		Map:        gameMap,
+		GameConfig: singleModeGameConfig(simulation.DefaultGameModeConfig()),
+	})
 	handler := debugHandler(t, store)
 	defer store.Close()
 
@@ -1847,8 +2112,7 @@ func TestHandlerMatchmakingUsesDefaultOneVsOneRules(t *testing.T) {
 }
 
 func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
-	gameConfig := simulation.StaticGameConfig()
-	gameConfig.Mode = simulation.GameModeConfig{
+	mode := simulation.GameModeConfig{
 		ID:              "test_quartet",
 		PlayersPerMatch: 4,
 		Teams: []simulation.TeamConfig{
@@ -1860,6 +2124,7 @@ func TestHandlerMatchmakingUsesConfiguredModeRules(t *testing.T) {
 			FriendlyFire: false,
 		},
 	}
+	gameConfig := singleModeGameConfig(mode)
 
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{GameConfig: gameConfig})
@@ -2049,6 +2314,19 @@ func joinMatchmaking(t *testing.T, handler http.Handler) matchmakingJoinResponse
 	return joined
 }
 
+func joinMatchmakingWithMode(t *testing.T, handler http.Handler, gameMode string) matchmakingJoinResponse {
+	t.Helper()
+
+	body := `{"gameMode":` + strconv.Quote(gameMode) + `}`
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected matchmaking join status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var joined matchmakingJoinResponse
+	decodeResponse(t, rec, &joined)
+	return joined
+}
+
 func customRoomMap() simulation.MapData {
 	return simulation.MapData{
 		Width:      7,
@@ -2066,8 +2344,31 @@ func customRoomMap() simulation.MapData {
 	}
 }
 
+func singleModeGameConfig(mode simulation.GameModeConfig) simulation.GameConfig {
+	config := simulation.StaticGameConfig()
+	config.ModeCatalog = simulation.GameModeCatalogConfig{
+		Default: mode.ID,
+		Catalog: []simulation.GameModeConfig{mode},
+	}
+	config.SelectedMode = mode
+	return config
+}
+
 func request(handler http.Handler, method string, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+testDebugAPIToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func requestWithBody(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
+	var req *http.Request
+	if body == "" {
+		req = httptest.NewRequest(method, path, nil)
+	} else {
+		req = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
 	req.Header.Set("Authorization", "Bearer "+testDebugAPIToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
