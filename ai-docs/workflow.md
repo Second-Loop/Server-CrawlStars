@@ -27,6 +27,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - simple `/matchmaking/join`
 - `/matchmaking/join` IP별 token-bucket rate limit
 - matchmaking Ready event/ready ACK/countdown/start
+- sessionless server-owned bot participant와 human-only Ready quorum
 - start 전 match cancel
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - server-hosted OpenAPI/AsyncAPI docs
@@ -37,7 +38,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 
 - production matchmaking
 - ready timeout
-- bot replacement, reconnect grace
+- SL-91의 10초 automatic bot fill, bot replacement, reconnect grace
 - respawn, score
 - persistence, database, account auth
 - Kubernetes, dashboard, scheduler, runner
@@ -105,16 +106,24 @@ Ticket이 없으면 `[SL-58]` 부분만 생략합니다.
 make ci
 ```
 
-계약 문서만 확인할 때:
+계약 문서는 다음 순서를 고정합니다.
 
 ```sh
-make docs-build
-npx --yes --package @asyncapi/cli asyncapi validate api/asyncapi.yaml
+rtk node docs-ui/scripts/validate.mjs
+REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true rtk npx --yes --package @redocly/cli@2.38.0 redocly lint --extends=minimal api/openapi.yaml
+rtk npx --yes --package @asyncapi/cli@6.0.2 asyncapi validate api/asyncapi.yaml --fail-severity=error
+rtk node docs-ui/scripts/build.mjs
+rtk mise exec -- env GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/go-mod" go test ./internal/docs -count=1
 ```
+
+1. `validate.mjs`가 source marker와 cross-file 구조를 확인합니다.
+2. Pinned Redocly `2.38.0`과 AsyncAPI CLI `6.0.2`가 YAML parse/schema를 공식 검증합니다.
+3. Source validator가 모두 통과한 뒤에만 `build.mjs`로 ignored embed output을 갱신합니다.
+4. 마지막 Go docs test가 새 generated spec/UI를 실제 handler에서 읽어 확인합니다.
 
 `make ci`는 docs validation/build, `go vet`, `go test`, server build, network를 쓰지 않는 deploy 회귀 테스트, deploy script syntax check를 함께 실행합니다. Deploy만 빠르게 확인할 때는 `make deploy-test`를 실행합니다. Clean checkout에서 `go test ./...`만 바로 실행하면 Go embed 대상 docs 파일이 없을 수 있으므로 공식 검증은 `make ci`입니다.
 
-`docs-ui/scripts/validate.mjs`는 필수 marker와 secret-free DTO 경계를 빠르게 확인하지만 YAML schema parser는 아닙니다. 계약 변경 시 OpenAPI/AsyncAPI YAML parse와 공식 AsyncAPI CLI validation을 별도로 실행합니다.
+`docs-ui/scripts/validate.mjs`는 필수 marker와 secret-free DTO 경계를 빠르게 확인하지만 YAML parser는 아닙니다. 따라서 이 script가 통과해도 pinned Redocly/AsyncAPI CLI 두 command를 생략하거나 `build.mjs`를 먼저 실행하지 않습니다.
 
 ## 문서 업데이트
 

@@ -711,14 +711,7 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	s.mu.Unlock()
 	room.lastActivityAt = s.clock.Now()
 	room.disconnectedAt = time.Time{}
-	if room.hasPreStartMatch() && room.matchStatus == MatchStatusMatched && room.allMatchClientsAttached() {
-		room.matchStatus = MatchStatusLoading
-		deliveries = append(deliveries, room.readyEventDeliveries()...)
-		if room.allMatchPlayersReady() {
-			s.startMatchCountdownLocked(room)
-			deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
-		}
-	}
+	deliveries = append(deliveries, s.advanceMatchLoadingLocked(room)...)
 	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
@@ -956,14 +949,12 @@ func (s *Store) tickRoomState(room *room) {
 		return
 	}
 
-	inputs := make([]simulation.InputCommand, 0, len(room.pendingInputs))
-	for _, input := range room.pendingInputs {
-		inputs = append(inputs, input)
-	}
+	inputs := mergedTickInputs(room.pendingInputs, room.lastPlayers)
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	stepStarted := s.wallNow()
 	snapshot := room.state.Step(inputs)
 	stepDuration := s.wallNow().Sub(stepStarted)
+	room.lastPlayers = append([]simulation.PlayerData(nil), snapshot.Players...)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 	results := room.calculateGameEndResults(snapshot)
@@ -1085,29 +1076,54 @@ func (r *room) hasPreStartMatch() bool {
 	return r.Status != RoomStatusStarted && r.matchStatus != ""
 }
 
+func (s *Store) advanceMatchLoadingLocked(room *room) []webSocketDelivery {
+	if !room.hasPreStartMatch() || room.matchStatus != MatchStatusMatched ||
+		!room.allMatchClientsAttached() {
+		return nil
+	}
+	room.matchStatus = MatchStatusLoading
+	deliveries := room.readyEventDeliveries()
+	if room.allMatchPlayersReady() {
+		s.startMatchCountdownLocked(room)
+		deliveries = append(
+			deliveries,
+			room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...,
+		)
+	}
+	return deliveries
+}
+
 func (r *room) allMatchClientsAttached() bool {
-	matchPlayerCount := r.gameConfig.MatchPlayerCount()
-	if len(r.Players) < matchPlayerCount {
+	if len(r.Players) != r.gameConfig.MatchPlayerCount() {
 		return false
 	}
+	humanCount := 0
 	for _, player := range r.Players {
+		if player.IsBot {
+			continue
+		}
+		humanCount++
 		session, ok := r.clients[player.ID]
 		if !ok || session == nil || session.conn == nil {
 			return false
 		}
 	}
-	return true
+	return humanCount > 0
 }
 
 func (r *room) allMatchPlayersReady() bool {
-	matchPlayerCount := r.gameConfig.MatchPlayerCount()
-	if len(r.Players) < matchPlayerCount {
+	if len(r.Players) != r.gameConfig.MatchPlayerCount() {
 		return false
 	}
+	humanCount := 0
 	for _, player := range r.Players {
+		if player.IsBot {
+			continue
+		}
+		humanCount++
 		if !r.readyPlayers[player.ID] {
 			return false
 		}
 	}
-	return true
+	return humanCount > 0
 }

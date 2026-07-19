@@ -34,6 +34,31 @@ func TestStepReturnsSnapshotWithoutTransport(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("blue-1"), TeamBlue, 0, Vector2{X: 1, Y: 0})
 }
 
+func TestStatePreservesBotIdentity(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("human"), Team: TeamRed, IsBot: false},
+		{ID: PlayerID("bot"), Team: TeamBlue, IsBot: true},
+	})
+
+	snapshot := state.Step(nil)
+	want := map[PlayerID]bool{
+		PlayerID("human"): false,
+		PlayerID("bot"):   true,
+	}
+	if len(snapshot.Players) != len(want) {
+		t.Fatalf("expected %d players, got %d", len(want), len(snapshot.Players))
+	}
+	for _, player := range snapshot.Players {
+		wantIsBot, ok := want[player.ID]
+		if !ok {
+			t.Fatalf("unexpected player %q", player.ID)
+		}
+		if player.IsBot != wantIsBot {
+			t.Fatalf("expected player %q IsBot %t, got %t", player.ID, wantIsBot, player.IsBot)
+		}
+	}
+}
+
 func TestStepContractAppliesInputCommands(t *testing.T) {
 	state := NewState([]PlayerData{
 		{

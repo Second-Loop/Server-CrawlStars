@@ -30,9 +30,10 @@ type mapResponse struct {
 }
 
 type playerResponse struct {
-	ID   string `json:"id"`
-	Team string `json:"team"`
-	Slot int    `json:"slot"`
+	ID    string `json:"id"`
+	Team  string `json:"team"`
+	Slot  int    `json:"slot"`
+	IsBot bool   `json:"isBot"`
 }
 
 type playerSessionResponse struct {
@@ -101,6 +102,7 @@ type readyEventPlayer struct {
 	ID            string             `json:"Id"`
 	Team          string             `json:"Team"`
 	Slot          int                `json:"Slot"`
+	IsBot         bool               `json:"IsBot"`
 	SpawnPosition simulation.Vector2 `json:"SpawnPosition"`
 }
 
@@ -235,6 +237,7 @@ func readyEventPlayers(players []playerResponse, gameConfig simulation.GameConfi
 			ID:            string(player.ID),
 			Team:          string(player.Team),
 			Slot:          player.Slot,
+			IsBot:         player.IsBot,
 			SpawnPosition: player.Pos,
 		})
 	}
@@ -321,10 +324,11 @@ func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfi
 	for index, player := range players {
 		assignment := assignments[index]
 		result = append(result, simulation.PlayerData{
-			ID:   simulation.PlayerID(player.ID),
-			Team: assignment.Team,
-			Slot: assignment.Slot,
-			Pos:  assignment.SpawnPosition,
+			ID:    simulation.PlayerID(player.ID),
+			Team:  assignment.Team,
+			Slot:  assignment.Slot,
+			IsBot: player.IsBot,
+			Pos:   assignment.SpawnPosition,
 		})
 	}
 	return result

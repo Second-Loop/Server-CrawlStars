@@ -494,7 +494,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
-후속 상태: Ready quorum과 spawn 결정은 유지합니다. 당시 별도 issue로 남긴 Solo/Team GameEnd는 ADR-0031에서 구현됐습니다.
+후속 상태: Ready quorum과 spawn 결정은 유지합니다. 당시 별도 issue로 남긴 Solo/Team GameEnd는 ADR-0031에서 구현됐습니다. ADR-0032는 이 ADR의 “2/6명 전원을 human/WebSocket으로 요구하고 bot fill은 없음” 부분을 human+bot participant capacity와 human-only attach/ACK quorum으로 대체합니다. Human participant가 0명이면 quorum은 성립하지 않으며, 10초 automatic fill은 SL-91 범위로 아직 구현하지 않았습니다. 아래 결정과 결과는 SL-87 당시의 역사적 맥락으로 유지합니다.
 
 맥락: SL-86은 `duel_1v1`, `solo`, `team`의 waiting pool과 room-local selected config를 제공합니다. 기존 Ready state machine은 required count를 받을 수 있지만 실제 6 WebSocket, 6 human ACK, duplicate ACK, single-start behavior가 end-to-end로 고정되지 않았습니다. 또한 5x5 StaticMap의 preferred fallback 가운데 center `(2,2)`가 Wall이라 다섯 번째 player가 blocking tile에서 시작할 수 있었습니다.
 
@@ -566,3 +566,27 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Player는 결과를 한 번만 받고 이전 Lose가 뒤의 Draw로 뒤집히지 않습니다.
 - Normal runtime은 terminal close가 끝난 뒤에만 room과 player ID를 재사용할 수 있고, TTL/debug removal은 close barrier를 우회하지 않습니다.
 - Process Shutdown은 normal success로 위장하지 않으면서도 deadline에 registry와 모든 owned worker/session을 회수합니다.
+
+## ADR-0032: SL-90 Server-owned bot은 공통 InputCommand와 simulation을 사용
+
+상태: 승인됨
+
+맥락: Mode별 participant capacity를 실제 gameplay로 검증하려면 human client를 2개 또는 6개 항상 연결하지 않고도 server-owned participant를 구성할 수 있어야 합니다. 다만 bot이 별도 gameplay state나 credential을 가지거나 room tick 밖에서 movement/combat를 직접 변경하면 server-authoritative simulation과 Ready quorum 경계가 갈라집니다. SL-90은 deterministic한 최소 controller와 internal participant primitive까지만 만들고, 언제 bot을 채울지는 SL-91에 남깁니다.
+
+결정:
+
+- Bot은 package-internal `addBots`가 waiting room의 남은 selected-mode capacity에 추가하는 sessionless participant입니다. Player ID와 team/slot은 human과 같은 participant 경로를 사용하지만 session token, WebSocket path, Ready ACK, public creation endpoint는 만들지 않습니다.
+- Human과 bot을 합친 participant가 mode capacity 2명 또는 6명을 채운 뒤 room 내 human current session만 attach/ACK quorum에 들어갑니다. Ready는 human session에만 전달하고 payload에는 bot을 포함한 full participant list를 넣습니다. Human participant가 0명이면 attach/ACK quorum은 false입니다.
+- REST generic `Player`는 required `isBot`, Ready `ReadyPlayer`와 gameplay `PlayerData`는 required `IsBot`을 사용합니다. Human의 `false`도 생략하지 않으며 credential-bearing REST wrapper는 `HumanPlayer/isBot const false`로 제한합니다.
+- Pure bot controller는 직전 authoritative snapshot만 읽습니다. Self, ally, dead player를 제외한 가장 가까운 live enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 결정합니다. 이는 ADR-0030의 projectile multi-contact join/assignment 순서와 다른 bot targeting 경계입니다.
+- Pending input map key를 authoritative player ID로 사용해 payload ID를 덮어씁니다. Bot key의 외부 input은 버리고 controller command로 대체한 뒤 human/bot command를 `PlayerID` 오름차순으로 정렬합니다.
+- Room은 직전 snapshot, pending input, bot merge, simulation state를 `room.mu` 아래 소유합니다. 한 room tick은 공통 `State.Step`을 정확히 한 번 호출하고 반환 snapshot 하나를 다음 authoritative state와 delivery에 사용합니다.
+- Movement, projectile, hit, HP/death, normal attack charge/recharge는 계속 `internal/simulation`이 소유합니다. Bot도 같은 GameEnd result ledger 계산에는 포함되지만 terminal payload와 transport close는 session이 있는 human에게만 수행합니다.
+- `addBots`는 `Store.mu -> room.mu` 순서로 ID를 예약한 뒤 room identity, lifecycle, capacity를 재검증합니다. 실패하면 예약 ID를 모두 rollback하고 partial participant를 남기지 않습니다.
+- Pathfinding, obstacle avoidance, line-of-sight, dodge, ultimate, randomness, disconnect replacement와 10초 automatic fill timer는 추가하지 않습니다. Timer-triggered policy는 SL-91 범위입니다.
+
+결과:
+
+- Bot과 human이 같은 Ready/Snapshot identity와 공통 simulation 결과를 사용하므로 별도 bot gameplay truth가 생기지 않습니다.
+- Pending map 순회나 payload ID, 같은 거리 target 때문에 tick 결과가 흔들리지 않고 State/attack charge budget을 우회하지 않습니다.
+- SL-90은 안전한 internal primitive와 one-Step integration을 제공하며 public matchmaking의 10초 fill timing은 SL-91이 별도로 결정할 수 있습니다.

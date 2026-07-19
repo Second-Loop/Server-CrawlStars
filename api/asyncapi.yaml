@@ -1,14 +1,14 @@
 asyncapi: 3.0.0
 info:
   title: Server Crawl Stars WebSocket API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
-    Matchmaking room은 선택 mode의 required player가 모두 연결되면 `Type: Ready` 이벤트로 렌더 준비에 필요한 map과 player별 team/slot/spawn을 전달합니다.
-    duel_1v1은 2명, solo와 team은 6명의 human player와 6개의 서로 다른 WebSocket connection을 요구합니다. Countdown은 각 player가 보낸 ready ACK가 모두 모인 뒤 한 번만 시작합니다.
-    같은 player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` gameplay snapshot을 broadcast합니다.
-    Ready timeout, pre-start reconnect grace, reconnect participant replacement, bot fill은 제공하지 않습니다. Start 전 실제 disconnect는 pre-start cancel로 room을 삭제합니다.
+    Matchmaking room은 selected mode의 full participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 `Type: Ready` 이벤트를 human session에 전달합니다. Ready payload는 full participant list를 포함하므로 human과 server-owned bot의 team/slot/spawn을 함께 보여 줍니다.
+    duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
+    같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` gameplay snapshot을 broadcast합니다.
+    SL-90은 internal addBots만 제공하고 10초 automatic fill은 SL-91 범위입니다. Ready timeout, pre-start reconnect grace, reconnect participant replacement는 아직 제공하지 않습니다. Start 전 실제 human disconnect는 pre-start cancel로 room을 삭제합니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
     일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
@@ -37,10 +37,10 @@ channels:
       Handshake 실패 우선순위는 room 404, player 404, token 401, 이미 연결됐거나 in-flight reservation이 있는 player 409 순서입니다. Wrong token은 reservation 409보다 먼저 401입니다.
       발급 응답의 `sessionToken`, tokenized `webSocketPath`, inbound query는 모두 secret-bearing surface입니다. raw token과 전체 query 문자열은 log에 남기지 않습니다.
       같은 room/player의 중복 연결은 upgrade 전에 거부됩니다.
-      Matchmaking room에서는 selected mode required player가 모두 연결되면 `Type: Ready` 이벤트를 받습니다.
-      duel_1v1의 2개 또는 solo/team의 6개 player session이 각각 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다.
+      Matchmaking room에서는 selected mode participant capacity가 채워지고 연결된 human session이 모두 attach되면 human WebSocket만 `Type: Ready` 이벤트를 받습니다. Payload의 full participant list에는 bot도 포함됩니다.
+      연결된 human session이 각각 ready ACK를 보낸 뒤 starting 신호와 started snapshot을 받습니다. Bot은 session, WebSocket, ready ACK, gameplay input이 없습니다.
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
-      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Bot replacement와 reconnect grace는 제공하지 않습니다.
+      Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. SL-90의 internal addBots는 participant primitive이며 SL-91의 10초 automatic fill과 reconnect grace는 아직 제공하지 않습니다.
       일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
     bindings:
       ws:
@@ -86,7 +86,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Receive Ready event
-    summary: selected mode의 required client가 모두 연결된 뒤 map과 player별 team, slot, spawn 정보를 받습니다.
+    summary: selected mode의 full participant가 준비되고 human session이 모두 연결된 뒤 map과 participant별 team, slot, bot identity, spawn 정보를 human client가 받습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyEvent"
   sendReadyAck:
@@ -94,7 +94,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Send ready ACK
-    summary: client asset load/render 준비가 끝났음을 서버에 알립니다.
+    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Bot은 ACK를 보내지 않습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyAck"
   receiveSnapshot:
@@ -153,12 +153,12 @@ components:
     ReadyEventMessage:
       name: ReadyEventMessage
       title: Ready event
-      summary: 서버가 selected mode의 client 렌더 준비에 필요한 map과 player assignment를 전달합니다.
+      summary: 서버가 human client 렌더 준비에 필요한 map과 full participant assignment를 전달합니다.
       payload:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
         - name: teamReadyEvent
-          summary: team mode 6명이 5x5 fallback map에서 받는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
+          summary: team mode의 human 2명과 bot 4명이 5x5 fallback map에 참여하는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
           payload:
             Type: Ready
             Map:
@@ -177,26 +177,32 @@ components:
               - Id: player_VuTsRqPoNmLkJiHgFeDcBa
                 Team: red
                 Slot: 0
+                IsBot: false
                 SpawnPosition: {x: -1.2, y: 1.2}
               - Id: player_AbCdEfGhIjKlMnOpQrStUv
                 Team: blue
                 Slot: 0
+                IsBot: false
                 SpawnPosition: {x: 1.2, y: -1.2}
               - Id: player_wXyZ0123456789AbCdEfGh
                 Team: red
                 Slot: 1
+                IsBot: true
                 SpawnPosition: {x: 1.2, y: 1.2}
               - Id: player_q1W2e3R4t5Y6u7I8o9P0aS
                 Team: blue
                 Slot: 1
+                IsBot: true
                 SpawnPosition: {x: -1.2, y: -1.2}
               - Id: player_LmNoPqRsTuVwXyZaBcDeFg
                 Team: red
                 Slot: 2
+                IsBot: true
                 SpawnPosition: {x: -1.2, y: 0}
               - Id: player_hGfEdCbAzYxWvUtSrQpOnM
                 Team: blue
                 Slot: 2
+                IsBot: true
                 SpawnPosition: {x: 1.2, y: 0}
     ReadyAckMessage:
       name: ReadyAckMessage
@@ -236,6 +242,7 @@ components:
                 - Id: player_VuTsRqPoNmLkJiHgFeDcBa
                   Team: red
                   Slot: 0
+                  IsBot: false
                   Pos:
                     x: -1.2
                     y: 1.2
@@ -249,6 +256,24 @@ components:
                   Radius: 0.5
                   HP: 100
                   PressedAttack: false
+                  IsDead: false
+                - Id: player_AbCdEfGhIjKlMnOpQrStUv
+                  Team: blue
+                  Slot: 0
+                  IsBot: true
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  MoveDir:
+                    x: -1
+                    y: 0
+                  AttackDir:
+                    x: -1
+                    y: 0
+                  Speed: 2
+                  Radius: 0.5
+                  HP: 100
+                  PressedAttack: true
                   IsDead: false
               Projectiles: null
     GameEndMessage:
@@ -301,7 +326,7 @@ components:
     InputMessage:
       type: object
       description: |
-        Gameplay input입니다. `Type` field를 넣지 않습니다.
+        Human WebSocket gameplay input입니다. `Type` field를 넣지 않습니다. Bot command는 같은 InputCommand shape를 server 내부 controller가 만들며 WebSocket sender나 ACK가 없습니다.
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
         유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
         Player는 server-only 4 attack charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
@@ -316,7 +341,7 @@ components:
     ReadyEventMessage:
       type: object
       required: [Type, Map, Players]
-      description: 선택 mode의 required client 모두에게 보내는 렌더 준비 이벤트입니다. `Map.map`은 JSON number array row이고 `Players`는 room-local mode assignment 순서입니다.
+      description: Participant capacity와 human attach quorum이 모두 충족된 뒤 연결된 human session에만 보내는 렌더 준비 이벤트입니다. `Map.map`은 JSON number array row이고 `Players`는 bot을 포함한 full room-local mode assignment 순서입니다.
       properties:
         Type:
           type: string
@@ -428,7 +453,7 @@ components:
       type: string
       enum: [starting, started]
       description: |
-        starting은 selected mode의 서로 다른 모든 player가 ready ACK를 보낸 뒤 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다.
+        starting은 selected mode의 서로 다른 모든 human session이 ready ACK를 보낸 뒤 server 내부 countdown이 시작됐음을 알리는 1회 신호입니다. Bot은 ACK quorum에 들어가지 않습니다.
         started는 countdown이 끝나고 room의 단일 gameplay ticker와 snapshot stream이 시작된 상태입니다.
     MapData:
       type: object
@@ -463,7 +488,7 @@ components:
               enum: [0, 1, 2, 3, 4]
     ReadyPlayer:
       type: object
-      required: [Id, Team, Slot, SpawnPosition]
+      required: [Id, Team, Slot, IsBot, SpawnPosition]
       properties:
         Id:
           type: string
@@ -473,11 +498,14 @@ components:
         Slot:
           type: integer
           minimum: 0
+        IsBot:
+          type: boolean
+          description: Server-owned bot participant이면 true입니다. Bot은 session, WebSocket, ready ACK가 없습니다.
         SpawnPosition:
           $ref: "#/components/schemas/Vector2"
     PlayerData:
       type: object
-      required: [Id, Team, Slot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]
+      required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead]
       properties:
         Id:
           type: string
@@ -487,6 +515,9 @@ components:
         Slot:
           type: integer
           minimum: 0
+        IsBot:
+          type: boolean
+          description: Server-owned bot participant이면 true입니다. Human과 bot 모두 같은 gameplay snapshot에 포함됩니다.
         Pos:
           $ref: "#/components/schemas/Vector2"
         MoveDir:
