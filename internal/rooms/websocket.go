@@ -949,14 +949,12 @@ func (s *Store) tickRoomState(room *room) {
 		return
 	}
 
-	inputs := make([]simulation.InputCommand, 0, len(room.pendingInputs))
-	for _, input := range room.pendingInputs {
-		inputs = append(inputs, input)
-	}
+	inputs := mergedTickInputs(room.pendingInputs, room.lastPlayers)
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	stepStarted := s.wallNow()
 	snapshot := room.state.Step(inputs)
 	stepDuration := s.wallNow().Sub(stepStarted)
+	room.lastPlayers = append([]simulation.PlayerData(nil), snapshot.Players...)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
 	results := room.calculateGameEndResults(snapshot)

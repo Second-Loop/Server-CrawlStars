@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3252,6 +3253,306 @@ func TestBotFilledModesUseHumanOnlyReadyQuorum(t *testing.T) {
 	})
 }
 
+func TestTickRoomMergesHumanAndBotIntoExactlyOneStateStep(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("select duel mode: %v", err)
+	}
+
+	players := []simulation.PlayerData{
+		{ID: "human", Team: simulation.TeamRed, Pos: simulation.Vector2{X: -1}},
+		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 1}, IsBot: true},
+	}
+	returnedPlayers := append([]simulation.PlayerData(nil), players...)
+	returnedPlayers[0].Pos.Y = 1
+	stepper := &botRecordingStepper{
+		snapshot: simulation.Snapshot{Tick: 1, Players: returnedPlayers},
+	}
+	room := store.newRoomLocked("room-bot-one-step", config)
+	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.Players = []playerResponse{
+		{ID: "human", Team: string(simulation.TeamRed)},
+		{ID: "bot", Team: string(simulation.TeamBlue), IsBot: true},
+	}
+	room.lastPlayers = append([]simulation.PlayerData(nil), players...)
+	room.state = stepper
+	room.pendingInputs = map[string]simulation.InputCommand{
+		"human": {PlayerID: "spoof", MoveDir: simulation.Vector2{Y: 1}},
+		"bot":   {PlayerID: "human", MoveDir: simulation.Vector2{X: -99}},
+	}
+
+	store.tickRoomState(room)
+
+	if len(stepper.calls) != 1 {
+		t.Fatalf("State.Step calls=%d, want exactly one", len(stepper.calls))
+	}
+	assertAscendingUniqueInputIDs(t, stepper.calls[0])
+	if human := playerInputByID(t, stepper.calls[0], "human"); human.PlayerID != "human" ||
+		human.MoveDir != (simulation.Vector2{Y: 1}) {
+		t.Fatalf("human input must use map key identity: %+v", human)
+	}
+	bot := playerInputByID(t, stepper.calls[0], "bot")
+	if bot.MoveDir == (simulation.Vector2{X: -99}) || !bot.PressedAttack {
+		t.Fatalf("bot input must come from controller: %+v", bot)
+	}
+	if !reflect.DeepEqual(room.lastPlayers, returnedPlayers) {
+		t.Fatalf("lastPlayers=%+v, want returned snapshot players %+v", room.lastPlayers, returnedPlayers)
+	}
+	stepper.snapshot.Players[0].Pos.X = 999
+	if room.lastPlayers[0].Pos.X == 999 {
+		t.Fatal("lastPlayers must not alias the returned snapshot backing slice")
+	}
+	if len(room.pendingInputs) != 0 {
+		t.Fatalf("pending inputs must be cleared after tick, got %+v", room.pendingInputs)
+	}
+}
+
+func TestBotAppearsAndActsInRealSharedGameplaySnapshot(t *testing.T) {
+	fakeClock := newFakeClock()
+	store := NewStoreWithClock(5, fakeClock)
+	t.Cleanup(store.Close)
+	handler := debugHandler(t, store)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	human := joinMatchmakingWithMode(t, handler, simulation.GameModeDuel1v1)
+	conn := dialIssuedPlayer(t, server.URL, human.WebSocketPath)
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	waitForAttachedClient(t, store, human.Room.ID, human.Player.ID)
+	bots, err := store.addBots(human.Room.ID, 1)
+	if err != nil || len(bots) != 1 {
+		t.Fatalf("fill Duel with one bot: bots=%+v err=%v", bots, err)
+	}
+
+	ready := readReadyEventMessage(t, conn)
+	if len(ready.Players) != 2 || ready.Players[0].IsBot || !ready.Players[1].IsBot {
+		t.Fatalf("expected human and bot Ready participants, got %+v", ready.Players)
+	}
+	writeWSJSON(t, conn, readyMessage{Type: "ready"})
+	waitForMatchLifecycleState(t, store, human.Room.ID, MatchStatusStarting, 1, 1)
+	starting := readMatchSnapshotMessage(t, conn)
+	if starting.Snapshot.Status != string(MatchStatusStarting) {
+		t.Fatalf("expected starting control before gameplay, got %+v", starting.Snapshot)
+	}
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+	waitForMatchLifecycleState(t, store, human.Room.ID, MatchStatusStarted, 1, 1)
+	started := readMatchSnapshotMessage(t, conn)
+	if started.Snapshot.Status != string(MatchStatusStarted) {
+		t.Fatalf("expected started control before gameplay, got %+v", started.Snapshot)
+	}
+
+	room := store.lookupRoom(human.Room.ID)
+	if room == nil {
+		t.Fatal("expected started bot-filled Duel room")
+	}
+	room.mu.Lock()
+	capture := &capturingSimulationStepper{delegate: room.state}
+	room.state = capture
+	room.mu.Unlock()
+
+	writeWSJSON(t, conn, inputMessage{MoveDir: simulation.Vector2{Y: 1}})
+	waitForPendingInput(t, store, human.Room.ID, human.Player.ID)
+	store.tickRoomState(room)
+
+	payload := readWebSocketPayload(t, conn)
+	var wire roomSnapshotMessage
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatalf("decode shared gameplay snapshot: %v", err)
+	}
+	if wire.Type != "snapshot" {
+		t.Fatalf("expected gameplay snapshot, got type %q", wire.Type)
+	}
+	if len(capture.calls) != 1 || len(capture.snapshots) != 1 {
+		t.Fatalf("shared state calls=%d snapshots=%d, want one each", len(capture.calls), len(capture.snapshots))
+	}
+	assertAscendingUniqueInputIDs(t, capture.calls[0])
+	if len(capture.calls[0]) != 2 {
+		t.Fatalf("shared tick inputs=%+v, want one human and one bot", capture.calls[0])
+	}
+	if !reflect.DeepEqual(
+		roomSnapshotFromSimulation(capture.snapshots[0], MatchStatusStarted),
+		wire.Snapshot,
+	) {
+		t.Fatalf("wire snapshot=%+v, want captured shared snapshot %+v", wire.Snapshot, capture.snapshots[0])
+	}
+
+	humanPlayer := playerByID(t, capture.snapshots[0].Players, simulation.PlayerID(human.Player.ID))
+	botPlayer := playerByID(t, capture.snapshots[0].Players, simulation.PlayerID(bots[0].ID))
+	if humanPlayer.IsBot || !botPlayer.IsBot {
+		t.Fatalf("unexpected participant identity human=%+v bot=%+v", humanPlayer, botPlayer)
+	}
+	if botPlayer.MoveDir == (simulation.Vector2{}) || botPlayer.MoveDir != botPlayer.AttackDir ||
+		math.Abs(math.Hypot(botPlayer.MoveDir.X, botPlayer.MoveDir.Y)-1) > 1e-9 ||
+		!botPlayer.PressedAttack {
+		t.Fatalf("bot must move, aim, and receive shared-state attack approval: %+v", botPlayer)
+	}
+	if len(capture.snapshots[0].Projectiles) != 1 ||
+		capture.snapshots[0].Projectiles[0].OwnerID != botPlayer.ID {
+		t.Fatalf("expected one bot-owned shared projectile, got %+v", capture.snapshots[0].Projectiles)
+	}
+}
+
+func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		humanCount int
+		botCount   int
+	}{
+		{name: "duel", mode: simulation.GameModeDuel1v1, humanCount: 1, botCount: 1},
+		{name: "solo", mode: simulation.GameModeSolo, humanCount: 1, botCount: 5},
+		{name: "team", mode: simulation.GameModeTeam, humanCount: 2, botCount: 4},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeClock := newFakeClock()
+			store := NewStoreWithClock(5, fakeClock)
+			t.Cleanup(store.Close)
+			handler := debugHandler(t, store)
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+
+			joined := make([]matchmakingJoinResponse, test.humanCount)
+			connections := make([]*websocket.Conn, test.humanCount)
+			humanIDs := make(map[string]struct{}, test.humanCount)
+			for index := range joined {
+				joined[index] = joinMatchmakingWithMode(t, handler, test.mode)
+				if index > 0 && joined[index].Room.ID != joined[0].Room.ID {
+					t.Fatalf("human %d joined room %q, want %q", index, joined[index].Room.ID, joined[0].Room.ID)
+				}
+				humanIDs[joined[index].Player.ID] = struct{}{}
+				connections[index] = dialIssuedPlayer(t, server.URL, joined[index].WebSocketPath)
+				conn := connections[index]
+				t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+				waitForAttachedClient(t, store, joined[0].Room.ID, joined[index].Player.ID)
+			}
+			bots, err := store.addBots(joined[0].Room.ID, test.botCount)
+			if err != nil || len(bots) != test.botCount {
+				t.Fatalf("fill %s with bots: bots=%+v err=%v", test.mode, bots, err)
+			}
+			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusLoading, test.humanCount, 0)
+			participantIDs := make([]string, 0, test.humanCount+test.botCount)
+			for _, human := range joined {
+				participantIDs = append(participantIDs, human.Player.ID)
+			}
+			for _, bot := range bots {
+				participantIDs = append(participantIDs, bot.ID)
+			}
+
+			var firstReady readyEventMessage
+			for index, conn := range connections {
+				ready := readReadyEventMessage(t, conn)
+				if len(ready.Players) != len(participantIDs) {
+					t.Fatalf("Ready participants=%d, want %d", len(ready.Players), len(participantIDs))
+				}
+				if index == 0 {
+					firstReady = ready
+				} else {
+					assertMatchingReadyEvents(t, firstReady, ready)
+				}
+			}
+			for _, conn := range connections {
+				writeWSJSON(t, conn, readyMessage{Type: "ready"})
+			}
+			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusStarting, test.humanCount, test.humanCount)
+			for _, conn := range connections {
+				starting := readMatchSnapshotMessage(t, conn)
+				if starting.Snapshot.Status != string(MatchStatusStarting) ||
+					starting.Snapshot.Countdown != matchCountdownSeconds || starting.Snapshot.Tick != 0 {
+					t.Fatalf("expected starting control, got %+v", starting.Snapshot)
+				}
+			}
+			for range matchCountdownSeconds {
+				fakeClock.TickTicker(time.Second, 0)
+			}
+			waitForMatchLifecycleState(t, store, joined[0].Room.ID, MatchStatusStarted, test.humanCount, test.humanCount)
+			for _, conn := range connections {
+				started := readMatchSnapshotMessage(t, conn)
+				if started.Snapshot.Status != string(MatchStatusStarted) || started.Snapshot.Tick != 0 {
+					t.Fatalf("expected started control, got %+v", started.Snapshot)
+				}
+			}
+
+			room := store.lookupRoom(joined[0].Room.ID)
+			if room == nil {
+				t.Fatal("expected started bot mode room")
+			}
+			preTerminalClients := assertRoomRuntimeOwnershipIsHumanOnly(t, room, humanIDs)
+			room.mu.Lock()
+			terminalPlayers := terminalPlayersForBotModeTest(test.mode, room.lastPlayers)
+			stepper := &botRecordingStepper{
+				snapshot: simulation.Snapshot{Tick: 1, Players: terminalPlayers},
+			}
+			room.state = stepper
+			room.mu.Unlock()
+
+			store.tickRoomState(room)
+			for index, conn := range connections {
+				terminal := readSnapshotMessage(t, conn)
+				if terminal.Type != "snapshot" || !reflect.DeepEqual(terminal.Snapshot, stepper.snapshot) {
+					t.Fatalf("human %d terminal snapshot=%+v, want %+v", index, terminal.Snapshot, stepper.snapshot)
+				}
+				humanPlayer := playerByID(t, terminalPlayers, simulation.PlayerID(joined[index].Player.ID))
+				wantResult := expectedBotModeResult(humanPlayer)
+				assertGameEnd(t, readGameEndMessage(t, conn), joined[index].Player.ID, wantResult.String())
+				acknowledgeWebSocketClose(t, conn)
+			}
+			if len(stepper.calls) != 1 {
+				t.Fatalf("terminal State.Step calls=%d, want exactly one", len(stepper.calls))
+			}
+			waitForGameEndCleanup(t, room)
+
+			room.mu.Lock()
+			ledger := make(map[string]gameEndResult, len(room.finalizedGameEndResults))
+			for playerID, result := range room.finalizedGameEndResults {
+				ledger[playerID] = result
+			}
+			deliverySessions := make(map[string]*clientSession, len(room.finalizedGameEndSessions))
+			for playerID, session := range room.finalizedGameEndSessions {
+				deliverySessions[playerID] = session
+			}
+			room.mu.Unlock()
+			if len(ledger) != len(participantIDs) {
+				t.Fatalf("GameEnd ledger=%+v, want %d participants", ledger, len(participantIDs))
+			}
+			if len(deliverySessions) != test.humanCount {
+				t.Fatalf("GameEnd delivery sessions=%d, want %d humans", len(deliverySessions), test.humanCount)
+			}
+			for _, player := range terminalPlayers {
+				wantResult := expectedBotModeResult(player)
+				if got := ledger[string(player.ID)]; got != wantResult {
+					t.Fatalf("player %s GameEnd=%q, want %q", player.ID, got, wantResult)
+				}
+				_, hasDelivery := deliverySessions[string(player.ID)]
+				if hasDelivery != !player.IsBot {
+					t.Fatalf("player %s bot=%t delivery=%t, want human-only", player.ID, player.IsBot, hasDelivery)
+				}
+				if hasDelivery && deliverySessions[string(player.ID)] != preTerminalClients[string(player.ID)] {
+					t.Fatalf("player %s delivery session changed across terminal tick", player.ID)
+				}
+			}
+			if got := store.lookupRoom(room.ID); got != nil {
+				t.Fatal("expected GameEnd cleanup to remove room")
+			}
+			store.mu.RLock()
+			for _, playerID := range participantIDs {
+				if _, reserved := store.playerIDs[playerID]; reserved {
+					store.mu.RUnlock()
+					t.Fatalf("expected participant ID %s to be released", playerID)
+				}
+			}
+			store.mu.RUnlock()
+		})
+	}
+}
+
 func TestWebSocketSixPlayerModesWaitForSixHumanReadyACKsAndStartOnce(t *testing.T) {
 	tests := []struct {
 		mode  string
@@ -4381,6 +4682,103 @@ type testRoomStepper func([]simulation.InputCommand) simulation.Snapshot
 
 func (step testRoomStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
 	return step(inputs)
+}
+
+type botRecordingStepper struct {
+	calls    [][]simulation.InputCommand
+	snapshot simulation.Snapshot
+}
+
+func (stepper *botRecordingStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
+	stepper.calls = append(
+		stepper.calls,
+		append([]simulation.InputCommand(nil), inputs...),
+	)
+	return stepper.snapshot
+}
+
+type capturingSimulationStepper struct {
+	delegate  simulationStepper
+	calls     [][]simulation.InputCommand
+	snapshots []simulation.Snapshot
+}
+
+func (stepper *capturingSimulationStepper) Step(
+	inputs []simulation.InputCommand,
+) simulation.Snapshot {
+	stepper.calls = append(
+		stepper.calls,
+		append([]simulation.InputCommand(nil), inputs...),
+	)
+	snapshot := stepper.delegate.Step(inputs)
+	stepper.snapshots = append(stepper.snapshots, snapshot)
+	return snapshot
+}
+
+func assertAscendingUniqueInputIDs(t *testing.T, inputs []simulation.InputCommand) {
+	t.Helper()
+	for index, input := range inputs {
+		if index > 0 && inputs[index-1].PlayerID >= input.PlayerID {
+			t.Fatalf("input IDs must be ascending and unique, got %+v", inputPlayerIDs(inputs))
+		}
+	}
+}
+
+func terminalPlayersForBotModeTest(
+	mode string,
+	players []simulation.PlayerData,
+) []simulation.PlayerData {
+	terminal := append([]simulation.PlayerData(nil), players...)
+	for index := range terminal {
+		switch mode {
+		case simulation.GameModeDuel1v1, simulation.GameModeSolo:
+			terminal[index].IsDead = terminal[index].IsBot
+		case simulation.GameModeTeam:
+			terminal[index].IsDead = terminal[index].Team == simulation.TeamRed
+		}
+		if terminal[index].IsDead {
+			terminal[index].HP = 0
+		}
+	}
+	return terminal
+}
+
+func expectedBotModeResult(player simulation.PlayerData) gameEndResult {
+	if player.IsDead {
+		return gameEndResultLose
+	}
+	return gameEndResultWin
+}
+
+func assertRoomRuntimeOwnershipIsHumanOnly(
+	t *testing.T,
+	room *room,
+	humanIDs map[string]struct{},
+) map[string]*clientSession {
+	t.Helper()
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if len(room.sessions) != len(humanIDs) || len(room.clients) != len(humanIDs) || len(room.reservations) != 0 {
+		t.Fatalf(
+			"runtime ownership sessions=%d clients=%d reservations=%d, want humans=%d and no reservations",
+			len(room.sessions), len(room.clients), len(room.reservations), len(humanIDs),
+		)
+	}
+	for playerID := range room.sessions {
+		if _, human := humanIDs[playerID]; !human {
+			t.Fatalf("non-human %s owns credential session", playerID)
+		}
+	}
+	for playerID := range room.clients {
+		if _, human := humanIDs[playerID]; !human {
+			t.Fatalf("non-human %s owns websocket client", playerID)
+		}
+	}
+	clients := make(map[string]*clientSession, len(room.clients))
+	for playerID, session := range room.clients {
+		clients[playerID] = session
+	}
+	return clients
 }
 
 func createStartedRoomInStore(t *testing.T, store *Store) roomResponse {

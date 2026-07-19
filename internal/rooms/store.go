@@ -85,6 +85,7 @@ type room struct {
 	sessions                 map[string]playerSession
 	countdown                int
 	state                    simulationStepper
+	lastPlayers              []simulation.PlayerData
 	pendingInputs            map[string]simulation.InputCommand
 	clients                  map[string]*clientSession
 	closeBarrierSessions     map[*clientSession]struct{}
@@ -916,7 +917,12 @@ func (s *Store) startRoomLocked(room *room) bool {
 		room.disconnectedAt = time.Time{}
 	}
 	if room.state == nil {
-		room.state = simulation.NewStateWithConfig(simulationPlayers(room.Players, room.gameConfig), simulation.Config{Game: room.gameConfig})
+		initialPlayers := simulationPlayers(room.Players, room.gameConfig)
+		room.state = simulation.NewStateWithConfig(
+			initialPlayers,
+			simulation.Config{Game: room.gameConfig},
+		)
+		room.lastPlayers = append([]simulation.PlayerData(nil), initialPlayers...)
 	}
 	if room.ticker == nil {
 		roomTicker := s.clock.NewTicker(time.Second / time.Duration(room.gameConfig.TickRate))

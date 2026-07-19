@@ -2,9 +2,53 @@ package rooms
 
 import (
 	"math"
+	"sort"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
+
+func mergedTickInputs(
+	pending map[string]simulation.InputCommand,
+	players []simulation.PlayerData,
+) []simulation.InputCommand {
+	botIDs := make(map[simulation.PlayerID]struct{})
+	for _, player := range players {
+		if player.IsBot {
+			botIDs[player.ID] = struct{}{}
+		}
+	}
+
+	byPlayer := make(
+		map[simulation.PlayerID]simulation.InputCommand,
+		len(pending)+len(botIDs),
+	)
+	for playerID, input := range pending {
+		authoritativeID := simulation.PlayerID(playerID)
+		if _, isBot := botIDs[authoritativeID]; isBot {
+			continue
+		}
+		input.PlayerID = authoritativeID
+		byPlayer[authoritativeID] = input
+	}
+	for _, player := range players {
+		if !player.IsBot {
+			continue
+		}
+		delete(byPlayer, player.ID)
+		if input, ok := botInputFor(player, players); ok {
+			byPlayer[player.ID] = input
+		}
+	}
+
+	inputs := make([]simulation.InputCommand, 0, len(byPlayer))
+	for _, input := range byPlayer {
+		inputs = append(inputs, input)
+	}
+	sort.Slice(inputs, func(i int, j int) bool {
+		return inputs[i].PlayerID < inputs[j].PlayerID
+	})
+	return inputs
+}
 
 func nearestLiveEnemy(
 	bot simulation.PlayerData,

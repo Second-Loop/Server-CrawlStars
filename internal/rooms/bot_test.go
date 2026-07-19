@@ -2,10 +2,186 @@ package rooms
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
+
+func authoritativeKeyFixture() (
+	[]simulation.PlayerData,
+	map[string]simulation.InputCommand,
+) {
+	players := []simulation.PlayerData{
+		{ID: "player-a", Team: simulation.TeamRed},
+		{ID: "player-b", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 3}, IsBot: true},
+		{ID: "player-c", Team: simulation.TeamBlue},
+	}
+	pending := map[string]simulation.InputCommand{
+		"player-c": {PlayerID: "spoof-z", MoveDir: simulation.Vector2{Y: -1}},
+		"player-a": {PlayerID: "spoof-a", MoveDir: simulation.Vector2{Y: 1}},
+		"player-b": {PlayerID: "player-a", MoveDir: simulation.Vector2{X: -99}},
+	}
+	return players, pending
+}
+
+func TestMergedTickInputsUsesMapKeyAsAuthoritativePlayerID(t *testing.T) {
+	players, pending := authoritativeKeyFixture()
+	got := mergedTickInputs(pending, players)
+
+	if want := []simulation.PlayerID{"player-a", "player-b", "player-c"}; !reflect.DeepEqual(inputPlayerIDs(got), want) {
+		t.Fatalf("merged input IDs = %v, want %v; inputs=%+v", inputPlayerIDs(got), want, got)
+	}
+	if human := playerInputByID(t, got, "player-a"); human.PlayerID != "player-a" ||
+		human.MoveDir != (simulation.Vector2{Y: 1}) {
+		t.Fatalf("map key must replace human command value ID: %+v", human)
+	}
+	bot := playerInputByID(t, got, "player-b")
+	if bot.PlayerID != "player-b" || bot.MoveDir == (simulation.Vector2{X: -99}) || !bot.PressedAttack {
+		t.Fatalf("bot pending command must be replaced by controller input: %+v", bot)
+	}
+}
+
+func TestMergedTickInputsDropsIneligibleBotPendingCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		players []simulation.PlayerData
+	}{
+		{
+			name: "dead bot",
+			players: []simulation.PlayerData{
+				{ID: "bot", Team: simulation.TeamRed, IsBot: true, IsDead: true},
+				{ID: "enemy", Team: simulation.TeamBlue},
+			},
+		},
+		{
+			name: "bot without live target",
+			players: []simulation.PlayerData{
+				{ID: "bot", Team: simulation.TeamRed, IsBot: true},
+				{ID: "ally", Team: simulation.TeamRed},
+				{ID: "enemy-dead", Team: simulation.TeamBlue, IsDead: true},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := mergedTickInputs(
+				map[string]simulation.InputCommand{
+					"bot": {PlayerID: "human", MoveDir: simulation.Vector2{X: -99}},
+				},
+				test.players,
+			)
+			if len(got) != 0 {
+				t.Fatalf("ineligible bot pending command must be dropped, got %+v", got)
+			}
+		})
+	}
+}
+
+func TestMergedTickInputsIsDeterministicSortedAndUnique(t *testing.T) {
+	players, pending := authoritativeKeyFixture()
+	playerPermutations := [][]simulation.PlayerData{
+		players,
+		{players[2], players[0], players[1]},
+		{players[1], players[2], players[0]},
+	}
+	pendingPermutations := []map[string]simulation.InputCommand{
+		pending,
+		{
+			"player-b": pending["player-b"],
+			"player-c": pending["player-c"],
+			"player-a": pending["player-a"],
+		},
+	}
+
+	var want []simulation.InputCommand
+	for playerIndex, playerOrder := range playerPermutations {
+		for pendingIndex, pendingOrder := range pendingPermutations {
+			got := mergedTickInputs(pendingOrder, playerOrder)
+			if want == nil {
+				want = got
+			} else if !reflect.DeepEqual(got, want) {
+				t.Fatalf("permutation players=%d pending=%d got %+v, want %+v", playerIndex, pendingIndex, got, want)
+			}
+			seen := make(map[simulation.PlayerID]struct{}, len(got))
+			for _, input := range got {
+				if _, duplicate := seen[input.PlayerID]; duplicate {
+					t.Fatalf("duplicate PlayerID %q in %+v", input.PlayerID, got)
+				}
+				seen[input.PlayerID] = struct{}{}
+			}
+		}
+	}
+}
+
+func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
+	config, err := simulation.StaticGameConfig().SelectMode(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("select duel mode: %v", err)
+	}
+	playerConfig := config.DefaultPlayerType()
+	if playerConfig.MaxAttackCharges != 4 || playerConfig.AttackRechargeTicks <= 5 {
+		t.Fatalf("unexpected attack fixture: %+v", playerConfig)
+	}
+	view := []simulation.PlayerData{
+		{ID: "bot", Team: simulation.TeamRed, Pos: simulation.Vector2{X: -1}, IsBot: true},
+		{ID: "human", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 1}},
+	}
+	state := simulation.NewStateWithConfig(view, simulation.Config{Game: config})
+	accepted := make([]bool, 0, 5)
+	for range 5 {
+		inputs := mergedTickInputs(nil, view)
+		if len(inputs) != 1 || inputs[0].PlayerID != "bot" || !inputs[0].PressedAttack {
+			t.Fatalf("bot must request one attack each tick: %+v", inputs)
+		}
+		snapshot := state.Step(inputs)
+		accepted = append(accepted, playerByID(t, snapshot.Players, "bot").PressedAttack)
+		view = append([]simulation.PlayerData(nil), snapshot.Players...)
+	}
+	want := []bool{true, true, true, true, false}
+	if !reflect.DeepEqual(accepted, want) {
+		t.Fatalf("shared simulation accepted=%v, want %v", accepted, want)
+	}
+}
+
+func inputPlayerIDs(inputs []simulation.InputCommand) []simulation.PlayerID {
+	ids := make([]simulation.PlayerID, len(inputs))
+	for index, input := range inputs {
+		ids[index] = input.PlayerID
+	}
+	return ids
+}
+
+func playerInputByID(
+	t *testing.T,
+	inputs []simulation.InputCommand,
+	id simulation.PlayerID,
+) simulation.InputCommand {
+	t.Helper()
+	for _, input := range inputs {
+		if input.PlayerID == id {
+			return input
+		}
+	}
+	t.Fatalf("missing input %q in %+v", id, inputs)
+	return simulation.InputCommand{}
+}
+
+func playerByID(
+	t *testing.T,
+	players []simulation.PlayerData,
+	id simulation.PlayerID,
+) simulation.PlayerData {
+	t.Helper()
+	for _, player := range players {
+		if player.ID == id {
+			return player
+		}
+	}
+	t.Fatalf("missing player %q in %+v", id, players)
+	return simulation.PlayerData{}
+}
 
 func TestNearestLiveEnemy(t *testing.T) {
 	bot := simulation.PlayerData{
