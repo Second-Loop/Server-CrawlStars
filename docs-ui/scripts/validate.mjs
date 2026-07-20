@@ -430,20 +430,44 @@ for (const [text, name] of [[openAPIText, "api/openapi.yaml"], [asyncAPIText, "a
   assertNoRawSessionTokenExamples(text, name);
 }
 
-assert(clientGameConfig.version === 1, "client-config/game-config.json must use version 1");
-assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
+const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
+assert(clientGameConfig.version === 2, "client config version must be 2");
+assert(serverGameConfig.version === 2, "server config version must be 2");
+assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "characters", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
-assert(clientGameConfig.playerRadius === 0.5, "client-config/game-config.json must expose playerRadius 0.5");
-assert(hasValue(clientGameConfig.playerTypes, "default"), "client-config/game-config.json must expose default player type");
+assert(JSON.stringify(clientGameConfig.playerTypes) === JSON.stringify(["default"]), "legacy playerTypes must stay [default]");
+assert(clientGameConfig.playerRadius === 0.5, "legacy playerRadius must stay 0.5");
+assert(Array.isArray(clientGameConfig.characters) && clientGameConfig.characters.length === 3, "client catalog must contain exactly 3 entries");
+assert(Array.isArray(serverGameConfig.player?.types) && serverGameConfig.player.types.length === 3, "server catalog must contain exactly 3 entries");
+const clientCharacters = new Map(clientGameConfig.characters.map(({ characterType, id }) => [characterType, id]));
+const serverCharacters = new Map(serverGameConfig.player.types.map(({ characterType, id }) => [characterType, id]));
+assert(clientCharacters.size === clientGameConfig.characters.length, "client characterType IDs must be unique");
+assert(serverCharacters.size === serverGameConfig.player.types.length, "server characterType IDs must be unique");
+assert(new Set(clientGameConfig.characters.map(({ id }) => id)).size === 3, "client string IDs must be unique");
+assert(new Set(serverGameConfig.player.types.map(({ id }) => id)).size === 3, "server string IDs must be unique");
+assert(JSON.stringify([...clientCharacters].sort()) === JSON.stringify([...expectedCharacters].sort()), "client character mapping drift");
+assert(JSON.stringify([...serverCharacters].sort()) === JSON.stringify([...expectedCharacters].sort()), "server character mapping drift");
+const expectedClientMetadata = new Map([
+  [0, { id: "shelly", name: "Shelly", role: "damage_dealer" }],
+  [1, { id: "colt", name: "Colt", role: "damage_dealer" }],
+  [2, { id: "lily", name: "Lily", role: "assassin" }],
+]);
+for (const character of clientGameConfig.characters) {
+  assert(JSON.stringify({ id: character.id, name: character.name, role: character.role }) === JSON.stringify(expectedClientMetadata.get(character.characterType)), `client metadata drift for characterType ${character.characterType}`);
+}
 assert(clientGameConfig.projectileRadius === 0.3, "client-config/game-config.json must expose projectileRadius 0.3");
 assert(hasValue(clientGameConfig.projectileTypes, "default"), "client-config/game-config.json must expose default projectile type");
 
-assert(serverGameConfig.version === 1, "server-config/game-config.json must use version 1");
 assert(serverGameConfig.tickRate === 30, "server-config/game-config.json must expose tickRate 30");
 assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must expose tile.size 1.2");
-assert(hasTypeRadius(serverGameConfig.player?.types, "default", 0.5), "server-config/game-config.json must expose default player radius 0.5");
-assert(hasTypeValue(serverGameConfig.player?.types, "default", "hp", 100), "server-config/game-config.json must expose default player hp 100");
-assert(hasTypeValue(serverGameConfig.player?.types, "default", "speed", 2), "server-config/game-config.json must expose default player speed 2");
+const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
+for (const playerType of serverGameConfig.player.types) {
+  assert(playerType.radius === 0.5, `server player radius drift for ${playerType.id}`);
+  assert(playerType.hp === expectedServerPlayerTypes.get(playerType.characterType), `server player HP drift for ${playerType.id}`);
+  assert(playerType.speed === 2, `server player speed drift for ${playerType.id}`);
+  assert(playerType.maxAttackCharges === 4, `server player maxAttackCharges drift for ${playerType.id}`);
+  assert(playerType.attackRechargeTicks === 30, `server player attackRechargeTicks drift for ${playerType.id}`);
+}
 assert(hasTypeRadius(serverGameConfig.projectile?.types, "default", 0.3), "server-config/game-config.json must expose default projectile radius 0.3");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "damage", 10), "server-config/game-config.json must expose default projectile damage 10");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13), "server-config/game-config.json must expose default projectile speed 13");

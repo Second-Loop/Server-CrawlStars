@@ -14,7 +14,7 @@ const (
 	TileSize                = 1.2
 	DefaultPlayerSpeed      = 2.0
 	DefaultPlayerRadius     = 0.5
-	DefaultPlayerHP         = 100.0
+	DefaultPlayerHP         = 4000.0
 	DefaultProjectileSpeed  = 13.0
 	DefaultProjectileDamage = 10.0
 	DefaultProjectileRadius = 0.3
