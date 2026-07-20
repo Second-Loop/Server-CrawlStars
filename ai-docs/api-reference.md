@@ -138,7 +138,7 @@ CharacterType은 REST `Player.characterType`의 required lower camel과 Ready/Sn
 
 Bot은 room participant지만 player session이 없으므로 `sessionToken`이나 `webSocketPath`를 발급받지 않습니다. Bot을 만드는 public REST endpoint도 없습니다. `Room.players[]`에는 bot이 포함될 수 있지만 credential-bearing wrapper의 `player`는 `HumanPlayer`만 반환합니다.
 
-Join 요청은 `client IP resolve → quota 평가/소비 → body decode와 mode 검증 → store join` 순서입니다. 기본 limiter는 process-local per-IP token bucket이며 10 requests/minute, burst 4입니다. Join error priority는 `429 rate_limited → 400 invalid_request → 400 invalid_game_mode → 400 invalid_character_type`입니다. Bucket이 비면 body와 store 상태보다 먼저 429를 반환하고, JSON 형식 오류가 mode/characterType 검증보다 먼저 400이 됩니다. Closed Store의 `500 internal_error` 경계는 이 순서 뒤에 유지합니다. Store에서 409/500으로 끝난 허용 요청도 quota 1개를 이미 소비합니다. POST가 아닌 method의 405는 quota를 소비하지 않습니다.
+Join 요청은 `client IP resolve → quota 평가/소비 → body decode와 mode 검증 → store join` 순서입니다. 기본 limiter는 process-local per-IP token bucket이며 10 requests/minute, burst 4입니다. Join error priority는 조건부입니다: `429 rate_limited`가 항상 먼저이고, JSON framing/body shape 오류는 Store 진입 전 400 `invalid_request`입니다. 문법적으로 유효한 request는 closed Store면 semantic mode/character 해석보다 먼저 500 `internal_error`를 반환합니다. Store가 열린 경우에만 semantic 순서는 400 `invalid_game_mode` 다음 400 `invalid_character_type`입니다. Store에서 409/500으로 끝난 허용 요청도 quota 1개를 이미 소비합니다. POST가 아닌 method의 405는 quota를 소비하지 않습니다.
 
 ```http
 HTTP/1.1 429 Too Many Requests

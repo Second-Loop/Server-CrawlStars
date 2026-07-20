@@ -168,7 +168,7 @@ const debugPlayerResponse = extractDelimitedText(
 );
 assert(debugPlayerResponse.includes('"characterType": 0'), "debug-created player example must remain Shelly characterType 0");
 assert(!debugPlayerResponse.includes('"characterType": 1'), "debug-created player example must not claim Colt characterType 1");
-assert(apiReferenceText.includes("Join error priority는 `429 rate_limited → 400 invalid_request → 400 invalid_game_mode → 400 invalid_character_type`"), "api reference must document join error priority");
+assert(apiReferenceText.includes("Join error priority는 조건부입니다: `429 rate_limited`가 항상 먼저이고, JSON framing/body shape 오류는 Store 진입 전 400 `invalid_request`입니다. 문법적으로 유효한 request는 closed Store면 semantic mode/character 해석보다 먼저 500 `internal_error`를 반환합니다. Store가 열린 경우에만 semantic 순서는 400 `invalid_game_mode` 다음 400 `invalid_character_type`입니다."), "api reference must document conditional join error priority");
 for (const [text, name] of [
   [protocolText, "protocol"],
   [architectureText, "architecture"],
