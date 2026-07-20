@@ -298,3 +298,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - reconnect grace
 
 Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 작은 공유 config이며 `tileSize`, radius, type 목록만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 server-only config이며 tick rate, HP, speed, attack charge/recharge tick, damage, `mode.default`와 `mode.catalog`, map을 담습니다. Attack charge 상태와 mode rule metadata는 server-only이고 이 두 정보 때문에 추가되는 public WebSocket field는 없습니다.
+
+## SL-82 CharacterType ownership
+
+Config v2 catalog가 `0=Shelly`, `1=Colt`, `2=Lily` mapping의 source of truth이며 current HP는 `4000/3100/4100`, attack charge/recharge는 기존 `4/30`입니다. `internal/rooms`는 join 선택을 canonical participant에 저장하고 REST/Ready/Snapshot transport casing으로 변환합니다. `internal/simulation`은 이미 저장된 type의 stat을 적용합니다. 따라서 join parsing, participant identity, simulation stat 적용을 서로 다른 owner가 다시 선택하지 않습니다.

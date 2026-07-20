@@ -301,7 +301,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.5.0"), "api/asyncapi.yaml must publish version 0.5.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.6.0"), "api/asyncapi.yaml must publish version 0.6.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -375,6 +375,7 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 validateBotIdentitySchemas();
 validateClientTickACKContract();
+validateCharacterTypeContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -603,9 +604,33 @@ function assertEveryJSONPlayerHasIsBot(players, name) {
   }
 }
 
+function assertEveryYAMLPlayerHasCharacterType(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const fields = [...object.matchAll(/^\s+CharacterType:\s+(-?\d+)$/gm)];
+    assert(fields.length === 1, `${name} player ${index} must contain exactly one CharacterType`);
+    const characterType = Number(fields[0][1]);
+    assert(Number.isSafeInteger(characterType) && characterType >= 0 && characterType <= 2, `${name} player ${index} has invalid CharacterType`);
+    if (/^\s+IsBot:\s+true$/m.test(object)) {
+      assert(characterType === 0, `${name} bot player ${index} must use Shelly`);
+    }
+  }
+}
+
+function assertEveryJSONPlayerHasCharacterType(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.hasOwn(player, "CharacterType"), `${name} player ${index} is missing CharacterType`);
+    assert(Number.isSafeInteger(player.CharacterType) && player.CharacterType >= 0 && player.CharacterType <= 2, `${name} player ${index} has invalid CharacterType`);
+    if (player.IsBot === true) {
+      assert(player.CharacterType === 0, `${name} bot player ${index} must use Shelly`);
+    }
+  }
+}
+
 function validateBotIdentitySchemas() {
   assertSchemaContains(openAPIText, "Player", [
-    "required: [id, team, slot, isBot]",
+    "required: [id, team, slot, isBot, characterType]",
     "isBot:",
     "type: boolean",
   ]);
@@ -621,12 +646,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.5.0"), "AsyncAPI version must be 0.5.0");
+  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
-    "required: [Id, Team, Slot, IsBot, SpawnPosition]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -651,6 +676,43 @@ function validateBotIdentitySchemas() {
     assert(players.some((player) => player.IsBot === false), `${name} must show a human`);
     assert(players.some((player) => player.IsBot === true), `${name} must show a bot`);
   }
+}
+
+function validateCharacterTypeContract() {
+  assertSchemaContains(openAPIText, "CharacterType", [
+    "type: integer",
+    "enum: [0, 1, 2]",
+  ]);
+
+  const joinRequest = extractYAMLSchema(openAPIText, "MatchmakingJoinRequest");
+  const characterTypeProperty = extractSchemaProperty(joinRequest, "characterType");
+  assert(characterTypeProperty.includes('$ref: "#/components/schemas/CharacterType"'), "join characterType must use the shared schema");
+  assert(!topLevelRequiredFields(joinRequest).includes("characterType"), "join characterType must remain optional until SL-98");
+  for (const forbidden of ["deprecated: true", "default:", "nullable:"]) {
+    assert(!characterTypeProperty.includes(forbidden), `join characterType must not contain ${forbidden}`);
+  }
+
+  const playerSchema = extractYAMLSchema(openAPIText, "Player");
+  assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
+
+  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
+    const schema = extractYAMLSchema(asyncAPIText, schemaName);
+    assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
+    assert(extractSchemaProperty(schema, "CharacterType").includes("enum: [0, 1, 2]"), `${schemaName}.CharacterType must use stable IDs`);
+  }
+
+  const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const readyPlayers = extractYAMLSequenceObjects(extractYAMLNamedBlock(messages, "    ReadyEventMessage:"), "Players");
+  const gameplayPlayers = extractYAMLSequenceObjects(extractYAMLNamedBlock(messages, "    SnapshotMessage:"), "Players");
+  assertEveryYAMLPlayerHasCharacterType(readyPlayers, "AsyncAPI Ready examples");
+  assertEveryYAMLPlayerHasCharacterType(gameplayPlayers, "AsyncAPI gameplay examples");
+  assert(asyncAPIText.includes("CharacterType: 2"), "AsyncAPI must show Lily stable ID 2");
+
+  const docsReady = extractDocsJSONExample("Ready Event");
+  const docsGameplay = extractDocsJSONExample("Gameplay");
+  assertEveryJSONPlayerHasCharacterType(docsReady.Players, "docs UI Ready example");
+  assertEveryJSONPlayerHasCharacterType(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
 }
 
 function validateClientTickACKContract() {

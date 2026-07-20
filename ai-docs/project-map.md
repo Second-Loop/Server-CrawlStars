@@ -8,6 +8,8 @@
 
 ## 현재 상태
 
+SL-82 현재 config v2 catalog는 stable `characterType` `0=Shelly`, `1=Colt`, `2=Lily`이고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel field는 migration 동안 optional이며, canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다.
+
 되는 것:
 
 - health check와 server-hosted API docs
@@ -292,15 +294,15 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-90`: internal bot participant, 결정적 basic controller, human-only Ready quorum, shared one-Step integration
 - `SL-91`: first-lock-wins 10초 automatic bot fill, human-only Ready quorum, lifecycle cleanup
 - `SL-94`: optional ClientTick, monotonic processed input ACK, legacy zero compatibility, stale/duplicate silent drop
+- `SL-82`: config v2 CharacterType `0/1/2` join-to-Ready/Snapshot contract and docs drift validation
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
 ## 다음 추천 작업
 
-1. `SL-30`: shared constants/config v1 마무리
-   - `client-config/game-config.json`은 client 공유 config, `server-config/game-config.json`은 server runtime config로 사용
-   - Server embed, Go 상수, docs validation drift 검증 유지
-   - Unity 적용 후 필요한 field가 생기면 v2로 확장
+1. `SL-98`: CharacterType request required 전환
+   - SL-82 legacy missing Shelly fallback/warning을 제거하기 전 client rollout을 확인
+   - stable IDs `0=Shelly`, `1=Colt`, `2=Lily`와 REST lower camel/WebSocket PascalCase는 유지
 
 2. `SL-14` closeout
    - `SL-57` client PR 상태 확인

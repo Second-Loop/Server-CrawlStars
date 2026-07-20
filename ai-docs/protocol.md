@@ -147,12 +147,13 @@ Server snapshot:
         "Team": "red",
         "Slot": 0,
         "IsBot": false,
+        "CharacterType": 1,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
         "AttackDir": { "x": 0, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 100,
+        "HP": 3100,
         "PressedAttack": false,
         "IsDead": false,
         "LastProcessedClientTick": 12
@@ -162,12 +163,13 @@ Server snapshot:
         "Team": "blue",
         "Slot": 0,
         "IsBot": true,
+        "CharacterType": 0,
         "Pos": { "x": 1.2, "y": -1.2 },
         "MoveDir": { "x": -1, "y": 0 },
         "AttackDir": { "x": -1, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 100,
+        "HP": 4000,
         "PressedAttack": true,
         "IsDead": false,
         "LastProcessedClientTick": 0
@@ -209,6 +211,7 @@ Ready event:
       "Team": "red",
       "Slot": 0,
       "IsBot": false,
+      "CharacterType": 1,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
     },
     {
@@ -216,6 +219,7 @@ Ready event:
       "Team": "blue",
       "Slot": 0,
       "IsBot": true,
+      "CharacterType": 0,
       "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
@@ -327,7 +331,7 @@ Request body는 optional입니다.
 {"gameMode":"solo"}
 ```
 
-Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"gameMode":""}`는 default `duel_1v1`로 normalize합니다. 지원하지 않는 non-empty ID는 400 `invalid_game_mode`, malformed JSON과 trailing JSON value는 400 `invalid_request`입니다.
+Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"gameMode":""}`는 default `duel_1v1`로 normalize합니다. optional lower-camel `characterType`은 stable `0=Shelly`, `1=Colt`, `2=Lily`이고 missing field만 Shelly `0` warning compatibility로 처리합니다. explicit invalid type/value는 400 `invalid_character_type`이며 SL-98에서 required로 전환합니다. 지원하지 않는 non-empty mode ID는 400 `invalid_game_mode`, malformed JSON과 trailing JSON value는 400 `invalid_request`입니다.
 
 응답:
 
@@ -343,7 +347,8 @@ Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"
         "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
         "team": "solo-1",
         "slot": 0,
-        "isBot": false
+        "isBot": false,
+        "characterType": 1
       }
     ],
     "maxPlayers": 6,
@@ -371,7 +376,8 @@ Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"
     "id": "player_VuTsRqPoNmLkJiHgFeDcBa",
     "team": "solo-1",
     "slot": 0,
-    "isBot": false
+    "isBot": false,
+    "characterType": 1
   },
   "sessionToken": "<player-session-token>",
   "webSocketPath": "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
@@ -474,3 +480,9 @@ DELETE /rooms/{roomID}
 - 문서화 기준: `ai-docs/api-docs.md`
 
 후속 protocol message는 Linear issue에서 scope와 acceptance criteria를 먼저 정한 뒤 구현합니다.
+
+## SL-82 CharacterType 전파
+
+Join request의 optional lower-camel `characterType`은 `0=Shelly`, `1=Colt`, `2=Lily` stable numeric ID입니다. room admission은 이를 canonical participant에 저장하고, legacy missing만 Shelly `0`과 structured warning으로 처리합니다. explicit null, 잘못된 JSON type, 지원하지 않는 integer는 `invalid_character_type` 400이며 SL-98이 required 전환 경계입니다.
+
+전파는 `join -> canonical room participant -> Ready -> PlayerData` 순서입니다. REST participant는 `characterType`, Ready와 Snapshot `PlayerData`는 PascalCase `CharacterType`을 required로 사용합니다. Bot/debug participant는 Shelly `0`입니다. `starting`과 `started` control은 기존처럼 `Players: null`이며 gameplay snapshot부터 participant identity와 stats가 나타납니다.
