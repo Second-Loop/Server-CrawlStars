@@ -13,7 +13,8 @@ type roomListResponse struct {
 }
 
 type matchmakingJoinRequest struct {
-	GameMode string `json:"gameMode"`
+	GameMode      string          `json:"gameMode"`
+	CharacterType json.RawMessage `json:"characterType"`
 }
 
 type roomResponse struct {
@@ -36,10 +37,11 @@ type mapResponse struct {
 }
 
 type playerResponse struct {
-	ID    string `json:"id"`
-	Team  string `json:"team"`
-	Slot  int    `json:"slot"`
-	IsBot bool   `json:"isBot"`
+	ID            string                   `json:"id"`
+	Team          string                   `json:"team"`
+	Slot          int                      `json:"slot"`
+	IsBot         bool                     `json:"isBot"`
+	CharacterType simulation.CharacterType `json:"characterType"`
 }
 
 type playerSessionResponse struct {
@@ -139,11 +141,12 @@ type readyEventMessage struct {
 }
 
 type readyEventPlayer struct {
-	ID            string             `json:"Id"`
-	Team          string             `json:"Team"`
-	Slot          int                `json:"Slot"`
-	IsBot         bool               `json:"IsBot"`
-	SpawnPosition simulation.Vector2 `json:"SpawnPosition"`
+	ID            string                   `json:"Id"`
+	Team          string                   `json:"Team"`
+	Slot          int                      `json:"Slot"`
+	IsBot         bool                     `json:"IsBot"`
+	CharacterType simulation.CharacterType `json:"CharacterType"`
+	SpawnPosition simulation.Vector2       `json:"SpawnPosition"`
 }
 
 type gameEndMessage struct {
@@ -278,6 +281,7 @@ func readyEventPlayers(players []playerResponse, gameConfig simulation.GameConfi
 			Team:          string(player.Team),
 			Slot:          player.Slot,
 			IsBot:         player.IsBot,
+			CharacterType: player.CharacterType,
 			SpawnPosition: player.Pos,
 		})
 	}
@@ -363,12 +367,20 @@ func simulationPlayers(players []playerResponse, gameConfig simulation.GameConfi
 	result := make([]simulation.PlayerData, 0, len(players))
 	for index, player := range players {
 		assignment := assignments[index]
+		playerType, ok := gameConfig.PlayerType(player.CharacterType)
+		if !ok {
+			playerType = gameConfig.DefaultPlayerType()
+		}
 		result = append(result, simulation.PlayerData{
-			ID:    simulation.PlayerID(player.ID),
-			Team:  assignment.Team,
-			Slot:  assignment.Slot,
-			IsBot: player.IsBot,
-			Pos:   assignment.SpawnPosition,
+			ID:            simulation.PlayerID(player.ID),
+			Team:          assignment.Team,
+			Slot:          assignment.Slot,
+			IsBot:         player.IsBot,
+			CharacterType: player.CharacterType,
+			Pos:           assignment.SpawnPosition,
+			HP:            playerType.HP,
+			Speed:         playerType.Speed,
+			Radius:        playerType.Radius,
 		})
 	}
 	return result

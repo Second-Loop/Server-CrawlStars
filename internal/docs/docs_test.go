@@ -75,7 +75,7 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
 	assertStatus(t, openAPI, http.StatusOK)
 	for _, marker := range []string{
-		"required: [id, team, slot, isBot]",
+		"required: [id, team, slot, isBot, characterType]",
 		"HumanPlayer:",
 		"const: false",
 	} {
@@ -88,9 +88,9 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.5.0",
-		"required: [Id, Team, Slot, IsBot, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+		"version: 0.6.0",
+		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
+		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -101,6 +101,36 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	assertStatus(t, docsUI, http.StatusOK)
 	assertBodyContains(t, docsUI, `"IsBot": false`)
 	assertBodyContains(t, docsUI, `"IsBot": true`)
+}
+
+func TestHandlerServesCharacterTypeContract(t *testing.T) {
+	handler := Handler()
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	assertStatus(t, openAPI, http.StatusOK)
+	for _, marker := range []string{
+		"CharacterType:",
+		"required: [id, team, slot, isBot, characterType]",
+		"invalid_character_type",
+	} {
+		assertBodyContains(t, openAPI, marker)
+	}
+
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	for _, marker := range []string{
+		"version: 0.6.0",
+		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
+		"CharacterType: 0",
+		"CharacterType: 1",
+		"CharacterType: 2",
+	} {
+		assertBodyContains(t, asyncAPI, marker)
+	}
+
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	assertBodyContains(t, docsUI, `"CharacterType": 0`)
+	assertBodyContains(t, docsUI, `"CharacterType": 1`)
 }
 
 func TestYAMLTopLevelRequiredFields(t *testing.T) {
@@ -183,7 +213,7 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	asyncAPIText := asyncAPI.Body.String()
 
 	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
-	assertStringContains(t, info, "  version: 0.5.0")
+	assertStringContains(t, info, "  version: 0.6.0")
 
 	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
 	schemas := extractYAMLNamedBlock(t, components, "  schemas:")

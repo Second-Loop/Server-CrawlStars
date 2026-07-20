@@ -1,9 +1,20 @@
 package simulation
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+)
+
+const GameConfigVersion = 2
+
+type CharacterType int
+
+const (
+	CharacterTypeShelly CharacterType = 0
+	CharacterTypeColt   CharacterType = 1
+	CharacterTypeLily   CharacterType = 2
 )
 
 type GameConfig struct {
@@ -25,13 +36,59 @@ type PlayerTypeSetConfig struct {
 	Types []PlayerTypeConfig `json:"types"`
 }
 
+func expectedCharacterID(characterType CharacterType) (string, bool) {
+	switch characterType {
+	case CharacterTypeShelly:
+		return "shelly", true
+	case CharacterTypeColt:
+		return "colt", true
+	case CharacterTypeLily:
+		return "lily", true
+	default:
+		return "", false
+	}
+}
+
 type PlayerTypeConfig struct {
-	ID                  string  `json:"id"`
-	Radius              float64 `json:"radius"`
-	HP                  float64 `json:"hp"`
-	Speed               float64 `json:"speed"`
-	MaxAttackCharges    int     `json:"maxAttackCharges"`
-	AttackRechargeTicks int     `json:"attackRechargeTicks"`
+	CharacterType       CharacterType `json:"characterType"`
+	ID                  string        `json:"id"`
+	Radius              float64       `json:"radius"`
+	HP                  float64       `json:"hp"`
+	Speed               float64       `json:"speed"`
+	MaxAttackCharges    int           `json:"maxAttackCharges"`
+	AttackRechargeTicks int           `json:"attackRechargeTicks"`
+}
+
+func (config *PlayerTypeConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		CharacterType       json.RawMessage `json:"characterType"`
+		ID                  string          `json:"id"`
+		Radius              float64         `json:"radius"`
+		HP                  float64         `json:"hp"`
+		Speed               float64         `json:"speed"`
+		MaxAttackCharges    int             `json:"maxAttackCharges"`
+		AttackRechargeTicks int             `json:"attackRechargeTicks"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.CharacterType) == 0 || bytes.Equal(bytes.TrimSpace(wire.CharacterType), []byte("null")) {
+		return fmt.Errorf("game config player type characterType must be present")
+	}
+	var characterType CharacterType
+	if err := json.Unmarshal(wire.CharacterType, &characterType); err != nil {
+		return fmt.Errorf("decode game config player type characterType: %w", err)
+	}
+	*config = PlayerTypeConfig{
+		CharacterType:       characterType,
+		ID:                  wire.ID,
+		Radius:              wire.Radius,
+		HP:                  wire.HP,
+		Speed:               wire.Speed,
+		MaxAttackCharges:    wire.MaxAttackCharges,
+		AttackRechargeTicks: wire.AttackRechargeTicks,
+	}
+	return nil
 }
 
 type ProjectileTypeSetConfig struct {
@@ -95,8 +152,8 @@ func LoadGameConfig(reader io.Reader) (GameConfig, error) {
 }
 
 func ResolveGameConfig(config GameConfig) (GameConfig, error) {
-	if config.Version <= 0 {
-		return GameConfig{}, fmt.Errorf("game config version must be positive")
+	if config.Version != GameConfigVersion {
+		return GameConfig{}, fmt.Errorf("game config version must be %d", GameConfigVersion)
 	}
 	if config.TickRate <= 0 {
 		return GameConfig{}, fmt.Errorf("game config tickRate must be positive")
@@ -104,22 +161,8 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 	if config.Tile.Size <= 0 {
 		return GameConfig{}, fmt.Errorf("game config tile.size must be positive")
 	}
-	if len(config.Player.Types) == 0 {
-		return GameConfig{}, fmt.Errorf("game config player.types must not be empty")
-	}
-	for _, player := range config.Player.Types {
-		if player.ID == "" {
-			return GameConfig{}, fmt.Errorf("game config player type id must not be empty")
-		}
-		if player.Radius <= 0 || player.HP <= 0 || player.Speed <= 0 {
-			return GameConfig{}, fmt.Errorf("game config player type %q values must be positive", player.ID)
-		}
-		if player.MaxAttackCharges <= 0 {
-			return GameConfig{}, fmt.Errorf("game config player type %q maxAttackCharges must be positive", player.ID)
-		}
-		if player.AttackRechargeTicks <= 0 {
-			return GameConfig{}, fmt.Errorf("game config player type %q attackRechargeTicks must be positive", player.ID)
-		}
+	if err := validatePlayerTypeCatalog(config.Player.Types); err != nil {
+		return GameConfig{}, err
 	}
 	if len(config.Projectile.Types) == 0 {
 		return GameConfig{}, fmt.Errorf("game config projectile.types must not be empty")
@@ -160,6 +203,51 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 		return GameConfig{}, fmt.Errorf("select game config mode.%s: %w", selectedModeSource, err)
 	}
 	return selected, nil
+}
+
+func validatePlayerTypeCatalog(playerTypes []PlayerTypeConfig) error {
+	if len(playerTypes) == 0 {
+		return fmt.Errorf("game config player.types must not be empty")
+	}
+
+	seenTypes := make(map[CharacterType]bool, len(playerTypes))
+	seenIDs := make(map[string]bool, len(playerTypes))
+	for _, playerType := range playerTypes {
+		if seenTypes[playerType.CharacterType] {
+			return fmt.Errorf("game config character type %d must not be duplicated", playerType.CharacterType)
+		}
+		seenTypes[playerType.CharacterType] = true
+		if playerType.ID == "" {
+			return fmt.Errorf("game config player type id must not be empty")
+		}
+		if seenIDs[playerType.ID] {
+			return fmt.Errorf("game config player type id %q must not be duplicated", playerType.ID)
+		}
+		seenIDs[playerType.ID] = true
+		expectedID, ok := expectedCharacterID(playerType.CharacterType)
+		if !ok {
+			return fmt.Errorf("game config character type %d is not supported", playerType.CharacterType)
+		}
+		if playerType.ID != expectedID {
+			return fmt.Errorf("game config character type %d must use player type id %q", playerType.CharacterType, expectedID)
+		}
+		if playerType.Radius <= 0 || playerType.HP <= 0 || playerType.Speed <= 0 {
+			return fmt.Errorf("game config player type %q values must be positive", playerType.ID)
+		}
+		if playerType.MaxAttackCharges <= 0 {
+			return fmt.Errorf("game config player type %q maxAttackCharges must be positive", playerType.ID)
+		}
+		if playerType.AttackRechargeTicks <= 0 {
+			return fmt.Errorf("game config player type %q attackRechargeTicks must be positive", playerType.ID)
+		}
+	}
+
+	for _, characterType := range []CharacterType{CharacterTypeShelly, CharacterTypeColt, CharacterTypeLily} {
+		if !seenTypes[characterType] {
+			return fmt.Errorf("game config character type %d must be present", characterType)
+		}
+	}
+	return nil
 }
 
 func validateGameModeCatalogConfig(catalog GameModeCatalogConfig) error {
@@ -229,7 +317,7 @@ func validateGameModeConfig(mode GameModeConfig) error {
 func StaticGameConfig() GameConfig {
 	defaultMode := DefaultGameModeConfig()
 	return GameConfig{
-		Version:  1,
+		Version:  GameConfigVersion,
 		TickRate: TickRate,
 		Tile: TileConfig{
 			Size: TileSize,
@@ -237,9 +325,28 @@ func StaticGameConfig() GameConfig {
 		Player: PlayerTypeSetConfig{
 			Types: []PlayerTypeConfig{
 				{
-					ID:                  "default",
+					CharacterType:       CharacterTypeShelly,
+					ID:                  "shelly",
 					Radius:              DefaultPlayerRadius,
 					HP:                  DefaultPlayerHP,
+					Speed:               DefaultPlayerSpeed,
+					MaxAttackCharges:    4,
+					AttackRechargeTicks: 30,
+				},
+				{
+					CharacterType:       CharacterTypeColt,
+					ID:                  "colt",
+					Radius:              DefaultPlayerRadius,
+					HP:                  3100,
+					Speed:               DefaultPlayerSpeed,
+					MaxAttackCharges:    4,
+					AttackRechargeTicks: 30,
+				},
+				{
+					CharacterType:       CharacterTypeLily,
+					ID:                  "lily",
+					Radius:              DefaultPlayerRadius,
+					HP:                  4100,
 					Speed:               DefaultPlayerSpeed,
 					MaxAttackCharges:    4,
 					AttackRechargeTicks: 30,
@@ -311,10 +418,20 @@ func DefaultGameModeConfig() GameModeConfig {
 }
 
 func (config GameConfig) DefaultPlayerType() PlayerTypeConfig {
-	if len(config.Player.Types) == 0 {
-		return StaticGameConfig().Player.Types[0]
+	if playerType, ok := config.PlayerType(CharacterTypeShelly); ok {
+		return playerType
 	}
-	return config.Player.Types[0]
+	playerType, _ := StaticGameConfig().PlayerType(CharacterTypeShelly)
+	return playerType
+}
+
+func (config GameConfig) PlayerType(characterType CharacterType) (PlayerTypeConfig, bool) {
+	for _, playerType := range config.Player.Types {
+		if playerType.CharacterType == characterType {
+			return playerType, true
+		}
+	}
+	return PlayerTypeConfig{}, false
 }
 
 func (config GameConfig) DefaultProjectileType() ProjectileTypeConfig {
@@ -392,7 +509,7 @@ func roomTeamForPlayerIndex(index int, teams []TeamConfig) (Team, int, bool) {
 func resolveStateGameConfig(config Config) GameConfig {
 	gameConfig := config.Game
 	hasConfigMap := config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0
-	if gameConfig.Version <= 0 {
+	if gameConfig.Version != GameConfigVersion {
 		gameConfig = StaticGameConfig()
 		if !hasConfigMap {
 			gameConfig.Map = MapData{}

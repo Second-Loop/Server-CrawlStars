@@ -1,8 +1,10 @@
 package rooms
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -136,7 +138,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		random = rand.Reader
 	}
 	gameConfig := config.GameConfig
-	if gameConfig.Version <= 0 {
+	if gameConfig.Version != simulation.GameConfigVersion {
 		gameConfig = simulation.StaticGameConfig()
 	}
 	if config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0 {
@@ -465,7 +467,7 @@ func (s *Store) addPlayer(roomID string) (playerSessionResponse, error) {
 		s.releasePlayerID(credentials.id)
 		return playerSessionResponse{}, ErrRoomFull
 	}
-	issued := s.addPlayerLocked(room, credentials)
+	issued := s.addPlayerLocked(room, credentials, simulation.CharacterTypeShelly)
 	room.mu.Unlock()
 	return issued, nil
 }
@@ -548,7 +550,7 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 func (s *Store) appendReservedBotsLocked(room *room, ids []string) []playerResponse {
 	bots := make([]playerResponse, 0, len(ids))
 	for _, id := range ids {
-		bots = append(bots, s.appendParticipantLocked(room, id, true))
+		bots = append(bots, s.appendParticipantLocked(room, id, true, simulation.CharacterTypeShelly))
 	}
 	return bots
 }
@@ -565,23 +567,59 @@ func botAppendErrorLocked(room *room, count int) error {
 	return nil
 }
 
+type matchmakingJoinResult struct {
+	Response               matchmakingJoinResponse
+	CharacterTypeDefaulted bool
+}
+
+func resolveMatchmakingCharacterType(
+	gameConfig simulation.GameConfig,
+	raw json.RawMessage,
+) (simulation.CharacterType, bool, error) {
+	if len(raw) == 0 {
+		return simulation.CharacterTypeShelly, true, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, false, ErrInvalidCharacterType
+	}
+	var characterType simulation.CharacterType
+	if err := json.Unmarshal(raw, &characterType); err != nil {
+		return 0, false, ErrInvalidCharacterType
+	}
+	if _, ok := gameConfig.PlayerType(characterType); !ok {
+		return 0, false, ErrInvalidCharacterType
+	}
+	return characterType, false, nil
+}
+
 func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error) {
+	result, err := s.joinMatchmakingRequest(gameMode, json.RawMessage("0"))
+	return result.Response, err
+}
+
+func (s *Store) joinMatchmakingRequest(
+	gameMode string,
+	rawCharacterType json.RawMessage,
+) (matchmakingJoinResult, error) {
 	if !s.beginMutation() {
-		return matchmakingJoinResponse{}, ErrInternal
+		return matchmakingJoinResult{}, ErrInternal
 	}
 	var resources roomResources
 	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
 	defer s.endMutation()
 	s.matchmakingMu.Lock()
 	defer s.matchmakingMu.Unlock()
-	response, err := s.joinMatchmakingLocked(gameMode, &resources)
-	return response, err
+	return s.joinMatchmakingLocked(gameMode, rawCharacterType, &resources)
 }
 
-func (s *Store) joinMatchmakingLocked(gameMode string, resources *roomResources) (matchmakingJoinResponse, error) {
+func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.RawMessage, resources *roomResources) (matchmakingJoinResult, error) {
 	selectedConfig, err := s.gameConfig.SelectMode(gameMode)
 	if err != nil {
-		return matchmakingJoinResponse{}, ErrInvalidGameMode
+		return matchmakingJoinResult{}, ErrInvalidGameMode
+	}
+	characterType, defaulted, err := resolveMatchmakingCharacterType(selectedConfig, rawCharacterType)
+	if err != nil {
+		return matchmakingJoinResult{}, err
 	}
 
 	var credentials *playerCredentials
@@ -596,30 +634,30 @@ func (s *Store) joinMatchmakingLocked(gameMode string, resources *roomResources)
 		if credentials == nil {
 			issued, err := s.issuePlayerCredentials()
 			if err != nil {
-				return matchmakingJoinResponse{}, err
+				return matchmakingJoinResult{}, err
 			}
 			credentials = &issued
 		}
-		if joined, joinedResources, ok := s.tryJoinMatchmakingRoom(room, *credentials); ok {
+		if joined, joinedResources, ok := s.tryJoinMatchmakingRoom(room, *credentials, characterType); ok {
 			resources.merge(joinedResources)
-			return joined, nil
+			return matchmakingJoinResult{Response: joined, CharacterTypeDefaulted: defaulted}, nil
 		}
 	}
 
-	response, createdResources, err := s.createMatchmakingRoom(credentials, selectedConfig)
+	response, createdResources, err := s.createMatchmakingRoom(credentials, selectedConfig, characterType)
 	resources.merge(createdResources)
 	if errors.Is(err, ErrActiveRoomCapReached) {
 		s.detachExpiredRooms(s.clock.Now(), resources)
-		response, createdResources, err = s.createMatchmakingRoom(credentials, selectedConfig)
+		response, createdResources, err = s.createMatchmakingRoom(credentials, selectedConfig, characterType)
 		resources.merge(createdResources)
 	}
 	if err != nil && credentials != nil {
 		s.releasePlayerID(credentials.id)
 	}
-	return response, err
+	return matchmakingJoinResult{Response: response, CharacterTypeDefaulted: defaulted}, err
 }
 
-func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials) (matchmakingJoinResponse, roomResources, bool) {
+func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials, characterType simulation.CharacterType) (matchmakingJoinResponse, roomResources, bool) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if !room.canAcceptMatchmakingLocked(s.debugRoomCapacity()) {
@@ -627,7 +665,7 @@ func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials
 	}
 
 	humanCount := matchmakingHumanCount(room.Players)
-	issued := s.addPlayerLocked(room, credentials)
+	issued := s.addPlayerLocked(room, credentials, characterType)
 	s.markRoomMatchedIfFullLocked(room)
 	var resources roomResources
 	if humanCount == 0 {
@@ -638,7 +676,7 @@ func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials
 	return matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued), resources, true
 }
 
-func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig simulation.GameConfig) (matchmakingJoinResponse, roomResources, error) {
+func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig simulation.GameConfig, characterType simulation.CharacterType) (matchmakingJoinResponse, roomResources, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -663,7 +701,7 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig
 	}
 
 	room := s.newRoomLocked(roomID, gameConfig)
-	issued := s.addPlayerLocked(room, *credentials)
+	issued := s.addPlayerLocked(room, *credentials, characterType)
 	s.markRoomMatchedIfFullLocked(room)
 	resources := s.armBotFillLocked(room)
 	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
@@ -862,6 +900,14 @@ func (s *Store) logRoomEvent(event string, roomID string) {
 	s.logger.Info(event, "event", event, "roomID", roomID)
 }
 
+func (s *Store) logCharacterTypeDefaulted(gameMode string) {
+	s.logger.Warn(
+		"character_type_defaulted",
+		"event", "character_type_defaulted",
+		"game_mode", gameMode,
+	)
+}
+
 func (s *Store) logWebSocketEvent(event string, roomID string, playerID string, attrs ...any) {
 	switch event {
 	case "websocket_connected", "websocket_disconnected":
@@ -993,8 +1039,8 @@ func (s *Store) releasePlayerIDs(playerIDs []string) {
 	s.mu.Unlock()
 }
 
-func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playerSessionResponse {
-	player := s.appendParticipantLocked(room, credentials.id, false)
+func (s *Store) addPlayerLocked(room *room, credentials playerCredentials, characterType simulation.CharacterType) playerSessionResponse {
+	player := s.appendParticipantLocked(room, credentials.id, false, characterType)
 	room.sessions[player.ID] = credentials.session
 	return playerSessionResponse{
 		Player:        player,
@@ -1003,7 +1049,7 @@ func (s *Store) addPlayerLocked(room *room, credentials playerCredentials) playe
 	}
 }
 
-func (s *Store) appendParticipantLocked(room *room, playerID string, isBot bool) playerResponse {
+func (s *Store) appendParticipantLocked(room *room, playerID string, isBot bool, characterType simulation.CharacterType) playerResponse {
 	playerIndex := len(room.Players)
 	team, slot, ok := room.gameConfig.TeamForPlayerIndex(playerIndex)
 	if !ok {
@@ -1011,10 +1057,11 @@ func (s *Store) appendParticipantLocked(room *room, playerID string, isBot bool)
 		slot = playerIndex
 	}
 	player := playerResponse{
-		ID:    playerID,
-		Team:  string(team),
-		Slot:  slot,
-		IsBot: isBot,
+		ID:            playerID,
+		Team:          string(team),
+		Slot:          slot,
+		IsBot:         isBot,
+		CharacterType: characterType,
 	}
 	room.Players = append(room.Players, player)
 	room.lastActivityAt = s.clock.Now()

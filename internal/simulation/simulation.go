@@ -14,7 +14,7 @@ const (
 	TileSize                = 1.2
 	DefaultPlayerSpeed      = 2.0
 	DefaultPlayerRadius     = 0.5
-	DefaultPlayerHP         = 100.0
+	DefaultPlayerHP         = 4000.0
 	DefaultProjectileSpeed  = 13.0
 	DefaultProjectileDamage = 10.0
 	DefaultProjectileRadius = 0.3
@@ -45,19 +45,20 @@ type InputCommand struct {
 }
 
 type PlayerData struct {
-	ID                      PlayerID `json:"Id"`
-	Team                    Team     `json:"Team"`
-	Slot                    int      `json:"Slot"`
-	IsBot                   bool     `json:"IsBot"`
-	Pos                     Vector2  `json:"Pos"`
-	MoveDir                 Vector2  `json:"MoveDir"`
-	AttackDir               Vector2  `json:"AttackDir"`
-	Speed                   float64  `json:"Speed"`
-	Radius                  float64  `json:"Radius"`
-	HP                      float64  `json:"HP"`
-	PressedAttack           bool     `json:"PressedAttack"`
-	IsDead                  bool     `json:"IsDead"`
-	LastProcessedClientTick int64    `json:"LastProcessedClientTick"`
+	ID                      PlayerID      `json:"Id"`
+	Team                    Team          `json:"Team"`
+	Slot                    int           `json:"Slot"`
+	IsBot                   bool          `json:"IsBot"`
+	CharacterType           CharacterType `json:"CharacterType"`
+	Pos                     Vector2       `json:"Pos"`
+	MoveDir                 Vector2       `json:"MoveDir"`
+	AttackDir               Vector2       `json:"AttackDir"`
+	Speed                   float64       `json:"Speed"`
+	Radius                  float64       `json:"Radius"`
+	HP                      float64       `json:"HP"`
+	PressedAttack           bool          `json:"PressedAttack"`
+	IsDead                  bool          `json:"IsDead"`
+	LastProcessedClientTick int64         `json:"LastProcessedClientTick"`
 }
 
 type ProjectileType string
@@ -228,16 +229,19 @@ func normalizePlayers(players []PlayerData) []PlayerData {
 
 func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []PlayerData {
 	cloned := clonePlayers(players)
-	defaultPlayer := config.DefaultPlayerType()
 	for i := range cloned {
+		playerType, ok := config.PlayerType(cloned[i].CharacterType)
+		if !ok {
+			playerType = config.DefaultPlayerType()
+		}
 		if cloned[i].Speed <= 0 {
-			cloned[i].Speed = defaultPlayer.Speed
+			cloned[i].Speed = playerType.Speed
 		}
 		if cloned[i].Radius <= 0 {
-			cloned[i].Radius = defaultPlayer.Radius
+			cloned[i].Radius = playerType.Radius
 		}
 		if cloned[i].HP <= 0 {
-			cloned[i].HP = defaultPlayer.HP
+			cloned[i].HP = playerType.HP
 		}
 	}
 	return cloned

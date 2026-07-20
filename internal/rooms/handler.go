@@ -128,10 +128,14 @@ func newRouterWithDebugGuard(
 		if joinRequest.GameMode == "" {
 			joinRequest.GameMode = store.defaultGameMode()
 		}
-		joined, err := store.joinMatchmaking(joinRequest.GameMode)
+		result, err := store.joinMatchmakingRequest(joinRequest.GameMode, joinRequest.CharacterType)
 		if err != nil {
 			if errors.Is(err, ErrInvalidGameMode) {
 				writeError(w, http.StatusBadRequest, "invalid_game_mode", err.Error())
+				return
+			}
+			if errors.Is(err, ErrInvalidCharacterType) {
+				writeError(w, http.StatusBadRequest, "invalid_character_type", err.Error())
 				return
 			}
 			if errors.Is(err, ErrInternal) {
@@ -141,7 +145,10 @@ func newRouterWithDebugGuard(
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, joined)
+		if result.CharacterTypeDefaulted {
+			store.logCharacterTypeDefaulted(result.Response.GameMode)
+		}
+		writeJSON(w, http.StatusCreated, result.Response)
 	})
 	mux.HandleFunc("HEAD /matchmaking/join", writeMethodNotAllowed)
 	mux.HandleFunc("/matchmaking/join", writeMethodNotAllowed)
@@ -290,19 +297,20 @@ func decodeMatchmakingJoinRequest(body io.Reader) (matchmakingJoinRequest, error
 	}
 
 	var fields struct {
-		GameMode json.RawMessage `json:"gameMode"`
+		GameMode      json.RawMessage `json:"gameMode"`
+		CharacterType json.RawMessage `json:"characterType"`
 	}
 	if err := json.Unmarshal(rawRequest, &fields); err != nil {
 		return matchmakingJoinRequest{}, ErrInvalidRequest
 	}
+	request := matchmakingJoinRequest{CharacterType: fields.CharacterType}
 	if fields.GameMode == nil {
-		return matchmakingJoinRequest{}, nil
+		return request, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(fields.GameMode), []byte("null")) {
 		return matchmakingJoinRequest{}, ErrInvalidRequest
 	}
 
-	var request matchmakingJoinRequest
 	if err := json.Unmarshal(fields.GameMode, &request.GameMode); err != nil {
 		return matchmakingJoinRequest{}, ErrInvalidRequest
 	}

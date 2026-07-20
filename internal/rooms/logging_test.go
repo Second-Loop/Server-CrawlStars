@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -96,6 +97,135 @@ func TestRoomCreatedWaitsForRegistryInsertionAndCredentialSuccess(t *testing.T) 
 			t.Fatal("expected committed matchmaking room in registry")
 		}
 	})
+}
+
+func TestCharacterTypeDefaultWarningOnlyForSuccessfulMissingJoin(t *testing.T) {
+	t.Run("successful missing join warns once with bounded fields", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		store := NewStoreWithConfig(5, StoreConfig{Logger: jsonTestLogger(logs)})
+		handler := debugHandler(t, store)
+		recorder := request(handler, http.MethodPost, "/matchmaking/join")
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("join status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var joined matchmakingJoinResponse
+		decodeResponse(t, recorder, &joined)
+		assertLogEventCount(t, logs, "character_type_defaulted", 1)
+		record := matchingLogRecord(t, logs, "character_type_defaulted")
+		if record["level"] != "WARN" || record["msg"] != "character_type_defaulted" || record["game_mode"] != simulation.GameModeDuel1v1 {
+			t.Fatalf("default warning fields=%v", record)
+		}
+		allowed := map[string]bool{"time": true, "level": true, "msg": true, "event": true, "game_mode": true}
+		for key := range record {
+			if !allowed[key] {
+				t.Fatalf("default warning has unexpected field %q: %v", key, record)
+			}
+		}
+		for _, forbidden := range []string{joined.SessionToken, joined.WebSocketPath, "sessionToken", `"token"`, "127.0.0.1"} {
+			if strings.Contains(logs.String(), forbidden) {
+				t.Fatalf("default warning leaked %q: %s", forbidden, logs.String())
+			}
+		}
+	})
+
+	for _, characterType := range []simulation.CharacterType{
+		simulation.CharacterTypeShelly,
+		simulation.CharacterTypeColt,
+		simulation.CharacterTypeLily,
+	} {
+		t.Run("explicit character does not warn/"+strconv.Itoa(int(characterType)), func(t *testing.T) {
+			logs := &lockedLogBuffer{}
+			store := NewStoreWithConfig(5, StoreConfig{Logger: jsonTestLogger(logs)})
+			handler := debugHandler(t, store)
+			body := `{"characterType":` + strconv.Itoa(int(characterType)) + `}`
+			if recorder := requestWithBody(handler, http.MethodPost, "/matchmaking/join", body); recorder.Code != http.StatusCreated {
+				t.Fatalf("join status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			assertLogEventCount(t, logs, "character_type_defaulted", 0)
+		})
+	}
+
+	t.Run("rejected joins do not warn", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			config StoreConfig
+			body   string
+		}{
+			{name: "invalid mode", body: `{"gameMode":"ranked"}`},
+			{name: "invalid character", body: `{"characterType":3}`},
+			{name: "credential failure", config: StoreConfig{Random: bytes.NewReader(bytes.Join([][]byte{bytes.Repeat([]byte{0x21}, 16), bytes.Repeat([]byte{0x22}, 16), bytes.Repeat([]byte{0x23}, 31)}, nil))}, body: `{}`},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				logs := &lockedLogBuffer{}
+				tt.config.Logger = jsonTestLogger(logs)
+				store := NewStoreWithConfig(5, tt.config)
+				handler := debugHandler(t, store)
+				if recorder := requestWithBody(handler, http.MethodPost, "/matchmaking/join", tt.body); recorder.Code < http.StatusBadRequest {
+					t.Fatalf("rejected join status=%d body=%s", recorder.Code, recorder.Body.String())
+				}
+				assertLogEventCount(t, logs, "character_type_defaulted", 0)
+			})
+		}
+	})
+
+	t.Run("room cap does not warn", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		store := NewStoreWithConfig(1, StoreConfig{Logger: jsonTestLogger(logs)})
+		t.Cleanup(store.Close)
+		created, err := store.createRoom()
+		if err != nil {
+			t.Fatalf("create room: %v", err)
+		}
+		for range store.gameConfig.MatchPlayerCount() {
+			if _, err := store.addPlayer(created.ID); err != nil {
+				t.Fatalf("fill room: %v", err)
+			}
+		}
+		handler := debugHandler(t, store)
+		if recorder := request(handler, http.MethodPost, "/matchmaking/join"); recorder.Code != http.StatusConflict {
+			t.Fatalf("capped join status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		assertLogEventCount(t, logs, "character_type_defaulted", 0)
+	})
+
+	t.Run("non matchmaking participants do not warn", func(t *testing.T) {
+		logs := &lockedLogBuffer{}
+		clock := newFakeClock()
+		store := newStore(5, clock, StoreConfig{Logger: jsonTestLogger(logs)})
+		handler := debugHandler(t, store)
+		debugRoom := createRoom(t, handler)
+		_ = createPlayer(t, handler, debugRoom.ID)
+		if _, err := store.addBots(debugRoom.ID, 1); err != nil {
+			t.Fatalf("add manual bot: %v", err)
+		}
+		joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+		if err != nil {
+			t.Fatalf("explicit matchmaking join: %v", err)
+		}
+		room := store.lookupRoom(joined.Room.ID)
+		clock.TickTicker(matchmakingBotFillDelay, 0)
+		waitForBotFillMatchStatus(t, room, MatchStatusMatched)
+		assertLogEventCount(t, logs, "character_type_defaulted", 0)
+	})
+}
+
+func matchingLogRecord(t *testing.T, logs *lockedLogBuffer, event string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if record["event"] == event {
+			return record
+		}
+	}
+	t.Fatalf("missing log event %q in %s", event, logs.String())
+	return nil
 }
 
 func TestRoomStartedLogsOnceAcrossManualCountdownRace(t *testing.T) {
@@ -1025,7 +1155,8 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 	t.Helper()
 	allowedEvents := map[string]bool{
 		"room_created": true, "room_started": true, "room_ended": true, "room_expired": true,
-		"websocket_connected": true, "websocket_disconnected": true,
+		"character_type_defaulted": true,
+		"websocket_connected":      true, "websocket_disconnected": true,
 		"websocket_auth_rejected": true, "websocket_io_error": true,
 		"bot_fill_failed": true,
 	}
@@ -1039,7 +1170,8 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 	}
 	allowedKeys := map[string]bool{
 		"time": true, "level": true, "msg": true, "event": true,
-		"roomID": true, "playerID": true, "category": true, "status": true,
+		"game_mode": true,
+		"roomID":    true, "playerID": true, "category": true, "status": true,
 		"room_id": true, "error": true,
 	}
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {

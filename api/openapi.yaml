@@ -36,6 +36,7 @@ paths:
       description: |
         요청한 gameMode와 같은 여유 waiting room을 찾거나 새 room을 만들고 player를 발급합니다.
         body가 없거나, 빈 object이거나, gameMode가 빈 문자열이면 기본값 duel_1v1을 선택합니다.
+        새 client는 optional `characterType`에 stable ID 0=Shelly, 1=Colt, 2=Lily 중 하나를 명시합니다. SL-82에서는 legacy client의 field 생략만 Shelly 0으로 보정하고 structured warning을 한 번 기록합니다. explicit null, non-integer, string/bool/object/array, 지원하지 않는 정수는 400 `invalid_character_type`입니다. SL-98에서 field를 required로 전환합니다.
         Raw request body가 1024 bytes를 초과하면 400 `invalid_request`로 거부합니다.
 
         첫 번째 참가자는 `status: waiting` 상태를 받습니다. 이 상태에서는 WebSocket input은 받을 수 있지만 gameplay snapshot은 broadcast하지 않습니다.
@@ -49,7 +50,7 @@ paths:
         description: |
           선택할 game mode입니다. Request body 자체는 optional입니다.
           body 없음, 빈 object, gameMode 빈 문자열은 모두 duel_1v1로 처리합니다.
-          새 client는 enum의 canonical mode ID를 보내거나 field를 생략해야 합니다.
+          새 client는 canonical game mode ID와 optional `characterType` stable ID 0/1/2를 보냅니다. characterType 생략은 SL-82 legacy compatibility로만 Shelly 0이 되며 SL-98에서 required가 됩니다.
           Raw request body의 최대 크기는 1024 bytes이며 초과하면 `invalid_request`입니다.
         content:
           application/json:
@@ -58,15 +59,22 @@ paths:
             examples:
               default:
                 summary: 기본 duel mode
-                value: {}
+                value:
+                  characterType: 0
               solo:
                 summary: 6인 solo mode
                 value:
                   gameMode: solo
+                  characterType: 1
               team:
                 summary: 3 대 3 team mode
                 value:
                   gameMode: team
+                  characterType: 2
+              legacyMissingCharacterType:
+                summary: legacy field 생략은 SL-82에서만 Shelly로 보정
+                value:
+                  gameMode: duel_1v1
       responses:
         "201":
           description: 선택된 gameMode, 발급된 room, player, player session token, WebSocket 경로
@@ -74,8 +82,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MatchmakingJoin"
+              example:
+                gameMode: duel_1v1
+                room:
+                  id: room_AbCdEfGhIjKlMnOpQrStUv
+                  gameMode: duel_1v1
+                  status: waiting
+                  players:
+                    - id: player_VuTsRqPoNmLkJiHgFeDcBa
+                      team: red
+                      slot: 0
+                      isBot: false
+                      characterType: 1
+                  maxPlayers: 6
+                  map:
+                    width: 5
+                    height: 5
+                    index: 0
+                    maxPlayers: 6
+                    tileSize: 1.2
+                    map: [[1, 1, 1, 1, 1], [1, 0, 0, 0, 1], [1, 0, 1, 0, 1], [1, 0, 0, 0, 1], [1, 1, 1, 1, 1]]
+                  latestSnapshot:
+                    tick: 0
+                    playerCount: 1
+                    projectileCount: 0
+                player:
+                  id: player_VuTsRqPoNmLkJiHgFeDcBa
+                  team: red
+                  slot: 0
+                  isBot: false
+                  characterType: 1
+                sessionToken: example_redacted_session_token_000000000000
+                webSocketPath: "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=example_redacted_session_token_000000000000"
         "400":
-          description: 요청 JSON이 잘못됐거나 raw body가 1024 bytes를 초과했거나 지원하지 않는 gameMode입니다.
+          description: 요청 JSON이 잘못됐거나 raw body가 1024 bytes를 초과했거나 지원하지 않는 gameMode/characterType입니다.
           content:
             application/json:
               schema:
@@ -93,6 +133,12 @@ paths:
                     error:
                       code: invalid_request
                       message: invalid request
+                invalidCharacterType:
+                  summary: 지원하지 않거나 잘못된 character type
+                  value:
+                    error:
+                      code: invalid_character_type
+                      message: invalid character type
         "409":
           description: Timer-first late join을 포함해 active-room cap에 도달하면 `room_cap_reached`를 반환합니다. 테스트 중이면 `DELETE /rooms`로 debug room을 비울 수 있습니다.
           content:
@@ -424,6 +470,7 @@ components:
       description: |
         Matchmaking mode 선택 요청입니다. Canonical non-empty 값은 duel_1v1, solo, team입니다.
         Field 생략과 빈 문자열은 기존 client 호환을 위해 server에서 기본 duel_1v1로 처리합니다.
+        characterType은 SL-82에서 optional migration field입니다. 새 client는 0=Shelly, 1=Colt, 2=Lily를 명시하고, legacy 생략만 Shelly 0으로 보정됩니다. SL-98에서 required로 전환합니다.
       properties:
         gameMode:
           type: string
@@ -432,6 +479,13 @@ components:
             - const: ""
               title: Legacy empty value
           default: duel_1v1
+        characterType:
+          $ref: "#/components/schemas/CharacterType"
+    CharacterType:
+      type: integer
+      description: 캐릭터의 stable numeric ID입니다. 0=Shelly, 1=Colt, 2=Lily이며 재번호화하지 않습니다.
+      enum: [0, 1, 2]
+      example: 1
     MatchmakingJoin:
       type: object
       required: [gameMode, room, player, sessionToken, webSocketPath]
@@ -499,7 +553,7 @@ components:
     Player:
       type: object
       description: Room에 참여하는 generic participant입니다. Human과 server-owned bot을 모두 나타낼 수 있습니다.
-      required: [id, team, slot, isBot]
+      required: [id, team, slot, isBot, characterType]
       properties:
         id:
           $ref: "#/components/schemas/OpaquePlayerID"
@@ -514,6 +568,8 @@ components:
         isBot:
           type: boolean
           description: 서버가 소유해 session과 WebSocket credential이 없는 bot participant인지 나타냅니다.
+        characterType:
+          $ref: "#/components/schemas/CharacterType"
     HumanPlayer:
       allOf:
         - $ref: "#/components/schemas/Player"
@@ -612,6 +668,7 @@ components:
             - not_found
             - invalid_game_mode
             - invalid_request
+            - invalid_character_type
             - unauthorized
             - rate_limited
             - internal_error

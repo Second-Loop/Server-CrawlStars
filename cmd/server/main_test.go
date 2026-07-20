@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -13,6 +14,41 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/rooms"
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
+
+func TestLoadGameConfigFromFallsBackToStaticV2Catalog(t *testing.T) {
+	for name, payload := range map[string]string{
+		"malformed JSON": `{`,
+		"version 1":      `{"version":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+			config := loadGameConfigFrom(strings.NewReader(payload), logger)
+
+			if config.Version != simulation.GameConfigVersion {
+				t.Fatalf("fallback version = %d, want %d", config.Version, simulation.GameConfigVersion)
+			}
+			for characterType, wantID := range map[simulation.CharacterType]string{
+				simulation.CharacterTypeShelly: "shelly",
+				simulation.CharacterTypeColt:   "colt",
+				simulation.CharacterTypeLily:   "lily",
+			} {
+				playerType, ok := config.PlayerType(characterType)
+				if !ok || playerType.ID != wantID {
+					t.Fatalf("fallback PlayerType(%d) = %+v, %t; want %q", characterType, playerType, ok, wantID)
+				}
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+				t.Fatalf("decode fallback log: %v", err)
+			}
+			if entry["msg"] != "game_config_fallback" {
+				t.Fatalf("fallback log message = %v, want game_config_fallback", entry["msg"])
+			}
+		})
+	}
+}
 
 func TestNewMuxServesDocsRoutes(t *testing.T) {
 	handler := mustNewMux(t, rooms.HandlerConfig{})

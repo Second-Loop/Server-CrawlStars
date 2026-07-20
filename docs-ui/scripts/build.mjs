@@ -61,7 +61,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, Ready 이벤트, ClientTick 처리 ACK, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, 선택한 CharacterType의 Ready/Snapshot 전파, ClientTick 처리 ACK, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -79,11 +79,11 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>1. join</h3>
-            <p><code>POST /matchmaking/join</code>은 optional <code>gameMode</code>로 <code>duel_1v1</code>, <code>solo</code>, <code>team</code>을 선택하며 생략하거나 빈 문자열이면 duel을 사용합니다. 응답은 <code>{ gameMode, room, player, sessionToken, webSocketPath }</code>이고 top-level <code>gameMode</code>와 <code>room.gameMode</code>는 같습니다. 같은 raw secret이 <code>sessionToken</code>과 tokenized <code>webSocketPath</code>에 나타나며, path를 client 내부에서만 사용해 연결합니다.</p>
+            <p><code>POST /matchmaking/join</code>은 optional <code>gameMode</code>와 optional <code>characterType</code>을 받습니다. characterType stable ID는 <code>0=Shelly</code>, <code>1=Colt</code>, <code>2=Lily</code>이며 새 client는 값을 명시합니다. SL-82에서는 생략한 legacy 요청만 Shelly 0으로 보정하고 structured warning을 한 번 남기며, SL-98에서 required로 전환합니다. explicit null, non-integer, string/bool/object/array, 지원하지 않는 값은 <code>400 invalid_character_type</code>입니다. 응답은 <code>{ gameMode, room, player, sessionToken, webSocketPath }</code>이고 top-level <code>player.characterType</code>와 <code>room.players[].characterType</code>은 같습니다.</p>
           </article>
           <article>
             <h3>2. Ready</h3>
-            <p>선택 mode의 participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 human client가 <code>Type: Ready</code>를 받습니다. Payload에는 bot을 포함한 full participant의 <code>IsBot</code>과 <code>SpawnPosition</code>이 들어갑니다. <code>duel_1v1</code> capacity는 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
+            <p>선택 mode의 participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 human client가 <code>Type: Ready</code>를 받습니다. Payload에는 bot을 포함한 full participant의 <code>IsBot</code>, required PascalCase <code>CharacterType</code>, <code>SpawnPosition</code>이 들어갑니다. <code>duel_1v1</code> capacity는 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
           </article>
           <article>
             <h3>3. ready</h3>
@@ -150,7 +150,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Ready Event</h3>
-            <p>Server가 human session에 <code>Type: Ready</code>, <code>Map</code>, bot을 포함한 <code>Players[].IsBot</code>과 <code>Players[].SpawnPosition</code>을 보냅니다.</p>
+            <p>Server가 human session에 <code>Type: Ready</code>, <code>Map</code>, bot을 포함한 <code>Players[].IsBot</code>, required <code>Players[].CharacterType</code>, <code>Players[].SpawnPosition</code>을 보냅니다.</p>
           </article>
           <article>
             <h3>Ready ACK</h3>
@@ -158,7 +158,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity이고, <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -187,6 +187,7 @@ function renderAsyncAPI(specText) {
       "Team": "red",
       "Slot": 0,
       "IsBot": false,
+      "CharacterType": 1,
       "SpawnPosition": { "x": -1.2, "y": 1.2 }
     },
     {
@@ -194,6 +195,7 @@ function renderAsyncAPI(specText) {
       "Team": "blue",
       "Slot": 0,
       "IsBot": true,
+      "CharacterType": 0,
       "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
@@ -243,12 +245,13 @@ function renderAsyncAPI(specText) {
         "Team": "red",
         "Slot": 0,
         "IsBot": false,
+        "CharacterType": 1,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
         "AttackDir": { "x": 0, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 100,
+        "HP": 3100,
         "PressedAttack": false,
         "IsDead": false,
         "LastProcessedClientTick": 12
@@ -258,12 +261,13 @@ function renderAsyncAPI(specText) {
         "Team": "blue",
         "Slot": 0,
         "IsBot": true,
+        "CharacterType": 0,
         "Pos": { "x": 1.2, "y": -1.2 },
         "MoveDir": { "x": -1, "y": 0 },
         "AttackDir": { "x": -1, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 100,
+        "HP": 4000,
         "PressedAttack": true,
         "IsDead": false,
         "LastProcessedClientTick": 0

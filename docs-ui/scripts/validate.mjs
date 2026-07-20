@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
 const apiDocsText = await readFile(new URL("../../ai-docs/api-docs.md", import.meta.url), "utf8");
+const apiReferenceText = await readFile(new URL("../../ai-docs/api-reference.md", import.meta.url), "utf8");
+const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.meta.url), "utf8");
+const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
+const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
@@ -57,6 +61,7 @@ assert(openAPIText.includes("operationId: clearRooms"), "api/openapi.yaml must d
 assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must document DELETE /rooms/{roomID}");
 assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
 assertSchemaContains(openAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
+assertCanonicalMatchmakingMapDimensions();
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
 assert(hasLine(openAPIText, "    DebugBearer:"), "api/openapi.yaml must define DebugBearer");
 assertNamedBlockContains(openAPIText, "    DebugBearer:", ["type: http", "scheme: bearer", "401 `unauthorized`", "404 `not_found`"]);
@@ -147,6 +152,38 @@ assert(
 );
 assert(matchmakingJoinOperation.includes("store join보다 먼저"), "joinMatchmaking must document quota-before-store ordering");
 assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must document 429 precedence over 409/500");
+
+const redactedSessionTokenSentinel = "example_redacted_session_token_000000000000";
+assert(redactedSessionTokenSentinel.length === 43, "redacted session token sentinel must be exactly 43 characters");
+assert(/^[A-Za-z0-9_-]{43}$/.test(redactedSessionTokenSentinel), "redacted session token sentinel must be exactly 43 allowed characters");
+const canonicalJoinResponse = extractYAMLNamedBlock(matchmakingJoinOperation, '        "201":');
+assert(canonicalJoinResponse.includes(`sessionToken: ${redactedSessionTokenSentinel}`), "canonical join response must use the schema-valid redacted session token sentinel");
+assert(canonicalJoinResponse.includes(`?token=${redactedSessionTokenSentinel}`), "canonical join response webSocketPath must use the redacted session token sentinel");
+assert(countOccurrences(openAPIText, redactedSessionTokenSentinel) === 2, "redacted session token sentinel must appear only in canonical join response fields");
+
+const debugPlayerResponse = extractDelimitedText(
+  apiReferenceText,
+  "`POST /rooms/{roomID}/players`의 인증된 debug 응답",
+  "\n\nError response:",
+  "debug player response example",
+);
+assert(debugPlayerResponse.includes('"characterType": 0'), "debug-created player example must remain Shelly characterType 0");
+assert(!debugPlayerResponse.includes('"characterType": 1'), "debug-created player example must not claim Colt characterType 1");
+assert(apiReferenceText.includes("Join error priority는 조건부입니다: `429 rate_limited`가 항상 먼저이고, JSON framing/body shape 오류는 Store 진입 전 400 `invalid_request`입니다. 문법적으로 유효한 request는 closed Store면 semantic mode/character 해석보다 먼저 500 `internal_error`를 반환합니다. Store가 열린 경우에만 semantic 순서는 400 `invalid_game_mode` 다음 400 `invalid_character_type`입니다."), "api reference must document conditional join error priority");
+for (const [text, name] of [
+  [protocolText, "protocol"],
+  [architectureText, "architecture"],
+  [apiReferenceText, "api reference"],
+  [projectMapText, "project map"],
+]) {
+  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "4/30"]) {
+    assert(text.includes(marker), `${name} must document current character catalog marker ${marker}`);
+  }
+}
+assert(!protocolText.includes("DefaultPlayerHP = 100"), "protocol must not present default HP 100 as current");
+assert(!architectureText.includes("player speed/radius/HP = `2`, `0.5`, `100`"), "architecture must not present default HP 100 as current");
+assert(!apiReferenceText.includes("- player HP: 100"), "api reference must not present default HP 100 as current");
+assert(projectMapText.includes("`characters`"), "project map must document the client v2 characters catalog");
 
 assertSchemaContains(openAPIText, "OpaqueRoomID", ['pattern: "^room_[A-Za-z0-9_-]{22}$"']);
 assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0-9_-]{22}$"']);
@@ -301,7 +338,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.5.0"), "api/asyncapi.yaml must publish version 0.5.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.6.0"), "api/asyncapi.yaml must publish version 0.6.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -375,6 +412,7 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 
 validateBotIdentitySchemas();
 validateClientTickACKContract();
+validateCharacterTypeContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -426,24 +464,52 @@ assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must n
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
 }
-for (const [text, name] of [[openAPIText, "api/openapi.yaml"], [asyncAPIText, "api/asyncapi.yaml"], [docsBuildText, "docs UI"]]) {
-  assertNoRawSessionTokenExamples(text, name);
+for (const [text, name, allowedTokens] of [
+  [openAPIText, "api/openapi.yaml", [redactedSessionTokenSentinel]],
+  [asyncAPIText, "api/asyncapi.yaml", []],
+  [docsBuildText, "docs UI", []],
+]) {
+  assertNoRawSessionTokenExamples(text, name, allowedTokens);
 }
 
-assert(clientGameConfig.version === 1, "client-config/game-config.json must use version 1");
-assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
+const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
+assert(clientGameConfig.version === 2, "client config version must be 2");
+assert(serverGameConfig.version === 2, "server config version must be 2");
+assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "characters", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
-assert(clientGameConfig.playerRadius === 0.5, "client-config/game-config.json must expose playerRadius 0.5");
-assert(hasValue(clientGameConfig.playerTypes, "default"), "client-config/game-config.json must expose default player type");
+assert(JSON.stringify(clientGameConfig.playerTypes) === JSON.stringify(["default"]), "legacy playerTypes must stay [default]");
+assert(clientGameConfig.playerRadius === 0.5, "legacy playerRadius must stay 0.5");
+assert(Array.isArray(clientGameConfig.characters) && clientGameConfig.characters.length === 3, "client catalog must contain exactly 3 entries");
+assert(Array.isArray(serverGameConfig.player?.types) && serverGameConfig.player.types.length === 3, "server catalog must contain exactly 3 entries");
+const clientCharacters = new Map(clientGameConfig.characters.map(({ characterType, id }) => [characterType, id]));
+const serverCharacters = new Map(serverGameConfig.player.types.map(({ characterType, id }) => [characterType, id]));
+assert(clientCharacters.size === clientGameConfig.characters.length, "client characterType IDs must be unique");
+assert(serverCharacters.size === serverGameConfig.player.types.length, "server characterType IDs must be unique");
+assert(new Set(clientGameConfig.characters.map(({ id }) => id)).size === 3, "client string IDs must be unique");
+assert(new Set(serverGameConfig.player.types.map(({ id }) => id)).size === 3, "server string IDs must be unique");
+assert(JSON.stringify([...clientCharacters].sort()) === JSON.stringify([...expectedCharacters].sort()), "client character mapping drift");
+assert(JSON.stringify([...serverCharacters].sort()) === JSON.stringify([...expectedCharacters].sort()), "server character mapping drift");
+const expectedClientMetadata = new Map([
+  [0, { id: "shelly", name: "Shelly", role: "damage_dealer" }],
+  [1, { id: "colt", name: "Colt", role: "damage_dealer" }],
+  [2, { id: "lily", name: "Lily", role: "assassin" }],
+]);
+for (const character of clientGameConfig.characters) {
+  assert(JSON.stringify({ id: character.id, name: character.name, role: character.role }) === JSON.stringify(expectedClientMetadata.get(character.characterType)), `client metadata drift for characterType ${character.characterType}`);
+}
 assert(clientGameConfig.projectileRadius === 0.3, "client-config/game-config.json must expose projectileRadius 0.3");
 assert(hasValue(clientGameConfig.projectileTypes, "default"), "client-config/game-config.json must expose default projectile type");
 
-assert(serverGameConfig.version === 1, "server-config/game-config.json must use version 1");
 assert(serverGameConfig.tickRate === 30, "server-config/game-config.json must expose tickRate 30");
 assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must expose tile.size 1.2");
-assert(hasTypeRadius(serverGameConfig.player?.types, "default", 0.5), "server-config/game-config.json must expose default player radius 0.5");
-assert(hasTypeValue(serverGameConfig.player?.types, "default", "hp", 100), "server-config/game-config.json must expose default player hp 100");
-assert(hasTypeValue(serverGameConfig.player?.types, "default", "speed", 2), "server-config/game-config.json must expose default player speed 2");
+const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
+for (const playerType of serverGameConfig.player.types) {
+  assert(playerType.radius === 0.5, `server player radius drift for ${playerType.id}`);
+  assert(playerType.hp === expectedServerPlayerTypes.get(playerType.characterType), `server player HP drift for ${playerType.id}`);
+  assert(playerType.speed === 2, `server player speed drift for ${playerType.id}`);
+  assert(playerType.maxAttackCharges === 4, `server player maxAttackCharges drift for ${playerType.id}`);
+  assert(playerType.attackRechargeTicks === 30, `server player attackRechargeTicks drift for ${playerType.id}`);
+}
 assert(hasTypeRadius(serverGameConfig.projectile?.types, "default", 0.3), "server-config/game-config.json must expose default projectile radius 0.3");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "damage", 10), "server-config/game-config.json must expose default projectile damage 10");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13), "server-config/game-config.json must expose default projectile speed 13");
@@ -482,6 +548,32 @@ function extractOpenAPIOperation(text, operationID) {
     end += 1;
   }
   return lines.slice(start, end).join("\n");
+}
+
+function assertCanonicalMatchmakingMapDimensions() {
+  const joinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+  const canonicalExample = extractYAMLNamedBlock(joinOperation, "              example:");
+  const mapBlock = extractYAMLNamedBlock(canonicalExample, "                  map:");
+  const width = extractCanonicalMapDimension(mapBlock, "width");
+  const height = extractCanonicalMapDimension(mapBlock, "height");
+  const mapLine = mapBlock.split(/\r?\n/).find((line) => line.startsWith("                    map: "));
+  assert(mapLine, "canonical matchmaking map example must include an inline map grid");
+
+  const map = JSON.parse(mapLine.slice("                    map: ".length));
+  assert(Array.isArray(map), "canonical matchmaking map example must be a JSON array");
+  assert(map.length === height, "canonical matchmaking map example row count must equal height");
+  for (const [rowIndex, row] of map.entries()) {
+    assert(Array.isArray(row), `canonical matchmaking map row ${rowIndex} must be an array`);
+    assert(row.length === width, `canonical matchmaking map row ${rowIndex} length must equal width`);
+  }
+}
+
+function extractCanonicalMapDimension(mapBlock, dimension) {
+  const line = mapBlock.split(/\r?\n/).find((candidate) => candidate.startsWith(`                    ${dimension}: `));
+  assert(line, `canonical matchmaking map example must include ${dimension}`);
+  const value = Number(line.slice(`                    ${dimension}: `.length));
+  assert(Number.isSafeInteger(value) && value > 0, `canonical matchmaking map example ${dimension} must be a positive integer`);
+  return value;
 }
 
 function extractYAMLSchema(text, schemaName) {
@@ -579,9 +671,33 @@ function assertEveryJSONPlayerHasIsBot(players, name) {
   }
 }
 
+function assertEveryYAMLPlayerHasCharacterType(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const fields = [...object.matchAll(/^\s+CharacterType:\s+(-?\d+)$/gm)];
+    assert(fields.length === 1, `${name} player ${index} must contain exactly one CharacterType`);
+    const characterType = Number(fields[0][1]);
+    assert(Number.isSafeInteger(characterType) && characterType >= 0 && characterType <= 2, `${name} player ${index} has invalid CharacterType`);
+    if (/^\s+IsBot:\s+true$/m.test(object)) {
+      assert(characterType === 0, `${name} bot player ${index} must use Shelly`);
+    }
+  }
+}
+
+function assertEveryJSONPlayerHasCharacterType(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.hasOwn(player, "CharacterType"), `${name} player ${index} is missing CharacterType`);
+    assert(Number.isSafeInteger(player.CharacterType) && player.CharacterType >= 0 && player.CharacterType <= 2, `${name} player ${index} has invalid CharacterType`);
+    if (player.IsBot === true) {
+      assert(player.CharacterType === 0, `${name} bot player ${index} must use Shelly`);
+    }
+  }
+}
+
 function validateBotIdentitySchemas() {
   assertSchemaContains(openAPIText, "Player", [
-    "required: [id, team, slot, isBot]",
+    "required: [id, team, slot, isBot, characterType]",
     "isBot:",
     "type: boolean",
   ]);
@@ -597,12 +713,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.5.0"), "AsyncAPI version must be 0.5.0");
+  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
-    "required: [Id, Team, Slot, IsBot, SpawnPosition]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -627,6 +743,43 @@ function validateBotIdentitySchemas() {
     assert(players.some((player) => player.IsBot === false), `${name} must show a human`);
     assert(players.some((player) => player.IsBot === true), `${name} must show a bot`);
   }
+}
+
+function validateCharacterTypeContract() {
+  assertSchemaContains(openAPIText, "CharacterType", [
+    "type: integer",
+    "enum: [0, 1, 2]",
+  ]);
+
+  const joinRequest = extractYAMLSchema(openAPIText, "MatchmakingJoinRequest");
+  const characterTypeProperty = extractSchemaProperty(joinRequest, "characterType");
+  assert(characterTypeProperty.includes('$ref: "#/components/schemas/CharacterType"'), "join characterType must use the shared schema");
+  assert(!topLevelRequiredFields(joinRequest).includes("characterType"), "join characterType must remain optional until SL-98");
+  for (const forbidden of ["deprecated: true", "default:", "nullable:"]) {
+    assert(!characterTypeProperty.includes(forbidden), `join characterType must not contain ${forbidden}`);
+  }
+
+  const playerSchema = extractYAMLSchema(openAPIText, "Player");
+  assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
+
+  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
+    const schema = extractYAMLSchema(asyncAPIText, schemaName);
+    assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
+    assert(extractSchemaProperty(schema, "CharacterType").includes("enum: [0, 1, 2]"), `${schemaName}.CharacterType must use stable IDs`);
+  }
+
+  const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const readyPlayers = extractYAMLSequenceObjects(extractYAMLNamedBlock(messages, "    ReadyEventMessage:"), "Players");
+  const gameplayPlayers = extractYAMLSequenceObjects(extractYAMLNamedBlock(messages, "    SnapshotMessage:"), "Players");
+  assertEveryYAMLPlayerHasCharacterType(readyPlayers, "AsyncAPI Ready examples");
+  assertEveryYAMLPlayerHasCharacterType(gameplayPlayers, "AsyncAPI gameplay examples");
+  assert(asyncAPIText.includes("CharacterType: 2"), "AsyncAPI must show Lily stable ID 2");
+
+  const docsReady = extractDocsJSONExample("Ready Event");
+  const docsGameplay = extractDocsJSONExample("Gameplay");
+  assertEveryJSONPlayerHasCharacterType(docsReady.Players, "docs UI Ready example");
+  assertEveryJSONPlayerHasCharacterType(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
 }
 
 function validateClientTickACKContract() {
@@ -844,8 +997,9 @@ function assertOpaqueIDExamples(text, name) {
   }
 }
 
-function assertNoRawSessionTokenExamples(text, name) {
-  assert(!/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/.test(text), `${name} must not contain a raw 43-character session token example`);
+function assertNoRawSessionTokenExamples(text, name, allowedTokens = []) {
+  const tokens = [...text.matchAll(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g)].map(([token]) => token);
+  assert(tokens.every((token) => allowedTokens.includes(token)), `${name} must not contain a raw 43-character session token example`);
 }
 
 function assertNoBacktickStartedPlainScalars(text, name) {
