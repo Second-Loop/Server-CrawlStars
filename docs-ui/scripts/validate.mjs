@@ -61,6 +61,7 @@ assert(openAPIText.includes("operationId: clearRooms"), "api/openapi.yaml must d
 assert(openAPIText.includes("operationId: deleteRoom"), "api/openapi.yaml must document DELETE /rooms/{roomID}");
 assert(hasLine(openAPIText, "    MapData:"), "api/openapi.yaml is missing MapData schema");
 assertSchemaContains(openAPIText, "MapData", ["enum: [0, 1, 2, 3, 4]"]);
+assertCanonicalMatchmakingMapDimensions();
 assert(openAPIText.includes("room_full"), "api/openapi.yaml must document room_full");
 assert(hasLine(openAPIText, "    DebugBearer:"), "api/openapi.yaml must define DebugBearer");
 assertNamedBlockContains(openAPIText, "    DebugBearer:", ["type: http", "scheme: bearer", "401 `unauthorized`", "404 `not_found`"]);
@@ -547,6 +548,32 @@ function extractOpenAPIOperation(text, operationID) {
     end += 1;
   }
   return lines.slice(start, end).join("\n");
+}
+
+function assertCanonicalMatchmakingMapDimensions() {
+  const joinOperation = extractOpenAPIOperation(openAPIText, "joinMatchmaking");
+  const canonicalExample = extractYAMLNamedBlock(joinOperation, "              example:");
+  const mapBlock = extractYAMLNamedBlock(canonicalExample, "                  map:");
+  const width = extractCanonicalMapDimension(mapBlock, "width");
+  const height = extractCanonicalMapDimension(mapBlock, "height");
+  const mapLine = mapBlock.split(/\r?\n/).find((line) => line.startsWith("                    map: "));
+  assert(mapLine, "canonical matchmaking map example must include an inline map grid");
+
+  const map = JSON.parse(mapLine.slice("                    map: ".length));
+  assert(Array.isArray(map), "canonical matchmaking map example must be a JSON array");
+  assert(map.length === height, "canonical matchmaking map example row count must equal height");
+  for (const [rowIndex, row] of map.entries()) {
+    assert(Array.isArray(row), `canonical matchmaking map row ${rowIndex} must be an array`);
+    assert(row.length === width, `canonical matchmaking map row ${rowIndex} length must equal width`);
+  }
+}
+
+function extractCanonicalMapDimension(mapBlock, dimension) {
+  const line = mapBlock.split(/\r?\n/).find((candidate) => candidate.startsWith(`                    ${dimension}: `));
+  assert(line, `canonical matchmaking map example must include ${dimension}`);
+  const value = Number(line.slice(`                    ${dimension}: `.length));
+  assert(Number.isSafeInteger(value) && value > 0, `canonical matchmaking map example ${dimension} must be a positive integer`);
+  return value;
 }
 
 function extractYAMLSchema(text, schemaName) {

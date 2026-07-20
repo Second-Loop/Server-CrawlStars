@@ -101,7 +101,7 @@ paths:
                     index: 0
                     maxPlayers: 6
                     tileSize: 1.2
-                    map: [[1, 1, 1, 1, 1]]
+                    map: [[1, 1, 1, 1, 1], [1, 0, 0, 0, 1], [1, 0, 1, 0, 1], [1, 0, 0, 0, 1], [1, 1, 1, 1, 1]]
                   latestSnapshot:
                     tick: 0
                     playerCount: 1
