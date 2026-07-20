@@ -14,11 +14,12 @@ func TestBotIdentityProjectsToReadyAndSnapshotMessages(t *testing.T) {
 	}
 	snapshotPlayers, readyPlayers := botProjectionFixture(config)
 	participants := []playerResponse{
-		{ID: "human", Team: string(simulation.TeamRed), Slot: 0, IsBot: false},
-		{ID: "bot", Team: string(simulation.TeamBlue), Slot: 0, IsBot: true},
+		{ID: "human", Team: string(simulation.TeamRed), Slot: 0, IsBot: false, CharacterType: simulation.CharacterTypeColt},
+		{ID: "bot", Team: string(simulation.TeamBlue), Slot: 0, IsBot: true, CharacterType: simulation.CharacterTypeShelly},
 	}
 
 	want := map[string]bool{"human": false, "bot": true}
+	wantCharacter := map[string]simulation.CharacterType{"human": simulation.CharacterTypeColt, "bot": simulation.CharacterTypeShelly}
 	if len(snapshotPlayers) != len(want) {
 		t.Fatalf("expected %d snapshot players, got %d", len(want), len(snapshotPlayers))
 	}
@@ -34,6 +35,9 @@ func TestBotIdentityProjectsToReadyAndSnapshotMessages(t *testing.T) {
 		if player.IsBot != wantIsBot {
 			t.Fatalf("expected snapshot player %q IsBot %t, got %t", player.ID, wantIsBot, player.IsBot)
 		}
+		if player.CharacterType != wantCharacter[string(player.ID)] {
+			t.Fatalf("snapshot player %q CharacterType=%d, want %d", player.ID, player.CharacterType, wantCharacter[string(player.ID)])
+		}
 		assertExactBotJSONKey(t, mustMarshalBotProjectionJSON(t, player), "IsBot", "isBot", wantIsBot)
 	}
 
@@ -44,6 +48,9 @@ func TestBotIdentityProjectsToReadyAndSnapshotMessages(t *testing.T) {
 		}
 		if player.IsBot != wantIsBot {
 			t.Fatalf("expected Ready player %q IsBot %t, got %t", player.ID, wantIsBot, player.IsBot)
+		}
+		if player.CharacterType != wantCharacter[player.ID] {
+			t.Fatalf("Ready player %q CharacterType=%d, want %d", player.ID, player.CharacterType, wantCharacter[player.ID])
 		}
 		assertExactBotJSONKey(t, mustMarshalBotProjectionJSON(t, player), "IsBot", "isBot", wantIsBot)
 	}
@@ -91,8 +98,8 @@ func botProjectionFixture(config simulation.GameConfig) (
 	[]readyEventPlayer,
 ) {
 	participants := []playerResponse{
-		{ID: "human", Team: string(simulation.TeamRed), Slot: 0, IsBot: false},
-		{ID: "bot", Team: string(simulation.TeamBlue), Slot: 0, IsBot: true},
+		{ID: "human", Team: string(simulation.TeamRed), Slot: 0, IsBot: false, CharacterType: simulation.CharacterTypeColt},
+		{ID: "bot", Team: string(simulation.TeamBlue), Slot: 0, IsBot: true, CharacterType: simulation.CharacterTypeShelly},
 	}
 	return simulationPlayers(participants, config), readyEventPlayers(participants, config)
 }

@@ -47,6 +47,9 @@ func TestBotFillAtTenSeconds(t *testing.T) {
 	if len(players) != 2 || players[0].IsBot || !players[1].IsBot {
 		t.Fatalf("players at 10s=%+v want one human then one bot", players)
 	}
+	if players[0].CharacterType != simulation.CharacterTypeShelly || players[1].CharacterType != simulation.CharacterTypeShelly {
+		t.Fatalf("bot-fill CharacterTypes=%+v, want explicit Shelly", players)
+	}
 }
 
 func TestBotFillUsesEveryModeAssignment(t *testing.T) {
@@ -97,6 +100,9 @@ func TestBotFillUsesEveryModeAssignment(t *testing.T) {
 					if gotBot := index >= humanCount; player.IsBot != gotBot {
 						t.Fatalf("player[%d].IsBot=%t want=%t", index, player.IsBot, gotBot)
 					}
+					if player.CharacterType != simulation.CharacterTypeShelly {
+						t.Fatalf("player[%d].CharacterType=%d want Shelly", index, player.CharacterType)
+					}
 				}
 			})
 		}
@@ -117,10 +123,10 @@ func TestBotFillHumanFirst(t *testing.T) {
 	store.random = reader
 	store.mu.Unlock()
 
-	secondResult := make(chan matchmakingJoinResult, 1)
+	secondResult := make(chan matchmakingJoinOutcome, 1)
 	go func() {
 		joined, joinErr := store.joinMatchmaking(simulation.GameModeDuel1v1)
-		secondResult <- matchmakingJoinResult{joined: joined, err: joinErr}
+		secondResult <- matchmakingJoinOutcome{joined: joined, err: joinErr}
 	}()
 	waitBotFillSignal(t, reader.entered, "human credential entropy")
 	clock.TickTicker(matchmakingBotFillDelay, 0)
@@ -158,10 +164,10 @@ func TestBotFillTimerFirst(t *testing.T) {
 
 	clock.TickTicker(matchmakingBotFillDelay, 0)
 	waitBotFillSignal(t, reader.entered, "bot ID entropy")
-	lateResult := make(chan matchmakingJoinResult, 1)
+	lateResult := make(chan matchmakingJoinOutcome, 1)
 	go func() {
 		joined, joinErr := store.joinMatchmaking(simulation.GameModeDuel1v1)
-		lateResult <- matchmakingJoinResult{joined: joined, err: joinErr}
+		lateResult <- matchmakingJoinOutcome{joined: joined, err: joinErr}
 	}()
 	reader.release()
 
@@ -552,7 +558,7 @@ func botFillParticipantIDs(players []playerResponse) map[string]struct{} {
 	return playerIDs
 }
 
-type matchmakingJoinResult struct {
+type matchmakingJoinOutcome struct {
 	joined matchmakingJoinResponse
 	err    error
 }
@@ -711,14 +717,14 @@ func waitBotFillSignal(t *testing.T, signal <-chan struct{}, name string) {
 	}
 }
 
-func waitBotFillJoinResult(t *testing.T, result <-chan matchmakingJoinResult) matchmakingJoinResult {
+func waitBotFillJoinResult(t *testing.T, result <-chan matchmakingJoinOutcome) matchmakingJoinOutcome {
 	t.Helper()
 	select {
 	case joined := <-result:
 		return joined
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for matchmaking join")
-		return matchmakingJoinResult{}
+		return matchmakingJoinOutcome{}
 	}
 }
 

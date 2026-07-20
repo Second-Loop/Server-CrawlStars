@@ -2978,6 +2978,8 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	}
 	assertReadyPlayerTeamSlot(t, redReady.Players, red.Player.ID, "red", 0)
 	assertReadyPlayerTeamSlot(t, redReady.Players, blue.Player.ID, "blue", 0)
+	assertReadyCharacterType(t, redReady.Players, red.Player.ID, simulation.CharacterTypeShelly)
+	assertReadyCharacterType(t, redReady.Players, blue.Player.ID, simulation.CharacterTypeShelly)
 
 	assignments := simulation.PlayerAssignments([]simulation.PlayerID{
 		simulation.PlayerID(red.Player.ID),
@@ -3465,6 +3467,16 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 			for _, bot := range bots {
 				participantIDs = append(participantIDs, bot.ID)
 			}
+			for _, human := range joined {
+				if human.Player.CharacterType != simulation.CharacterTypeShelly {
+					t.Fatalf("human CharacterType=%d, want Shelly", human.Player.CharacterType)
+				}
+			}
+			for _, bot := range bots {
+				if bot.CharacterType != simulation.CharacterTypeShelly {
+					t.Fatalf("bot CharacterType=%d, want Shelly", bot.CharacterType)
+				}
+			}
 
 			var firstReady readyEventMessage
 			for index, conn := range connections {
@@ -3476,6 +3488,11 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 					firstReady = ready
 				} else {
 					assertMatchingReadyEvents(t, firstReady, ready)
+				}
+				for _, player := range ready.Players {
+					if player.CharacterType != simulation.CharacterTypeShelly {
+						t.Fatalf("Ready player %q CharacterType=%d, want Shelly", player.ID, player.CharacterType)
+					}
 				}
 			}
 			for _, conn := range connections {
@@ -3507,6 +3524,12 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 			preTerminalClients := assertRoomRuntimeOwnershipIsHumanOnly(t, room, humanIDs)
 			room.mu.Lock()
 			terminalPlayers := terminalPlayersForBotModeTest(test.mode, room.lastPlayers)
+			for _, player := range terminalPlayers {
+				if player.CharacterType != simulation.CharacterTypeShelly {
+					room.mu.Unlock()
+					t.Fatalf("terminal player %q CharacterType=%d, want Shelly", player.ID, player.CharacterType)
+				}
+			}
 			stepper := &botRecordingStepper{
 				snapshot: simulation.Snapshot{Tick: 1, Players: terminalPlayers},
 			}

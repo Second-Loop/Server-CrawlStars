@@ -30,6 +30,9 @@ func TestAddBotsCreatesOpaqueServerOwnedParticipantsAtomically(t *testing.T) {
 	if !bot.IsBot {
 		t.Fatalf("expected server-owned participant IsBot=true, got %+v", bot)
 	}
+	if bot.CharacterType != simulation.CharacterTypeShelly || joined.Player.CharacterType != simulation.CharacterTypeShelly {
+		t.Fatalf("expected bot and compatibility human to use Shelly, bot=%+v human=%+v", bot, joined.Player)
+	}
 	if joined.Player.IsBot {
 		t.Fatalf("expected matchmaking participant IsBot=false, got %+v", joined.Player)
 	}
@@ -125,6 +128,9 @@ func TestAddBotsUsesSelectedModeAssignments(t *testing.T) {
 				}
 				if readyPlayer.ID != restPlayer.ID || readyPlayer.Team != string(wantTeam) || readyPlayer.Slot != wantSlot || readyPlayer.IsBot != wantBot {
 					t.Fatalf("Ready player %d want ID=%q team=%q slot=%d bot=%t, got %+v", index, restPlayer.ID, wantTeam, wantSlot, wantBot, readyPlayer)
+				}
+				if restPlayer.CharacterType != simulation.CharacterTypeShelly || readyPlayer.CharacterType != simulation.CharacterTypeShelly {
+					t.Fatalf("player %d CharacterType REST/Ready=%d/%d, want Shelly", index, restPlayer.CharacterType, readyPlayer.CharacterType)
 				}
 			}
 		})
