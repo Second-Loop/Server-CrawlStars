@@ -20,7 +20,10 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const gameplayInterval = time.Second / time.Duration(simulation.TickRate)
+const (
+	gameplayInterval         = time.Second / time.Duration(simulation.TickRate)
+	combatRegressionPlayerHP = 100.0
+)
 
 type snapshotMessage struct {
 	Type     string              `json:"Type"`
@@ -4677,7 +4680,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 		`"MoveDir":{"x":1`,
 		`"AttackDir":{"x":0,"y":1}`,
 		`"PressedAttack":true`,
-		`"HP":100`,
+		`"HP":4000`,
 		`"IsDead":false`,
 		`"OwnerId":"` + player.ID + `"`,
 		`"Dir":{"x":0,"y":1}`,
@@ -4731,11 +4734,11 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 	if redPlayer.Pos.X <= 0 {
 		t.Fatalf("expected red movement to be visible in both snapshots, got %+v", redPlayer.Pos)
 	}
-	if bluePlayer.HP != simulation.DefaultPlayerHP || bluePlayer.IsDead {
+	if bluePlayer.HP != combatRegressionPlayerHP || bluePlayer.IsDead {
 		t.Fatalf("expected blue to start alive at full HP, got %+v", bluePlayer)
 	}
 
-	expectedHP := simulation.DefaultPlayerHP
+	expectedHP := combatRegressionPlayerHP
 	var hit snapshotMessage
 	for hitCount := 0; hitCount < 10; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
@@ -5625,7 +5628,10 @@ func distinctDefaultGameConfig() simulation.GameConfig {
 
 func fastRechargeGameConfig() simulation.GameConfig {
 	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
-	config.Player.Types[0].AttackRechargeTicks = 1
+	for index := range config.Player.Types {
+		config.Player.Types[index].HP = combatRegressionPlayerHP
+		config.Player.Types[index].AttackRechargeTicks = 1
+	}
 	return config
 }
 
