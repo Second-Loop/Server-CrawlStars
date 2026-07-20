@@ -58,7 +58,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `TileSize = 1.2`
 - `DefaultPlayerSpeed = 2`
 - `DefaultPlayerRadius = 0.5`
-- `DefaultPlayerHP = 100`
+- character catalog/HP = `0=Shelly/4000`, `1=Colt/3100`, `2=Lily/4100`
 - `MaxAttackCharges = 4`
 - `AttackRechargeTicks = 30`
 - `DefaultProjectileSpeed = 13`
@@ -77,10 +77,13 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 - `tileSize`
 - `playerRadius`
 - `playerTypes`
+- `characters` (v2 `0/1/2 = shelly/colt/lily`; legacy `playerTypes: ["default"]` mirror는 compatibility용)
 - `projectileRadius`
 - `projectileTypes`
 
 `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다.
+
+Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100`, attack `4/30`이며 이 mapping이 canonical source입니다.
 
 - `tickRate`
 - `tile.size`

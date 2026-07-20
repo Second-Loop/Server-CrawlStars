@@ -112,8 +112,8 @@ paths:
                   slot: 0
                   isBot: false
                   characterType: 1
-                sessionToken: <player-session-token>
-                webSocketPath: "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=<player-session-token>"
+                sessionToken: example_redacted_session_token_000000000000
+                webSocketPath: "/rooms/room_AbCdEfGhIjKlMnOpQrStUv/players/player_VuTsRqPoNmLkJiHgFeDcBa?token=example_redacted_session_token_000000000000"
         "400":
           description: 요청 JSON이 잘못됐거나 raw body가 1024 bytes를 초과했거나 지원하지 않는 gameMode/characterType입니다.
           content:

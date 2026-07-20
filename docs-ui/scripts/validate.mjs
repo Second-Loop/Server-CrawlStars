@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
 const apiDocsText = await readFile(new URL("../../ai-docs/api-docs.md", import.meta.url), "utf8");
+const apiReferenceText = await readFile(new URL("../../ai-docs/api-reference.md", import.meta.url), "utf8");
+const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.meta.url), "utf8");
+const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
+const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
@@ -147,6 +151,38 @@ assert(
 );
 assert(matchmakingJoinOperation.includes("store join보다 먼저"), "joinMatchmaking must document quota-before-store ordering");
 assert(matchmakingJoinOperation.includes("409/500"), "joinMatchmaking must document 429 precedence over 409/500");
+
+const redactedSessionTokenSentinel = "example_redacted_session_token_000000000000";
+assert(redactedSessionTokenSentinel.length === 43, "redacted session token sentinel must be exactly 43 characters");
+assert(/^[A-Za-z0-9_-]{43}$/.test(redactedSessionTokenSentinel), "redacted session token sentinel must be exactly 43 allowed characters");
+const canonicalJoinResponse = extractYAMLNamedBlock(matchmakingJoinOperation, '        "201":');
+assert(canonicalJoinResponse.includes(`sessionToken: ${redactedSessionTokenSentinel}`), "canonical join response must use the schema-valid redacted session token sentinel");
+assert(canonicalJoinResponse.includes(`?token=${redactedSessionTokenSentinel}`), "canonical join response webSocketPath must use the redacted session token sentinel");
+assert(countOccurrences(openAPIText, redactedSessionTokenSentinel) === 2, "redacted session token sentinel must appear only in canonical join response fields");
+
+const debugPlayerResponse = extractDelimitedText(
+  apiReferenceText,
+  "`POST /rooms/{roomID}/players`의 인증된 debug 응답",
+  "\n\nError response:",
+  "debug player response example",
+);
+assert(debugPlayerResponse.includes('"characterType": 0'), "debug-created player example must remain Shelly characterType 0");
+assert(!debugPlayerResponse.includes('"characterType": 1'), "debug-created player example must not claim Colt characterType 1");
+assert(apiReferenceText.includes("Join error priority는 `429 rate_limited → 400 invalid_request → 400 invalid_game_mode → 400 invalid_character_type`"), "api reference must document join error priority");
+for (const [text, name] of [
+  [protocolText, "protocol"],
+  [architectureText, "architecture"],
+  [apiReferenceText, "api reference"],
+  [projectMapText, "project map"],
+]) {
+  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "4/30"]) {
+    assert(text.includes(marker), `${name} must document current character catalog marker ${marker}`);
+  }
+}
+assert(!protocolText.includes("DefaultPlayerHP = 100"), "protocol must not present default HP 100 as current");
+assert(!architectureText.includes("player speed/radius/HP = `2`, `0.5`, `100`"), "architecture must not present default HP 100 as current");
+assert(!apiReferenceText.includes("- player HP: 100"), "api reference must not present default HP 100 as current");
+assert(projectMapText.includes("`characters`"), "project map must document the client v2 characters catalog");
 
 assertSchemaContains(openAPIText, "OpaqueRoomID", ['pattern: "^room_[A-Za-z0-9_-]{22}$"']);
 assertSchemaContains(openAPIText, "OpaquePlayerID", ['pattern: "^player_[A-Za-z0-9_-]{22}$"']);
@@ -427,8 +463,12 @@ assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must n
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
 }
-for (const [text, name] of [[openAPIText, "api/openapi.yaml"], [asyncAPIText, "api/asyncapi.yaml"], [docsBuildText, "docs UI"]]) {
-  assertNoRawSessionTokenExamples(text, name);
+for (const [text, name, allowedTokens] of [
+  [openAPIText, "api/openapi.yaml", [redactedSessionTokenSentinel]],
+  [asyncAPIText, "api/asyncapi.yaml", []],
+  [docsBuildText, "docs UI", []],
+]) {
+  assertNoRawSessionTokenExamples(text, name, allowedTokens);
 }
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
@@ -930,8 +970,9 @@ function assertOpaqueIDExamples(text, name) {
   }
 }
 
-function assertNoRawSessionTokenExamples(text, name) {
-  assert(!/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/.test(text), `${name} must not contain a raw 43-character session token example`);
+function assertNoRawSessionTokenExamples(text, name, allowedTokens = []) {
+  const tokens = [...text.matchAll(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g)].map(([token]) => token);
+  assert(tokens.every((token) => allowedTokens.includes(token)), `${name} must not contain a raw 43-character session token example`);
 }
 
 function assertNoBacktickStartedPlainScalars(text, name) {
