@@ -25,6 +25,9 @@
 
 - Modify `internal/simulation/game_config.go`: v2/v3 version split, attack schema, exact lookup and validation.
 - Modify `internal/simulation/game_config_test.go`: v3 catalog, invalid combinations, fallback and version split tests.
+- Modify `internal/simulation/simulation.go`: keep runtime compiling after projectile damage ownership moves to normal attack.
+- Modify `internal/simulation/player_assignment.go`: use the server config version guard.
+- Modify `cmd/server/main.go` and `internal/rooms/store.go`: use the server config version guard at embedded/fallback boundaries.
 - Modify `server-config/game-config.json`: authoritative v3 attack values.
 - Keep `client-config/game-config.json` byte-identical.
 - Modify `internal/simulation/simulation.go`: Step phase orchestration and per-character charge lookup.
@@ -43,12 +46,19 @@
 **Files:**
 - Modify: `internal/simulation/game_config.go`
 - Modify: `internal/simulation/game_config_test.go`
+- Modify: `internal/simulation/simulation.go`
+- Modify: `internal/simulation/simulation_test.go`
+- Modify: `internal/simulation/player_assignment.go`
+- Modify: `cmd/server/main.go`
+- Modify: `cmd/server/main_test.go`
+- Modify: `internal/rooms/store.go`
+- Modify: `internal/rooms/store_config_test.go`
 - Modify: `server-config/game-config.json`
 - Modify: `docs-ui/scripts/validate.mjs`
 - Test: `internal/simulation/game_config_test.go`
 
 **Interfaces:**
-- Produces: `ClientGameConfigVersion`, `ServerGameConfigVersion`, `NormalAttackKind`, `NormalAttackConfig`, `ProjectileAttackConfig`, `GameConfig.ProjectileType(ProjectileType)`, `PlayerTypeConfig.NormalAttack`.
+- Produces: `ClientGameConfigVersion`, `ServerGameConfigVersion`, `NormalAttackKind`, `NormalAttackConfig`, `ProjectileAttackConfig`, `GameConfig.ProjectileType(ProjectileType)`, `PlayerTypeConfig.NormalAttack`, and a minimal config-owned single-projectile adapter that Tasks 2-3 replace.
 - Consumes: existing `CharacterType`, `GameConfig.PlayerType`, embedded loaders and `StaticGameConfig`.
 
 - [ ] **Step 1: Write failing version and catalog tests**
@@ -176,6 +186,8 @@ Validation must use `math.IsNaN`/`math.IsInf`, reject empty or duplicate project
 
 Update `validate.mjs` to assert client version 2 and byte-level legacy fields unchanged, while server version 3 has exact nested attacks and no player-level attack budget or projectile-level damage.
 
+Before running GREEN, add durable runtime tests that require every projectile created for Shelly to use damage 280 and referenced type/radius/speed, and require Lily approval to create no projectile. Change `newProjectile` to return `(ProjectileData, bool)`: resolve the owner's player type, return false when `NormalAttack.Projectile == nil`, exact-lookup the referenced projectile type, and copy attack damage plus referenced type/radius/speed. This is only the compile-safe one-projectile adapter; Task 3 replaces its count/schedule behavior. Update every `GameConfigVersion` server guard in `player_assignment.go`, `cmd/server/main.go`, and `internal/rooms/store.go` plus their tests to `ServerGameConfigVersion`; client artifact tests use `ClientGameConfigVersion`.
+
 Run:
 
 ```bash
@@ -188,7 +200,7 @@ Expected: both commands pass.
 - [ ] **Step 7: Commit Task 1**
 
 ```bash
-rtk git add internal/simulation/game_config.go internal/simulation/game_config_test.go server-config/game-config.json docs-ui/scripts/validate.mjs
+rtk git add internal/simulation/game_config.go internal/simulation/game_config_test.go internal/simulation/simulation.go internal/simulation/simulation_test.go internal/simulation/player_assignment.go cmd/server/main.go cmd/server/main_test.go internal/rooms/store.go internal/rooms/store_config_test.go server-config/game-config.json docs-ui/scripts/validate.mjs
 rtk git commit -m "[SL-83] feat(config): 캐릭터별 일반 공격 설정 추가" -m "- server config v3 normalAttack 계약 추가
 - client v2와 server v3 버전 경계 분리
 - invalid attack 조합과 projectile lookup 검증"
