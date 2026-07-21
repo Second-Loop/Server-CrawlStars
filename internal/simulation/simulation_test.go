@@ -184,7 +184,7 @@ func TestStepAcknowledgesProcessedInputWithoutVisibleEffect(t *testing.T) {
 			AttackDir: Vector2{X: 1}, PressedAttack: true,
 		}})
 
-		if snapshot.Players[0].PressedAttack || len(snapshot.Projectiles) != maxCharges {
+		if snapshot.Players[0].PressedAttack || len(snapshot.Projectiles) != maxCharges*5 {
 			t.Fatalf("exhausted attack had a visible effect: player=%+v projectiles=%d", snapshot.Players[0], len(snapshot.Projectiles))
 		}
 		if got := snapshot.Players[0].LastProcessedClientTick; got != int64(maxCharges+1) {
@@ -910,19 +910,19 @@ func TestStepNormalizesExtremeFiniteAttackDirection(t *testing.T) {
 	component := 1 / math.Sqrt(2)
 	wantDirection := Vector2{X: component, Y: component}
 	assertVector(t, "extreme finite attack direction", snapshot.Players[0].AttackDir, wantDirection)
-	if len(snapshot.Projectiles) != 1 {
-		t.Fatalf("expected extreme finite attack direction to create 1 projectile, got %d", len(snapshot.Projectiles))
+	if len(snapshot.Projectiles) != 5 {
+		t.Fatalf("expected extreme finite attack direction to create 5 projectiles, got %d", len(snapshot.Projectiles))
 	}
-	assertVector(t, "extreme finite projectile direction", snapshot.Projectiles[0].Dir, wantDirection)
+	assertVector(t, "extreme finite center projectile direction", snapshot.Projectiles[2].Dir, wantDirection)
 }
 
 func TestStepDeadPlayerInputIsIgnoredAfterProjectileHit(t *testing.T) {
 	shooterPosition := Vector2{}
 	targetPosition := Vector2{X: DefaultProjectileSpeed * TickDuration}
-	state := NewState([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{ID: PlayerID("red-1"), Team: TeamRed, Pos: shooterPosition},
 		{ID: PlayerID("blue-1"), Team: TeamBlue, Pos: targetPosition, HP: defaultShellyProjectileDamage()},
-	})
+	}, Config{})
 
 	state.Step([]InputCommand{
 		{PlayerID: PlayerID("red-1"), AttackDir: Vector2{X: 1}, PressedAttack: true},
@@ -992,10 +992,10 @@ func TestStepAcceptsAttackInputAndAddsProjectileSkeletonToSnapshot(t *testing.T)
 		},
 	})
 
-	if len(snapshot.Projectiles) != 1 {
-		t.Fatalf("expected 1 projectile, got %d", len(snapshot.Projectiles))
+	if len(snapshot.Projectiles) != 5 {
+		t.Fatalf("expected 5 Shelly projectiles, got %d", len(snapshot.Projectiles))
 	}
-	projectile := snapshot.Projectiles[0]
+	projectile := snapshot.Projectiles[2]
 	if projectile.ID == "" {
 		t.Fatal("expected projectile ID to be set")
 	}
@@ -1068,8 +1068,15 @@ func TestStepDoesNotCreateProjectileWhenAttackIsNotPressed(t *testing.T) {
 func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
 	for _, characterType := range []CharacterType{CharacterTypeShelly, CharacterTypeColt, CharacterTypeLily} {
 		t.Run(fmt.Sprintf("%d", characterType), func(t *testing.T) {
-			state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed, CharacterType: characterType}})
-			playerType, ok := StaticGameConfig().PlayerType(characterType)
+			gameConfig := StaticGameConfig()
+			gameConfig.Map = MapData{}
+			for index := range gameConfig.Player.Types {
+				if gameConfig.Player.Types[index].CharacterType == characterType {
+					gameConfig.Player.Types[index].NormalAttack.RechargeTicks = 1000
+				}
+			}
+			state := NewStateWithConfig([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed, CharacterType: characterType}}, Config{Game: gameConfig})
+			playerType, ok := gameConfig.PlayerType(characterType)
 			if !ok {
 				t.Fatalf("missing player type %d", characterType)
 			}
@@ -1079,12 +1086,17 @@ func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
 				if !snapshot.Players[0].PressedAttack {
 					t.Fatalf("expected attack %d to be accepted", attack+1)
 				}
+				if characterType == CharacterTypeColt {
+					for range 30 {
+						state.Step(nil)
+					}
+				}
 			}
 			exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
 
-			wantProjectiles := playerType.NormalAttack.MaxCharges
-			if playerType.NormalAttack.Projectile == nil {
-				wantProjectiles = 0
+			wantProjectiles := 0
+			if playerType.NormalAttack.Projectile != nil {
+				wantProjectiles = playerType.NormalAttack.MaxCharges * playerType.NormalAttack.Projectile.Count
 			}
 			if got := len(exhausted.Projectiles); got != wantProjectiles {
 				t.Fatalf("expected exhausted attack to leave %d projectiles, got %d", wantProjectiles, got)
@@ -1115,9 +1127,14 @@ func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing player type %d", characterType)
 			}
-			wantProjectiles := 1
-			if playerType.NormalAttack.Projectile == nil {
-				wantProjectiles = 0
+			wantProjectiles := 0
+			if playerType.NormalAttack.Projectile != nil {
+				switch characterType {
+				case CharacterTypeShelly:
+					wantProjectiles = 5
+				case CharacterTypeColt:
+					wantProjectiles = 5
+				}
 			}
 			if got := len(notYetRecharged.Projectiles); got != wantProjectiles {
 				t.Fatalf("expected no recharge before 30 ticks, got %d projectiles", got)
@@ -1127,11 +1144,22 @@ func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
 			}
 
 			recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-			if got := len(recharged.Projectiles); got != 2*wantProjectiles {
+			if characterType == CharacterTypeColt {
+				if recharged.Players[0].PressedAttack {
+					t.Fatal("expected reattack on the last burst emission tick to be rejected")
+				}
+				if got := len(recharged.Projectiles); got != 6 {
+					t.Fatalf("expected Colt's last scheduled emission, got %d projectiles", got)
+				}
+				recharged = state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+				if got := len(recharged.Projectiles); got != 7 {
+					t.Fatalf("expected Colt reactivation on the next tick, got %d projectiles", got)
+				}
+			} else if got := len(recharged.Projectiles); got != 2*wantProjectiles {
 				t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
 			}
 			if !recharged.Players[0].PressedAttack {
-				t.Fatal("expected attack after recharge completion to be accepted")
+				t.Fatal("expected attack after recharge and non-overlap completion to be accepted")
 			}
 		})
 	}
@@ -1149,8 +1177,8 @@ func TestStepAttackChargeDoesNotAccumulateAboveMaximum(t *testing.T) {
 	}
 	snapshot := state.Step(nil)
 
-	if got := len(snapshot.Projectiles); got != maxCharges {
-		t.Fatalf("expected charge capacity to remain capped at %d, got %d projectiles", maxCharges, got)
+	if got := len(snapshot.Projectiles); got != maxCharges*5 {
+		t.Fatalf("expected charge capacity to remain capped at %d attacks, got %d projectiles", maxCharges, got)
 	}
 }
 
@@ -1173,7 +1201,7 @@ func TestStepZeroDirectionDoesNotConsumeAttackCharge(t *testing.T) {
 		state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
 	}
 	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-	if got := len(exhausted.Projectiles); got != maxCharges {
+	if got := len(exhausted.Projectiles); got != maxCharges*5 {
 		t.Fatalf("expected zero direction to consume no charge, got %d projectiles", got)
 	}
 }
@@ -1196,7 +1224,7 @@ func TestStepKeepsAttackChargesSeparatePerPlayer(t *testing.T) {
 		attackInput(PlayerID("blue-1")),
 	})
 
-	if got := len(exhausted.Projectiles); got != 2*maxCharges {
+	if got := len(exhausted.Projectiles); got != 2*maxCharges*5 {
 		t.Fatalf("expected two independent %d-charge budgets, got %d projectiles", maxCharges, got)
 	}
 	if exhausted.Players[0].PressedAttack || exhausted.Players[1].PressedAttack {
@@ -1206,7 +1234,7 @@ func TestStepKeepsAttackChargesSeparatePerPlayer(t *testing.T) {
 
 func TestStepProcessesMovementAndAttackInSameTick(t *testing.T) {
 	start := StaticMapFixture().WorldPos(1, 1)
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1238,7 +1266,7 @@ func TestStepProcessesMovementAndAttackInSameTick(t *testing.T) {
 
 func TestStepMovesExistingProjectileOnNextTick(t *testing.T) {
 	start := StaticMapFixture().WorldPos(1, 1)
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1280,7 +1308,7 @@ func TestStepDestroysProjectileWhenItHitsWall(t *testing.T) {
 		X: wallMinX - DefaultProjectileRadius - DefaultProjectileSpeed*TickDuration + 0.001,
 		Y: wallCenter.Y,
 	}
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1326,7 +1354,7 @@ func TestStepDestroysProjectileWhenItLeavesMapBounds(t *testing.T) {
 		X: mapMaxX - DefaultProjectileRadius - DefaultProjectileSpeed*TickDuration + 0.001,
 		Y: gameMap.WorldPos(3, 1).Y,
 	}
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1370,7 +1398,7 @@ func TestStepAppliesProjectileTileCollisionPolicy(t *testing.T) {
 			center := gameMap.WorldPos(2, 2)
 			step := DefaultProjectileSpeed * TickDuration
 			start := Vector2{X: center.X - TileSize/2 - DefaultProjectileRadius - step + 0.001, Y: center.Y}
-			state := NewStateWithConfig([]PlayerData{{
+			state := newSingleProjectileTestState([]PlayerData{{
 				ID: PlayerID("red-1"), Team: TeamRed, Slot: 0, Pos: start,
 			}}, Config{Map: gameMap})
 
@@ -1400,7 +1428,7 @@ func TestStepProjectileHitReducesTargetHPAndDestroysProjectile(t *testing.T) {
 		X: start.X + DefaultProjectileSpeed*TickDuration,
 		Y: start.Y,
 	}
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1445,7 +1473,7 @@ func TestStepProjectileHitReducesTargetHPAndDestroysProjectile(t *testing.T) {
 
 func TestStepProjectileDoesNotSelfHitOwner(t *testing.T) {
 	start := StaticMapFixture().WorldPos(1, 1)
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1480,7 +1508,7 @@ func TestStepProjectileHitMarksTargetDeadWhenHPReachesZero(t *testing.T) {
 		X: start.X + DefaultProjectileSpeed*TickDuration,
 		Y: start.Y,
 	}
-	state := NewStateWithConfig([]PlayerData{
+	state := newSingleProjectileTestState([]PlayerData{
 		{
 			ID:   PlayerID("red-1"),
 			Team: TeamRed,
@@ -1641,7 +1669,7 @@ func TestStepProjectileCollisionMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("select mode %q: %v", tt.mode, err)
 			}
-			state := NewStateWithConfig(tt.players, Config{Map: StaticMapFixture(), Game: gameConfig})
+			state := newSingleProjectileTestState(tt.players, Config{Map: StaticMapFixture(), Game: gameConfig})
 
 			state.Step([]InputCommand{attackInput(PlayerID("owner"))})
 			snapshot := state.Step(nil)
@@ -1675,8 +1703,8 @@ func TestStepNormalizesInputOrderThroughCollision(t *testing.T) {
 	wantInputs := append([]InputCommand(nil), inputs...)
 	wantReversedInputs := append([]InputCommand(nil), reversedInputs...)
 
-	state := NewStateWithConfig(players, Config{Map: StaticMapFixture()})
-	reversedState := NewStateWithConfig(players, Config{Map: StaticMapFixture()})
+	state := newSingleProjectileTestState(players, Config{Map: StaticMapFixture()})
+	reversedState := newSingleProjectileTestState(players, Config{Map: StaticMapFixture()})
 	created := state.Step(inputs)
 	reversedCreated := reversedState.Step(reversedInputs)
 	collided := state.Step(nil)

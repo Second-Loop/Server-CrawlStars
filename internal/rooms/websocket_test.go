@@ -3414,9 +3414,13 @@ func TestBotAppearsAndActsInRealSharedGameplaySnapshot(t *testing.T) {
 		!botPlayer.PressedAttack {
 		t.Fatalf("bot must move, aim, and receive shared-state attack approval: %+v", botPlayer)
 	}
-	if len(capture.snapshots[0].Projectiles) != 1 ||
-		capture.snapshots[0].Projectiles[0].OwnerID != botPlayer.ID {
-		t.Fatalf("expected one bot-owned shared projectile, got %+v", capture.snapshots[0].Projectiles)
+	if len(capture.snapshots[0].Projectiles) != 5 {
+		t.Fatalf("expected five bot-owned Shelly projectiles, got %+v", capture.snapshots[0].Projectiles)
+	}
+	for _, projectile := range capture.snapshots[0].Projectiles {
+		if projectile.OwnerID != botPlayer.ID {
+			t.Fatalf("expected bot-owned shared projectiles, got %+v", capture.snapshots[0].Projectiles)
+		}
 	}
 }
 
@@ -4721,8 +4725,8 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 	if err := json.Unmarshal(payload, &message); err != nil {
 		t.Fatalf("decode snapshot message: %v", err)
 	}
-	if len(message.Snapshot.Projectiles) != 1 {
-		t.Fatalf("expected attack input to create one projectile, got %+v", message.Snapshot.Projectiles)
+	if len(message.Snapshot.Projectiles) != 5 {
+		t.Fatalf("expected Shelly attack input to create five projectiles, got %+v", message.Snapshot.Projectiles)
 	}
 }
 

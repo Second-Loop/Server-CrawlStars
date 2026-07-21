@@ -151,10 +151,16 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	}
 	s.rechargeAttackCharges()
 	s.moveProjectiles()
+	snapshotTick := s.tick + 1
+	emissions := s.collectDueBurstEmissions(snapshotTick)
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
-		s.applyInput(input)
+		if intent, ok := s.applyInput(input); ok {
+			emissions = append(emissions, s.approveProjectileAttack(intent, snapshotTick)...)
+		}
 	}
+	s.emitProjectiles(emissions)
+	s.finishCompletedBursts()
 
 	s.tick++
 
@@ -252,19 +258,19 @@ func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []Playe
 	return cloned
 }
 
-func (s *State) applyInput(input InputCommand) {
+func (s *State) applyInput(input InputCommand) (attackIntent, bool) {
 	for i := range s.players {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
 		if s.players[i].IsDead || !isFinite(input.MoveDir) || !isFinite(input.AttackDir) {
-			return
+			return attackIntent{}, false
 		}
 		if input.ClientTick < 0 {
-			return
+			return attackIntent{}, false
 		}
 		if input.ClientTick > 0 && input.ClientTick <= s.players[i].LastProcessedClientTick {
-			return
+			return attackIntent{}, false
 		}
 		if input.ClientTick > 0 {
 			s.players[i].LastProcessedClientTick = input.ClientTick
@@ -289,14 +295,21 @@ func (s *State) applyInput(input InputCommand) {
 		if !s.collidesWithMap(nextY, s.players[i].Radius, tileBlocksPlayer) {
 			s.players[i].Pos = nextY
 		}
-		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
-			s.players[i].PressedAttack = true
-			if emission, ok := s.newProjectileEmission(s.players[i]); ok {
-				s.emitProjectiles([]projectileEmission{emission})
-			}
+		if !input.PressedAttack || attackDir == (Vector2{}) {
+			return attackIntent{}, false
 		}
-		return
+		attack, ok := s.normalAttackConfig(input.PlayerID)
+		if !ok {
+			return attackIntent{}, false
+		}
+		return attackIntent{
+			playerIndex: i,
+			owner:       s.players[i],
+			direction:   attackDir,
+			attack:      attack,
+		}, true
 	}
+	return attackIntent{}, false
 }
 
 func (s *State) rechargeAttackCharges() {
