@@ -3,7 +3,6 @@ package simulation
 import (
 	"math"
 	"sort"
-	"strconv"
 )
 
 type Tick uint64
@@ -117,6 +116,8 @@ type State struct {
 	gameMap           MapData
 	gameConfig        GameConfig
 	attackStates      map[PlayerID]attackState
+	burstStates       map[PlayerID]burstState
+	projectileRuntime map[ProjectileID]projectileRuntime
 }
 
 func NewState(players []PlayerData) *State {
@@ -130,15 +131,17 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 	for _, player := range normalizedPlayers {
 		playerType, ok := gameConfig.PlayerType(player.CharacterType)
 		if !ok {
-			playerType = gameConfig.DefaultPlayerType()
+			continue
 		}
 		attackStates[player.ID] = attackState{charges: playerType.NormalAttack.MaxCharges}
 	}
 	return &State{
-		players:      normalizedPlayers,
-		gameMap:      gameConfig.Map,
-		gameConfig:   gameConfig,
-		attackStates: attackStates,
+		players:           normalizedPlayers,
+		gameMap:           gameConfig.Map,
+		gameConfig:        gameConfig,
+		attackStates:      attackStates,
+		burstStates:       make(map[PlayerID]burstState),
+		projectileRuntime: make(map[ProjectileID]projectileRuntime),
 	}
 }
 
@@ -288,8 +291,8 @@ func (s *State) applyInput(input InputCommand) {
 		}
 		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
 			s.players[i].PressedAttack = true
-			if projectile, ok := s.newProjectile(s.players[i]); ok {
-				s.projectiles = append(s.projectiles, projectile)
+			if emission, ok := s.newProjectileEmission(s.players[i]); ok {
+				s.emitProjectiles([]projectileEmission{emission})
 			}
 		}
 		return
@@ -298,8 +301,10 @@ func (s *State) applyInput(input InputCommand) {
 
 func (s *State) rechargeAttackCharges() {
 	for playerID, state := range s.attackStates {
-		playerConfig := s.playerTypeConfig(playerID)
-		attack := playerConfig.NormalAttack
+		attack, ok := s.normalAttackConfig(playerID)
+		if !ok {
+			continue
+		}
 		if state.charges >= attack.MaxCharges {
 			state.charges = attack.MaxCharges
 			state.rechargeTicks = 0
@@ -333,20 +338,42 @@ func (s *State) consumeAttackCharge(playerID PlayerID) bool {
 
 func (s *State) moveProjectiles() {
 	for i := range s.projectiles {
-		if s.projectiles[i].IsDestroyed {
+		projectile := &s.projectiles[i]
+		if projectile.IsDestroyed {
 			continue
 		}
 
+		runtime, hasRuntime := s.projectileRuntime[projectile.ID]
+		stepDistance := projectile.Speed * s.tickDuration()
+		reachedRange := false
+		if hasRuntime {
+			remaining := runtime.maxDistance - runtime.moved
+			if remaining <= stepDistance+1e-12 {
+				stepDistance = math.Max(remaining, 0)
+				reachedRange = true
+			}
+		}
 		next := Vector2{
-			X: s.projectiles[i].Pos.X + s.projectiles[i].Dir.X*s.projectiles[i].Speed*s.tickDuration(),
-			Y: s.projectiles[i].Pos.Y + s.projectiles[i].Dir.Y*s.projectiles[i].Speed*s.tickDuration(),
+			X: projectile.Pos.X + projectile.Dir.X*stepDistance,
+			Y: projectile.Pos.Y + projectile.Dir.Y*stepDistance,
 		}
-		s.projectiles[i].Pos = next
-		if s.collidesWithMap(next, s.projectiles[i].Radius, tileBlocksProjectile) {
-			s.projectiles[i].IsDestroyed = true
+		projectile.Pos = next
+		if hasRuntime {
+			runtime.moved += stepDistance
 		}
-		if !s.projectiles[i].IsDestroyed {
-			s.applyProjectileHit(&s.projectiles[i])
+		if s.collidesWithMap(next, projectile.Radius, tileBlocksProjectile) {
+			projectile.IsDestroyed = true
+		}
+		if !projectile.IsDestroyed {
+			s.applyProjectileHit(projectile)
+		}
+		if !projectile.IsDestroyed && reachedRange {
+			projectile.IsDestroyed = true
+		}
+		if projectile.IsDestroyed {
+			delete(s.projectileRuntime, projectile.ID)
+		} else if hasRuntime {
+			s.projectileRuntime[projectile.ID] = runtime
 		}
 	}
 }
@@ -397,39 +424,6 @@ func (s *State) playerTeam(playerID PlayerID) (Team, bool) {
 		}
 	}
 	return "", false
-}
-
-func (s *State) playerTypeConfig(playerID PlayerID) PlayerTypeConfig {
-	for _, player := range s.players {
-		if player.ID == playerID {
-			if playerType, ok := s.gameConfig.PlayerType(player.CharacterType); ok {
-				return playerType
-			}
-			break
-		}
-	}
-	return s.gameConfig.DefaultPlayerType()
-}
-
-func (s *State) newProjectile(owner PlayerData) (ProjectileData, bool) {
-	playerType, ok := s.gameConfig.PlayerType(owner.CharacterType)
-	if !ok || playerType.NormalAttack.Projectile == nil {
-		return ProjectileData{}, false
-	}
-	projectileType, ok := s.gameConfig.ProjectileType(playerType.NormalAttack.Projectile.Type)
-	if !ok {
-		return ProjectileData{}, false
-	}
-	s.nextProjectileSeq++
-	return ProjectileData{
-		ID:      ProjectileID("projectile-" + strconv.FormatUint(uint64(s.tick+1), 10) + "-" + string(owner.ID) + "-" + strconv.FormatUint(s.nextProjectileSeq, 10)),
-		OwnerID: owner.ID,
-		Pos:     owner.Pos,
-		Dir:     owner.AttackDir,
-		Speed:   projectileType.Speed,
-		Damage:  playerType.NormalAttack.DamagePerHit,
-		Radius:  projectileType.Radius,
-	}, true
 }
 
 func (s *State) tickDuration() float64 {
@@ -561,7 +555,7 @@ func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool
 	dx := a.X - b.X
 	dy := a.Y - b.Y
 	radius := aRadius + bRadius
-	return dx*dx+dy*dy <= radius*radius
+	return dx*dx+dy*dy <= radius*radius+1e-12
 }
 
 func clamp(value float64, min float64, max float64) float64 {
