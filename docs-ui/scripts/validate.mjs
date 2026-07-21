@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
@@ -8,7 +9,8 @@ const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.
 const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
 const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
-const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
+const clientGameConfigBytes = await readFile(new URL("../../client-config/game-config.json", import.meta.url));
+const clientGameConfigText = clientGameConfigBytes.toString("utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
 const serverGameConfig = JSON.parse(serverGameConfigText);
@@ -473,6 +475,11 @@ for (const [text, name, allowedTokens] of [
 }
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
+const approvedClientGameConfigSHA256 = "b351ce594e6fbed9df59ea778d63897c6696510611485691cefcc5eade7fd70d";
+assert(
+  createHash("sha256").update(clientGameConfigBytes).digest("hex") === approvedClientGameConfigSHA256,
+  "client-config/game-config.json must be byte-identical to the approved v2 artifact",
+);
 assert(clientGameConfig.version === 2, "client config version must be 2");
 assert(serverGameConfig.version === 3, "server config version must be 3");
 for (const legacyField of [
