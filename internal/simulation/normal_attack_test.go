@@ -16,6 +16,79 @@ func TestAttackStateUsesCharacterChargeCapacity(t *testing.T) {
 	}
 }
 
+func TestStepAcceptsConfiguredCharacterChargeCounts(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		character CharacterType
+		want      int
+	}{
+		{name: "Shelly", character: CharacterTypeShelly, want: 3},
+		{name: "Colt", character: CharacterTypeColt, want: 3},
+		{name: "Lily", character: CharacterTypeLily, want: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewStateWithConfig([]PlayerData{{
+				ID:            "player",
+				CharacterType: tt.character,
+			}}, Config{})
+
+			accepted := 0
+			for range tt.want + 1 {
+				snapshot := state.Step([]InputCommand{{
+					PlayerID:      "player",
+					AttackDir:     Vector2{X: 1},
+					PressedAttack: true,
+				}})
+				if snapshot.Players[0].PressedAttack {
+					accepted++
+				}
+			}
+			if accepted != tt.want {
+				t.Fatalf("accepted attacks = %d, want %d", accepted, tt.want)
+			}
+		})
+	}
+}
+
+func TestStepRechargesEachCharacterUsingOwnConfig(t *testing.T) {
+	gameConfig := StaticGameConfig()
+	gameConfig.Map = MapData{}
+	for index := range gameConfig.Player.Types {
+		gameConfig.Player.Types[index].NormalAttack.MaxCharges = 1
+		switch gameConfig.Player.Types[index].CharacterType {
+		case CharacterTypeShelly:
+			gameConfig.Player.Types[index].NormalAttack.RechargeTicks = 1
+		case CharacterTypeColt:
+			gameConfig.Player.Types[index].NormalAttack.RechargeTicks = 2
+		case CharacterTypeLily:
+			gameConfig.Player.Types[index].NormalAttack.RechargeTicks = 3
+		}
+	}
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "s", CharacterType: CharacterTypeShelly},
+		{ID: "c", CharacterType: CharacterTypeColt},
+		{ID: "l", CharacterType: CharacterTypeLily},
+	}, Config{Game: gameConfig})
+
+	exhausted := state.Step([]InputCommand{
+		{PlayerID: "s", AttackDir: Vector2{X: 1}, PressedAttack: true},
+		{PlayerID: "c", AttackDir: Vector2{X: 1}, PressedAttack: true},
+		{PlayerID: "l", AttackDir: Vector2{X: 1}, PressedAttack: true},
+	})
+	for _, player := range exhausted.Players {
+		if !player.PressedAttack {
+			t.Fatalf("expected %s exhaustion attack to be accepted", player.ID)
+		}
+	}
+
+	state.Step(nil)
+	assertAttackCharges(t, state, map[PlayerID]int{"s": 1, "c": 0, "l": 0})
+	state.Step(nil)
+	assertAttackCharges(t, state, map[PlayerID]int{"s": 1, "c": 1, "l": 0})
+	state.Step(nil)
+	assertAttackCharges(t, state, map[PlayerID]int{"s": 1, "c": 1, "l": 1})
+}
+
 func TestResolvedTileSizeFallsBackForMaplessState(t *testing.T) {
 	state := NewStateWithConfig([]PlayerData{{ID: "s", CharacterType: CharacterTypeShelly}}, Config{})
 	if got := state.resolvedTileSize(); got != TileSize {
@@ -125,4 +198,13 @@ func newProjectileRangeState(tileSize float64, target *PlayerData) *State {
 		players = append(players, *target)
 	}
 	return NewStateWithConfig(players, Config{Game: gameConfig})
+}
+
+func assertAttackCharges(t *testing.T, state *State, wants map[PlayerID]int) {
+	t.Helper()
+	for playerID, want := range wants {
+		if got := state.attackStates[playerID].charges; got != want {
+			t.Fatalf("%s charges = %d, want %d", playerID, got, want)
+		}
+	}
 }
