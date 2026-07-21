@@ -54,7 +54,7 @@
 - recharge는 기존 30 ticks를 유지해요.
 - projectile speed/radius는 기존 `13 / 0.3`을 유지해요.
 - 사거리는 `rangeTiles * resolved map tileSize`인 projectile 중심의 최대 이동 거리예요.
-- resolved tile size는 `state map.TileSize -> gameConfig.Map.TileSize -> TileSize(1.2)` 순서로 fallback해 mapless `NewState(Config{})`에서도 0이 되지 않아요.
+- resolved tile size는 `state map.TileSize -> gameConfig.Tile.Size -> TileSize(1.2)` 순서로 fallback해 mapless `NewState(Config{})`에서도 0이 되지 않아요.
 - 마지막 이동은 남은 거리만큼 clamp하고 `Wall/boundary -> player hit -> range expiry` 순으로 판정해 끝점 hit을 허용해요.
 - charge는 공격 승인 시 소비하며, 이후 miss·wall block·owner death에는 환불하지 않아요.
 
