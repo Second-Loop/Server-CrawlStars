@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 )
 
-const GameConfigVersion = 2
+const (
+	ClientGameConfigVersion = 2
+	ServerGameConfigVersion = 3
+)
 
 type CharacterType int
 
@@ -50,24 +54,46 @@ func expectedCharacterID(characterType CharacterType) (string, bool) {
 }
 
 type PlayerTypeConfig struct {
-	CharacterType       CharacterType `json:"characterType"`
-	ID                  string        `json:"id"`
-	Radius              float64       `json:"radius"`
-	HP                  float64       `json:"hp"`
-	Speed               float64       `json:"speed"`
-	MaxAttackCharges    int           `json:"maxAttackCharges"`
-	AttackRechargeTicks int           `json:"attackRechargeTicks"`
+	CharacterType CharacterType      `json:"characterType"`
+	ID            string             `json:"id"`
+	Radius        float64            `json:"radius"`
+	HP            float64            `json:"hp"`
+	Speed         float64            `json:"speed"`
+	NormalAttack  NormalAttackConfig `json:"normalAttack"`
+}
+
+type NormalAttackKind string
+
+const (
+	NormalAttackSpreadProjectile NormalAttackKind = "spread_projectile"
+	NormalAttackBurstProjectile  NormalAttackKind = "burst_projectile"
+	NormalAttackMelee            NormalAttackKind = "melee"
+)
+
+type ProjectileAttackConfig struct {
+	Type                    ProjectileType `json:"type"`
+	Count                   int            `json:"count"`
+	DirectionOffsetsDegrees []float64      `json:"directionOffsetsDegrees"`
+	IntervalTicks           int            `json:"intervalTicks"`
+}
+
+type NormalAttackConfig struct {
+	Kind          NormalAttackKind        `json:"kind"`
+	DamagePerHit  float64                 `json:"damagePerHit"`
+	RangeTiles    float64                 `json:"rangeTiles"`
+	MaxCharges    int                     `json:"maxCharges"`
+	RechargeTicks int                     `json:"rechargeTicks"`
+	Projectile    *ProjectileAttackConfig `json:"projectile,omitempty"`
 }
 
 func (config *PlayerTypeConfig) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		CharacterType       json.RawMessage `json:"characterType"`
-		ID                  string          `json:"id"`
-		Radius              float64         `json:"radius"`
-		HP                  float64         `json:"hp"`
-		Speed               float64         `json:"speed"`
-		MaxAttackCharges    int             `json:"maxAttackCharges"`
-		AttackRechargeTicks int             `json:"attackRechargeTicks"`
+		CharacterType json.RawMessage    `json:"characterType"`
+		ID            string             `json:"id"`
+		Radius        float64            `json:"radius"`
+		HP            float64            `json:"hp"`
+		Speed         float64            `json:"speed"`
+		NormalAttack  NormalAttackConfig `json:"normalAttack"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -80,13 +106,12 @@ func (config *PlayerTypeConfig) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode game config player type characterType: %w", err)
 	}
 	*config = PlayerTypeConfig{
-		CharacterType:       characterType,
-		ID:                  wire.ID,
-		Radius:              wire.Radius,
-		HP:                  wire.HP,
-		Speed:               wire.Speed,
-		MaxAttackCharges:    wire.MaxAttackCharges,
-		AttackRechargeTicks: wire.AttackRechargeTicks,
+		CharacterType: characterType,
+		ID:            wire.ID,
+		Radius:        wire.Radius,
+		HP:            wire.HP,
+		Speed:         wire.Speed,
+		NormalAttack:  wire.NormalAttack,
 	}
 	return nil
 }
@@ -98,7 +123,6 @@ type ProjectileTypeSetConfig struct {
 type ProjectileTypeConfig struct {
 	ID     string  `json:"id"`
 	Radius float64 `json:"radius"`
-	Damage float64 `json:"damage"`
 	Speed  float64 `json:"speed"`
 }
 
@@ -152,8 +176,8 @@ func LoadGameConfig(reader io.Reader) (GameConfig, error) {
 }
 
 func ResolveGameConfig(config GameConfig) (GameConfig, error) {
-	if config.Version != GameConfigVersion {
-		return GameConfig{}, fmt.Errorf("game config version must be %d", GameConfigVersion)
+	if config.Version != ServerGameConfigVersion {
+		return GameConfig{}, fmt.Errorf("game config version must be %d", ServerGameConfigVersion)
 	}
 	if config.TickRate <= 0 {
 		return GameConfig{}, fmt.Errorf("game config tickRate must be positive")
@@ -161,19 +185,25 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 	if config.Tile.Size <= 0 {
 		return GameConfig{}, fmt.Errorf("game config tile.size must be positive")
 	}
-	if err := validatePlayerTypeCatalog(config.Player.Types); err != nil {
-		return GameConfig{}, err
-	}
 	if len(config.Projectile.Types) == 0 {
 		return GameConfig{}, fmt.Errorf("game config projectile.types must not be empty")
 	}
+	seenProjectileIDs := make(map[ProjectileType]bool, len(config.Projectile.Types))
 	for _, projectile := range config.Projectile.Types {
 		if projectile.ID == "" {
 			return GameConfig{}, fmt.Errorf("game config projectile type id must not be empty")
 		}
-		if projectile.Radius <= 0 || projectile.Damage <= 0 || projectile.Speed <= 0 {
+		projectileType := ProjectileType(projectile.ID)
+		if seenProjectileIDs[projectileType] {
+			return GameConfig{}, fmt.Errorf("game config projectile type id %q must not be duplicated", projectile.ID)
+		}
+		seenProjectileIDs[projectileType] = true
+		if !isFinitePositive(projectile.Radius) || !isFinitePositive(projectile.Speed) {
 			return GameConfig{}, fmt.Errorf("game config projectile type %q values must be positive", projectile.ID)
 		}
+	}
+	if err := validatePlayerTypeCatalog(config); err != nil {
+		return GameConfig{}, err
 	}
 	if err := validateGameModeCatalogConfig(config.ModeCatalog); err != nil {
 		return GameConfig{}, err
@@ -205,7 +235,8 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 	return selected, nil
 }
 
-func validatePlayerTypeCatalog(playerTypes []PlayerTypeConfig) error {
+func validatePlayerTypeCatalog(config GameConfig) error {
+	playerTypes := config.Player.Types
 	if len(playerTypes) == 0 {
 		return fmt.Errorf("game config player.types must not be empty")
 	}
@@ -231,14 +262,11 @@ func validatePlayerTypeCatalog(playerTypes []PlayerTypeConfig) error {
 		if playerType.ID != expectedID {
 			return fmt.Errorf("game config character type %d must use player type id %q", playerType.CharacterType, expectedID)
 		}
-		if playerType.Radius <= 0 || playerType.HP <= 0 || playerType.Speed <= 0 {
+		if !isFinitePositive(playerType.Radius) || !isFinitePositive(playerType.HP) || !isFinitePositive(playerType.Speed) {
 			return fmt.Errorf("game config player type %q values must be positive", playerType.ID)
 		}
-		if playerType.MaxAttackCharges <= 0 {
-			return fmt.Errorf("game config player type %q maxAttackCharges must be positive", playerType.ID)
-		}
-		if playerType.AttackRechargeTicks <= 0 {
-			return fmt.Errorf("game config player type %q attackRechargeTicks must be positive", playerType.ID)
+		if err := validateNormalAttackConfig(playerType.ID, playerType.NormalAttack, config); err != nil {
+			return err
 		}
 	}
 
@@ -248,6 +276,52 @@ func validatePlayerTypeCatalog(playerTypes []PlayerTypeConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, config GameConfig) error {
+	if !isFinitePositive(attack.DamagePerHit) {
+		return fmt.Errorf("game config player type %q normalAttack.damagePerHit must be positive", playerTypeID)
+	}
+	if !isFinitePositive(attack.RangeTiles) {
+		return fmt.Errorf("game config player type %q normalAttack.rangeTiles must be positive", playerTypeID)
+	}
+	if attack.MaxCharges <= 0 {
+		return fmt.Errorf("game config player type %q normalAttack.maxCharges must be positive", playerTypeID)
+	}
+	if attack.RechargeTicks <= 0 {
+		return fmt.Errorf("game config player type %q normalAttack.rechargeTicks must be positive", playerTypeID)
+	}
+	switch attack.Kind {
+	case NormalAttackSpreadProjectile:
+		if attack.Projectile == nil {
+			return fmt.Errorf("game config player type %q normalAttack.projectile is required", playerTypeID)
+		}
+		if attack.Projectile.Count != 5 || len(attack.Projectile.DirectionOffsetsDegrees) != 5 || attack.Projectile.IntervalTicks != 0 {
+			return fmt.Errorf("game config player type %q spread projectile shape is invalid", playerTypeID)
+		}
+	case NormalAttackBurstProjectile:
+		if attack.Projectile == nil {
+			return fmt.Errorf("game config player type %q normalAttack.projectile is required", playerTypeID)
+		}
+		if attack.Projectile.Count != 6 || len(attack.Projectile.DirectionOffsetsDegrees) != 1 || attack.Projectile.DirectionOffsetsDegrees[0] != 0 || attack.Projectile.IntervalTicks <= 0 {
+			return fmt.Errorf("game config player type %q burst projectile shape is invalid", playerTypeID)
+		}
+	case NormalAttackMelee:
+		if attack.Projectile != nil {
+			return fmt.Errorf("game config player type %q melee normalAttack must not have a projectile", playerTypeID)
+		}
+		return nil
+	default:
+		return fmt.Errorf("game config player type %q normalAttack.kind %q is not supported", playerTypeID, attack.Kind)
+	}
+	if _, ok := config.ProjectileType(attack.Projectile.Type); !ok {
+		return fmt.Errorf("game config player type %q normalAttack projectile type %q is not defined", playerTypeID, attack.Projectile.Type)
+	}
+	return nil
+}
+
+func isFinitePositive(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func validateGameModeCatalogConfig(catalog GameModeCatalogConfig) error {
@@ -317,7 +391,7 @@ func validateGameModeConfig(mode GameModeConfig) error {
 func StaticGameConfig() GameConfig {
 	defaultMode := DefaultGameModeConfig()
 	return GameConfig{
-		Version:  GameConfigVersion,
+		Version:  ServerGameConfigVersion,
 		TickRate: TickRate,
 		Tile: TileConfig{
 			Size: TileSize,
@@ -325,31 +399,57 @@ func StaticGameConfig() GameConfig {
 		Player: PlayerTypeSetConfig{
 			Types: []PlayerTypeConfig{
 				{
-					CharacterType:       CharacterTypeShelly,
-					ID:                  "shelly",
-					Radius:              DefaultPlayerRadius,
-					HP:                  DefaultPlayerHP,
-					Speed:               DefaultPlayerSpeed,
-					MaxAttackCharges:    4,
-					AttackRechargeTicks: 30,
+					CharacterType: CharacterTypeShelly,
+					ID:            "shelly",
+					Radius:        DefaultPlayerRadius,
+					HP:            DefaultPlayerHP,
+					Speed:         DefaultPlayerSpeed,
+					NormalAttack: NormalAttackConfig{
+						Kind:          NormalAttackSpreadProjectile,
+						DamagePerHit:  280,
+						RangeTiles:    7.2,
+						MaxCharges:    3,
+						RechargeTicks: 30,
+						Projectile: &ProjectileAttackConfig{
+							Type:                    "default",
+							Count:                   5,
+							DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12},
+						},
+					},
 				},
 				{
-					CharacterType:       CharacterTypeColt,
-					ID:                  "colt",
-					Radius:              DefaultPlayerRadius,
-					HP:                  3100,
-					Speed:               DefaultPlayerSpeed,
-					MaxAttackCharges:    4,
-					AttackRechargeTicks: 30,
+					CharacterType: CharacterTypeColt,
+					ID:            "colt",
+					Radius:        DefaultPlayerRadius,
+					HP:            3100,
+					Speed:         DefaultPlayerSpeed,
+					NormalAttack: NormalAttackConfig{
+						Kind:          NormalAttackBurstProjectile,
+						DamagePerHit:  340,
+						RangeTiles:    9,
+						MaxCharges:    3,
+						RechargeTicks: 30,
+						Projectile: &ProjectileAttackConfig{
+							Type:                    "default",
+							Count:                   6,
+							DirectionOffsetsDegrees: []float64{0},
+							IntervalTicks:           6,
+						},
+					},
 				},
 				{
-					CharacterType:       CharacterTypeLily,
-					ID:                  "lily",
-					Radius:              DefaultPlayerRadius,
-					HP:                  4100,
-					Speed:               DefaultPlayerSpeed,
-					MaxAttackCharges:    4,
-					AttackRechargeTicks: 30,
+					CharacterType: CharacterTypeLily,
+					ID:            "lily",
+					Radius:        DefaultPlayerRadius,
+					HP:            4100,
+					Speed:         DefaultPlayerSpeed,
+					NormalAttack: NormalAttackConfig{
+						Kind:          NormalAttackMelee,
+						DamagePerHit:  1100,
+						RangeTiles:    2.2,
+						MaxCharges:    2,
+						RechargeTicks: 30,
+					},
 				},
 			},
 		},
@@ -358,7 +458,6 @@ func StaticGameConfig() GameConfig {
 				{
 					ID:     "default",
 					Radius: DefaultProjectileRadius,
-					Damage: DefaultProjectileDamage,
 					Speed:  DefaultProjectileSpeed,
 				},
 			},
@@ -432,6 +531,15 @@ func (config GameConfig) PlayerType(characterType CharacterType) (PlayerTypeConf
 		}
 	}
 	return PlayerTypeConfig{}, false
+}
+
+func (config GameConfig) ProjectileType(projectileType ProjectileType) (ProjectileTypeConfig, bool) {
+	for _, candidate := range config.Projectile.Types {
+		if ProjectileType(candidate.ID) == projectileType {
+			return candidate, true
+		}
+	}
+	return ProjectileTypeConfig{}, false
 }
 
 func (config GameConfig) DefaultProjectileType() ProjectileTypeConfig {
@@ -509,7 +617,7 @@ func roomTeamForPlayerIndex(index int, teams []TeamConfig) (Team, int, bool) {
 func resolveStateGameConfig(config Config) GameConfig {
 	gameConfig := config.Game
 	hasConfigMap := config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0
-	if gameConfig.Version != GameConfigVersion {
+	if gameConfig.Version != ServerGameConfigVersion {
 		gameConfig = StaticGameConfig()
 		if !hasConfigMap {
 			gameConfig.Map = MapData{}

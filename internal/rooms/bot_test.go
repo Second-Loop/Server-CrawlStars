@@ -145,7 +145,7 @@ func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
 		t.Fatalf("select duel mode: %v", err)
 	}
 	playerConfig := config.DefaultPlayerType()
-	if playerConfig.MaxAttackCharges != 4 || playerConfig.AttackRechargeTicks <= 5 {
+	if playerConfig.NormalAttack.MaxCharges != 3 || playerConfig.NormalAttack.RechargeTicks <= 5 {
 		t.Fatalf("unexpected attack fixture: %+v", playerConfig)
 	}
 	view := []simulation.PlayerData{
@@ -163,7 +163,7 @@ func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
 		accepted = append(accepted, playerByID(t, snapshot.Players, "bot").PressedAttack)
 		view = append([]simulation.PlayerData(nil), snapshot.Players...)
 	}
-	want := []bool{true, true, true, true, false}
+	want := []bool{true, true, true, false, false}
 	if !reflect.DeepEqual(accepted, want) {
 		t.Fatalf("shared simulation accepted=%v, want %v", accepted, want)
 	}

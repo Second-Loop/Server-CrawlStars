@@ -16,7 +16,6 @@ const (
 	DefaultPlayerRadius     = 0.5
 	DefaultPlayerHP         = 4000.0
 	DefaultProjectileSpeed  = 13.0
-	DefaultProjectileDamage = 10.0
 	DefaultProjectileRadius = 0.3
 )
 
@@ -128,9 +127,12 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 	gameConfig := resolveStateGameConfig(config)
 	normalizedPlayers := normalizePlayersWithConfig(players, gameConfig)
 	attackStates := make(map[PlayerID]attackState, len(normalizedPlayers))
-	maxAttackCharges := gameConfig.DefaultPlayerType().MaxAttackCharges
 	for _, player := range normalizedPlayers {
-		attackStates[player.ID] = attackState{charges: maxAttackCharges}
+		playerType, ok := gameConfig.PlayerType(player.CharacterType)
+		if !ok {
+			playerType = gameConfig.DefaultPlayerType()
+		}
+		attackStates[player.ID] = attackState{charges: playerType.NormalAttack.MaxCharges}
 	}
 	return &State{
 		players:      normalizedPlayers,
@@ -286,30 +288,33 @@ func (s *State) applyInput(input InputCommand) {
 		}
 		if input.PressedAttack && attackDir != (Vector2{}) && s.consumeAttackCharge(input.PlayerID) {
 			s.players[i].PressedAttack = true
-			s.projectiles = append(s.projectiles, s.newProjectile(s.players[i]))
+			if projectile, ok := s.newProjectile(s.players[i]); ok {
+				s.projectiles = append(s.projectiles, projectile)
+			}
 		}
 		return
 	}
 }
 
 func (s *State) rechargeAttackCharges() {
-	playerConfig := s.gameConfig.DefaultPlayerType()
 	for playerID, state := range s.attackStates {
-		if state.charges >= playerConfig.MaxAttackCharges {
-			state.charges = playerConfig.MaxAttackCharges
+		playerConfig := s.playerTypeConfig(playerID)
+		attack := playerConfig.NormalAttack
+		if state.charges >= attack.MaxCharges {
+			state.charges = attack.MaxCharges
 			state.rechargeTicks = 0
 			s.attackStates[playerID] = state
 			continue
 		}
 
 		state.rechargeTicks++
-		restored := state.rechargeTicks / playerConfig.AttackRechargeTicks
+		restored := state.rechargeTicks / attack.RechargeTicks
 		if restored > 0 {
 			state.charges += restored
-			state.rechargeTicks %= playerConfig.AttackRechargeTicks
+			state.rechargeTicks %= attack.RechargeTicks
 		}
-		if state.charges >= playerConfig.MaxAttackCharges {
-			state.charges = playerConfig.MaxAttackCharges
+		if state.charges >= attack.MaxCharges {
+			state.charges = attack.MaxCharges
 			state.rechargeTicks = 0
 		}
 		s.attackStates[playerID] = state
@@ -394,18 +399,37 @@ func (s *State) playerTeam(playerID PlayerID) (Team, bool) {
 	return "", false
 }
 
-func (s *State) newProjectile(owner PlayerData) ProjectileData {
+func (s *State) playerTypeConfig(playerID PlayerID) PlayerTypeConfig {
+	for _, player := range s.players {
+		if player.ID == playerID {
+			if playerType, ok := s.gameConfig.PlayerType(player.CharacterType); ok {
+				return playerType
+			}
+			break
+		}
+	}
+	return s.gameConfig.DefaultPlayerType()
+}
+
+func (s *State) newProjectile(owner PlayerData) (ProjectileData, bool) {
+	playerType, ok := s.gameConfig.PlayerType(owner.CharacterType)
+	if !ok || playerType.NormalAttack.Projectile == nil {
+		return ProjectileData{}, false
+	}
+	projectileType, ok := s.gameConfig.ProjectileType(playerType.NormalAttack.Projectile.Type)
+	if !ok {
+		return ProjectileData{}, false
+	}
 	s.nextProjectileSeq++
-	defaultProjectile := s.gameConfig.DefaultProjectileType()
 	return ProjectileData{
 		ID:      ProjectileID("projectile-" + strconv.FormatUint(uint64(s.tick+1), 10) + "-" + string(owner.ID) + "-" + strconv.FormatUint(s.nextProjectileSeq, 10)),
 		OwnerID: owner.ID,
 		Pos:     owner.Pos,
 		Dir:     owner.AttackDir,
-		Speed:   defaultProjectile.Speed,
-		Damage:  defaultProjectile.Damage,
-		Radius:  defaultProjectile.Radius,
-	}
+		Speed:   projectileType.Speed,
+		Damage:  playerType.NormalAttack.DamagePerHit,
+		Radius:  projectileType.Radius,
+	}, true
 }
 
 func (s *State) tickDuration() float64 {

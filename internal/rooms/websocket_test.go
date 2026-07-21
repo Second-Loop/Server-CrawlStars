@@ -4761,9 +4761,14 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 		t.Fatalf("expected blue to start alive at full HP, got %+v", bluePlayer)
 	}
 
+	redNormalAttack, ok := fastRechargeGameConfig().PlayerType(simulation.CharacterTypeShelly)
+	if !ok {
+		t.Fatal("missing Shelly normal attack config")
+	}
+	attackDamage := redNormalAttack.NormalAttack.DamagePerHit
 	expectedHP := combatRegressionPlayerHP
 	var hit snapshotMessage
-	for hitCount := 0; hitCount < 10; hitCount++ {
+	for hitCount := 0; expectedHP > 0; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
 			AttackDir:     simulation.Vector2{X: 0, Y: -1},
 			PressedAttack: true,
@@ -4775,7 +4780,10 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 			hit = tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
 			bluePlayer = findSnapshotPlayer(t, hit.Snapshot, simulation.PlayerID(blue.ID))
 			if bluePlayer.HP < expectedHP {
-				expectedHP -= simulation.DefaultProjectileDamage
+				expectedHP -= attackDamage
+				if expectedHP < 0 {
+					expectedHP = 0
+				}
 				if bluePlayer.HP != expectedHP {
 					t.Fatalf("expected blue HP %f after hit %d, got %+v", expectedHP, hitCount+1, bluePlayer)
 				}
@@ -4823,7 +4831,7 @@ func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
 		t.Fatal("expected Duel room before terminal tick")
 	}
 
-	for hitCount := 0; hitCount < 10; hitCount++ {
+	for hitCount := 0; hitCount < 1; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
 			AttackDir:     simulation.Vector2{X: 0, Y: -1},
 			PressedAttack: true,
@@ -4870,7 +4878,7 @@ func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
 		t.Fatal("expected Duel room before terminal tick")
 	}
 
-	for hitCount := 0; hitCount < 10; hitCount++ {
+	for hitCount := 0; hitCount < 1; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
 			AttackDir:     simulation.Vector2{X: 0, Y: -1},
 			PressedAttack: true,
@@ -5653,7 +5661,7 @@ func fastRechargeGameConfig() simulation.GameConfig {
 	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
 	for index := range config.Player.Types {
 		config.Player.Types[index].HP = combatRegressionPlayerHP
-		config.Player.Types[index].AttackRechargeTicks = 1
+		config.Player.Types[index].NormalAttack.RechargeTicks = 1
 	}
 	return config
 }

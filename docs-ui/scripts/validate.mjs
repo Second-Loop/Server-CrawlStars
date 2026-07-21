@@ -474,7 +474,17 @@ for (const [text, name, allowedTokens] of [
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
 assert(clientGameConfig.version === 2, "client config version must be 2");
-assert(serverGameConfig.version === 2, "server config version must be 2");
+assert(serverGameConfig.version === 3, "server config version must be 3");
+for (const legacyField of [
+  '  "version": 2,',
+  '  "tileSize": 1.2,',
+  '  "playerRadius": 0.5,',
+  '  "playerTypes": ["default"],',
+  '  "projectileRadius": 0.3,',
+  '  "projectileTypes": ["default"]',
+]) {
+  assert(clientGameConfigText.includes(legacyField), `client legacy field must remain byte-for-byte: ${legacyField}`);
+}
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "characters", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
 assert(JSON.stringify(clientGameConfig.playerTypes) === JSON.stringify(["default"]), "legacy playerTypes must stay [default]");
@@ -503,16 +513,24 @@ assert(hasValue(clientGameConfig.projectileTypes, "default"), "client-config/gam
 assert(serverGameConfig.tickRate === 30, "server-config/game-config.json must expose tickRate 30");
 assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must expose tile.size 1.2");
 const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
+const expectedNormalAttacks = new Map([
+  [0, { kind: "spread_projectile", damagePerHit: 280, rangeTiles: 7.2, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 5, directionOffsetsDegrees: [-12, -6, 0, 6, 12], intervalTicks: 0 } }],
+  [1, { kind: "burst_projectile", damagePerHit: 340, rangeTiles: 9, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 6, directionOffsetsDegrees: [0], intervalTicks: 6 } }],
+  [2, { kind: "melee", damagePerHit: 1100, rangeTiles: 2.2, maxCharges: 2, rechargeTicks: 30 }],
+]);
 for (const playerType of serverGameConfig.player.types) {
   assert(playerType.radius === 0.5, `server player radius drift for ${playerType.id}`);
   assert(playerType.hp === expectedServerPlayerTypes.get(playerType.characterType), `server player HP drift for ${playerType.id}`);
   assert(playerType.speed === 2, `server player speed drift for ${playerType.id}`);
-  assert(playerType.maxAttackCharges === 4, `server player maxAttackCharges drift for ${playerType.id}`);
-  assert(playerType.attackRechargeTicks === 30, `server player attackRechargeTicks drift for ${playerType.id}`);
+  assert(!Object.hasOwn(playerType, "maxAttackCharges"), `server player must not expose legacy maxAttackCharges for ${playerType.id}`);
+  assert(!Object.hasOwn(playerType, "attackRechargeTicks"), `server player must not expose legacy attackRechargeTicks for ${playerType.id}`);
+  assert(JSON.stringify(playerType.normalAttack) === JSON.stringify(expectedNormalAttacks.get(playerType.characterType)), `server normalAttack drift for ${playerType.id}`);
 }
 assert(hasTypeRadius(serverGameConfig.projectile?.types, "default", 0.3), "server-config/game-config.json must expose default projectile radius 0.3");
-assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "damage", 10), "server-config/game-config.json must expose default projectile damage 10");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13), "server-config/game-config.json must expose default projectile speed 13");
+for (const projectileType of serverGameConfig.projectile?.types ?? []) {
+  assert(!Object.hasOwn(projectileType, "damage"), `server projectile type must not expose damage for ${projectileType.id}`);
+}
 assert(serverGameConfig.map?.width === 20, "server-config/game-config.json must expose the runtime map width");
 assert(serverGameConfig.map?.height === 20, "server-config/game-config.json must expose the runtime map height");
 assert(serverGameConfig.map?.maxPlayers === 6, "server-config/game-config.json must expose map maxPlayers 6");
