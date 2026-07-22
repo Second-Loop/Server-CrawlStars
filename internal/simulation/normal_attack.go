@@ -120,6 +120,19 @@ func (s *State) approveProjectileAttack(intent attackIntent, snapshotTick Tick) 
 	}
 }
 
+func (s *State) approveMeleeAttack(intent attackIntent) (meleeIntent, bool) {
+	if intent.attack.Kind != NormalAttackMelee || !s.consumeAttackCharge(intent.owner.ID) {
+		return meleeIntent{}, false
+	}
+	s.players[intent.playerIndex].PressedAttack = true
+	return meleeIntent{
+		ownerIndex: intent.playerIndex,
+		origin:     intent.owner.Pos,
+		direction:  intent.direction,
+		attack:     intent.attack,
+	}, true
+}
+
 func (s *State) collectDueBurstEmissions(snapshotTick Tick) []projectileEmission {
 	ownerIDs := s.orderedBurstOwnerIDs()
 	emissions := make([]projectileEmission, 0, len(ownerIDs))

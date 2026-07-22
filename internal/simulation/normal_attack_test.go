@@ -7,6 +7,320 @@ import (
 	"testing"
 )
 
+func TestSegmentCircleHit(t *testing.T) {
+	tests := []struct {
+		name   string
+		end    Vector2
+		center Vector2
+		radius float64
+		want   bool
+	}{
+		{"inside", Vector2{X: 2}, Vector2{X: 1}, 0.25, true},
+		{"endpoint tangent", Vector2{X: 1}, Vector2{X: 1.5}, 0.5, true},
+		{"lateral tangent", Vector2{X: 2}, Vector2{X: 1, Y: 0.5}, 0.5, true},
+		{"epsilon outside", Vector2{X: 2}, Vector2{X: 1, Y: 0.500001}, 0.5, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got := segmentCircleHit(Vector2{}, tt.end, tt.center, tt.radius)
+			if got != tt.want {
+				t.Fatalf("hit = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSegmentAABBHit(t *testing.T) {
+	tests := []struct {
+		name  string
+		start Vector2
+		end   Vector2
+		min   Vector2
+		max   Vector2
+		wantT float64
+		want  bool
+	}{
+		{"hit", Vector2{}, Vector2{X: 2}, Vector2{X: 1, Y: -0.5}, Vector2{X: 1.5, Y: 0.5}, 0.5, true},
+		{"miss", Vector2{}, Vector2{X: 2}, Vector2{X: 1, Y: 0.5}, Vector2{X: 1.5, Y: 1}, 0, false},
+		{"start inside", Vector2{X: 1.25}, Vector2{X: 2}, Vector2{X: 1, Y: -0.5}, Vector2{X: 1.5, Y: 0.5}, 0, true},
+		{"corner tangent", Vector2{}, Vector2{X: 2, Y: 2}, Vector2{X: 1, Y: 1}, Vector2{X: 1.5, Y: 1.5}, 0.5, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotT, got := segmentAABBHit(tt.start, tt.end, tt.min, tt.max)
+			if got != tt.want {
+				t.Fatalf("hit = %t, want %t", got, tt.want)
+			}
+			if got && math.Abs(gotT-tt.wantT) > 1e-12 {
+				t.Fatalf("t = %v, want %v", gotT, tt.wantT)
+			}
+		})
+	}
+}
+
+func TestLilyCenterlineRangeAndTangency(t *testing.T) {
+	const rangeDistance = 2.2 * TileSize
+	tests := []struct {
+		name       string
+		position   Vector2
+		wantDamage bool
+	}{
+		{"inside 2.2 tiles", Vector2{X: rangeDistance - 0.01}, true},
+		{"just outside", Vector2{X: rangeDistance + DefaultPlayerRadius + 0.000001}, false},
+		{"endpoint tangent", Vector2{X: rangeDistance + DefaultPlayerRadius}, true},
+		{"lateral tangent", Vector2{X: 1, Y: DefaultPlayerRadius}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newLilyTestState([]PlayerData{
+				{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily},
+				{ID: "target", Team: TeamBlue, Pos: tt.position},
+			}, MapData{})
+
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+			wantHP := DefaultPlayerHP
+			if tt.wantDamage {
+				wantHP -= 1100
+			}
+			assertPlayerHP(t, snapshot, "target", wantHP, false)
+		})
+	}
+}
+
+func TestLilyWallContactPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		wallIndex  int
+		targetPos  Vector2
+		wantDamage bool
+	}{
+		{"wall before target blocks", 3, Vector2{X: 1}, false},
+		{"wall behind target does not block", 4, Vector2{}, true},
+		{"equal contact lets wall win", 3, Vector2{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newLilyTestState([]PlayerData{
+				{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: -1.5}},
+				{ID: "target", Team: TeamBlue, Pos: tt.targetPos},
+			}, lineMapWithTile(tt.wallIndex, TileWall))
+
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+			wantHP := DefaultPlayerHP
+			if tt.wantDamage {
+				wantHP -= 1100
+			}
+			assertPlayerHP(t, snapshot, "target", wantHP, false)
+		})
+	}
+}
+
+func TestLilyBushAndWaterDoNotBlock(t *testing.T) {
+	for _, tile := range []TileType{TileBush, TileWater} {
+		t.Run(strconv.Itoa(int(tile)), func(t *testing.T) {
+			state := newLilyTestState([]PlayerData{
+				{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: -1.5}},
+				{ID: "target", Team: TeamBlue, Pos: Vector2{X: 1}},
+			}, lineMapWithTile(3, tile))
+
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+			assertPlayerHP(t, snapshot, "target", DefaultPlayerHP-1100, false)
+		})
+	}
+}
+
+func TestLilyBoundaryTruncatesCenterline(t *testing.T) {
+	gameMap := MapData{
+		Width: 4, Height: 4, MaxPlayers: 6, TileSize: 1,
+		Map: [][]TileType{
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+			{TileGround, TileGround, TileGround, TileGround},
+		},
+	}
+	state := newLilyTestState([]PlayerData{
+		{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: 1.5}},
+		{ID: "target", Team: TeamBlue, Pos: Vector2{X: 2.2}, Radius: 0.1},
+	}, gameMap)
+
+	snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+	assertPlayerHP(t, snapshot, "target", DefaultPlayerHP, false)
+}
+
+func TestLilyHitEligibilityMatchesModeRules(t *testing.T) {
+	tests := []struct {
+		name       string
+		rules      GameModeRulesConfig
+		target     PlayerData
+		wantDamage bool
+	}{
+		{
+			name:   "owner excluded",
+			rules:  GameModeRulesConfig{TeamBehavior: TeamBehaviorFreeForAll},
+			target: PlayerData{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily},
+		},
+		{
+			name:   "dead enemy excluded",
+			rules:  GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams},
+			target: PlayerData{ID: "target", Team: TeamBlue, Pos: Vector2{X: 1}, HP: 100, IsDead: true},
+		},
+		{
+			name:   "ally excluded when friendly fire is off",
+			rules:  GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams},
+			target: PlayerData{ID: "target", Team: TeamRed, Pos: Vector2{X: 1}},
+		},
+		{
+			name:       "ally included when friendly fire is on",
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams, FriendlyFire: true},
+			target:     PlayerData{ID: "target", Team: TeamRed, Pos: Vector2{X: 1}},
+			wantDamage: true,
+		},
+		{
+			name:       "free for all ignores matching team label",
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorFreeForAll},
+			target:     PlayerData{ID: "target", Team: TeamRed, Pos: Vector2{X: 1}},
+			wantDamage: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			players := []PlayerData{{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily}}
+			if tt.target.ID != "lily" {
+				players = append(players, tt.target)
+			}
+			state := newLilyTestState(players, MapData{})
+			state.gameConfig.SelectedMode.Rules = tt.rules
+
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+			if tt.target.ID == "lily" {
+				assertPlayerHP(t, snapshot, "lily", 4100, false)
+				return
+			}
+			wantHP := tt.target.HP
+			if wantHP <= 0 {
+				wantHP = DefaultPlayerHP
+			}
+			if tt.wantDamage {
+				wantHP -= 1100
+			}
+			assertPlayerHP(t, snapshot, "target", wantHP, tt.target.IsDead)
+		})
+	}
+}
+
+func TestLilyFirstCanonicalTargetWinsBeforeNearerTarget(t *testing.T) {
+	state := newLilyTestState([]PlayerData{
+		{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily},
+		{ID: "farther-first", Team: TeamBlue, Pos: Vector2{X: 2}},
+		{ID: "nearer-later", Team: TeamBlue, Pos: Vector2{X: 1}},
+	}, MapData{})
+
+	snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+	assertPlayerHP(t, snapshot, "farther-first", DefaultPlayerHP-1100, false)
+	assertPlayerHP(t, snapshot, "nearer-later", DefaultPlayerHP, false)
+}
+
+func TestLilyMissAndWallBlockConsumeCharge(t *testing.T) {
+	tests := []struct {
+		name    string
+		players []PlayerData
+		gameMap MapData
+	}{
+		{
+			name:    "miss",
+			players: []PlayerData{{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily}},
+		},
+		{
+			name: "wall block",
+			players: []PlayerData{
+				{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: -1.5}},
+				{ID: "target", Team: TeamBlue, Pos: Vector2{X: 1}},
+			},
+			gameMap: lineMapWithTile(3, TileWall),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newLilyTestState(tt.players, tt.gameMap)
+			before := state.attackStates["lily"].charges
+
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+			if !snapshot.Players[0].PressedAttack {
+				t.Fatal("accepted Lily attack must set PressedAttack")
+			}
+			if got := state.attackStates["lily"].charges; got != before-1 {
+				t.Fatalf("charges = %d, want %d", got, before-1)
+			}
+		})
+	}
+}
+
+func TestLilyTargetSelectionWaitsForAllMovement(t *testing.T) {
+	state := newLilyTestState([]PlayerData{
+		{ID: "a-lily", Team: TeamRed, CharacterType: CharacterTypeLily},
+		{ID: "z-target", Team: TeamBlue, Pos: Vector2{X: 2.2*TileSize + DefaultPlayerRadius}},
+	}, MapData{})
+
+	snapshot := state.Step([]InputCommand{
+		lilyAttackInput("a-lily", Vector2{X: 1}),
+		{PlayerID: "z-target", MoveDir: Vector2{X: 1}},
+	})
+
+	assertPlayerHP(t, snapshot, "z-target", DefaultPlayerHP, false)
+}
+
+func TestLilyMutualKillIsDeterministicAcrossInputOrder(t *testing.T) {
+	players := []PlayerData{
+		{ID: "lily-a", Team: TeamRed, CharacterType: CharacterTypeLily, HP: 1100},
+		{ID: "lily-b", Team: TeamBlue, CharacterType: CharacterTypeLily, Pos: Vector2{X: 2}, HP: 1100},
+	}
+	inputs := []InputCommand{
+		lilyAttackInput("lily-a", Vector2{X: 1}),
+		lilyAttackInput("lily-b", Vector2{X: -1}),
+	}
+	state := newLilyTestState(players, MapData{})
+	reversedState := newLilyTestState(players, MapData{})
+
+	snapshot := state.Step(inputs)
+	reversedSnapshot := reversedState.Step([]InputCommand{inputs[1], inputs[0]})
+
+	if !reflect.DeepEqual(snapshot, reversedSnapshot) {
+		t.Fatalf("snapshot differs by input order:\nfirst: %+v\nreversed: %+v", snapshot, reversedSnapshot)
+	}
+	assertPlayerHP(t, snapshot, "lily-a", 0, true)
+	assertPlayerHP(t, snapshot, "lily-b", 0, true)
+}
+
+func newLilyTestState(players []PlayerData, gameMap MapData) *State {
+	gameConfig := StaticGameConfig()
+	gameConfig.Map = gameMap
+	return NewStateWithConfig(players, Config{Game: gameConfig})
+}
+
+func lilyAttackInput(playerID PlayerID, direction Vector2) InputCommand {
+	return InputCommand{PlayerID: playerID, AttackDir: direction, PressedAttack: true}
+}
+
+func lineMapWithTile(index int, tile TileType) MapData {
+	rows := [][]TileType{
+		{TileGround, TileGround, TileGround, TileGround, TileGround, TileGround, TileGround},
+		{TileGround, TileGround, TileGround, TileGround, TileGround, TileGround, TileGround},
+		{TileGround, TileGround, TileGround, TileGround, TileGround, TileGround, TileGround},
+		{TileGround, TileGround, TileGround, TileGround, TileGround, TileGround, TileGround},
+		{TileGround, TileGround, TileGround, TileGround, TileGround, TileGround, TileGround},
+	}
+	rows[2][index] = tile
+	return MapData{Width: len(rows[0]), Height: len(rows), MaxPlayers: 6, TileSize: 1, Map: rows}
+}
+
 func TestShellyAttackEmitsConfiguredSpreadFromPostMovementPosition(t *testing.T) {
 	state := NewState([]PlayerData{{
 		ID:            "shelly",

@@ -153,12 +153,20 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.moveProjectiles()
 	snapshotTick := s.tick + 1
 	emissions := s.collectDueBurstEmissions(snapshotTick)
+	meleeIntents := make([]meleeIntent, 0, len(inputs))
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
 		if intent, ok := s.applyInput(input); ok {
+			if intent.attack.Kind == NormalAttackMelee {
+				if melee, approved := s.approveMeleeAttack(intent); approved {
+					meleeIntents = append(meleeIntents, melee)
+				}
+				continue
+			}
 			emissions = append(emissions, s.approveProjectileAttack(intent, snapshotTick)...)
 		}
 	}
+	s.applyMeleeIntents(meleeIntents)
 	s.emitProjectiles(emissions)
 	s.finishCompletedBursts()
 
@@ -393,7 +401,7 @@ func (s *State) moveProjectiles() {
 
 func (s *State) applyProjectileHit(projectile *ProjectileData) {
 	for i := range s.players {
-		if !s.canProjectileHit(*projectile, s.players[i]) {
+		if !s.canOwnerHit(projectile.OwnerID, s.players[i]) {
 			continue
 		}
 		if !circlesOverlap(projectile.Pos, projectile.Radius, s.players[i].Pos, s.players[i].Radius) {
@@ -410,8 +418,8 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 	}
 }
 
-func (s *State) canProjectileHit(projectile ProjectileData, target PlayerData) bool {
-	if target.ID == projectile.OwnerID || target.IsDead {
+func (s *State) canOwnerHit(ownerID PlayerID, target PlayerData) bool {
+	if target.ID == ownerID || target.IsDead {
 		return false
 	}
 
@@ -423,7 +431,7 @@ func (s *State) canProjectileHit(projectile ProjectileData, target PlayerData) b
 		if rules.FriendlyFire {
 			return true
 		}
-		ownerTeam, ok := s.playerTeam(projectile.OwnerID)
+		ownerTeam, ok := s.playerTeam(ownerID)
 		return ok && ownerTeam != target.Team
 	default:
 		return false
