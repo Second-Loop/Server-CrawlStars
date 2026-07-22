@@ -432,7 +432,13 @@ assert(
   !docsBuildText.includes("6 human connection") && !docsBuildText.includes("bot fill 없음"),
   "docs UI must not describe the participant capacity as all-human or claim bot absence",
 );
-for (const marker of ["optional `gameMode`", "participant capacity", "human session", "raw body가 1024 bytes"]) {
+for (const marker of [
+  "optional `gameMode`",
+  "participant capacity",
+  "human session",
+  "raw body가 1024 bytes",
+  "Shelly/Colt/Lily 순서로 `3/3/2` charge",
+]) {
   assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
 }
 const apiDocsSessionLifecycle = extractDelimitedText(
