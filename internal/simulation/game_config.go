@@ -296,14 +296,20 @@ func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, 
 		if attack.Projectile == nil {
 			return fmt.Errorf("game config player type %q normalAttack.projectile is required", playerTypeID)
 		}
-		if attack.Projectile.Count != 5 || len(attack.Projectile.DirectionOffsetsDegrees) != 5 || attack.Projectile.IntervalTicks != 0 {
+		if err := validateDirectionOffsets(playerTypeID, attack.Projectile.DirectionOffsetsDegrees); err != nil {
+			return err
+		}
+		if attack.Projectile.Count <= 0 || attack.Projectile.Count != len(attack.Projectile.DirectionOffsetsDegrees) || attack.Projectile.IntervalTicks != 0 {
 			return fmt.Errorf("game config player type %q spread projectile shape is invalid", playerTypeID)
 		}
 	case NormalAttackBurstProjectile:
 		if attack.Projectile == nil {
 			return fmt.Errorf("game config player type %q normalAttack.projectile is required", playerTypeID)
 		}
-		if attack.Projectile.Count != 6 || len(attack.Projectile.DirectionOffsetsDegrees) != 1 || attack.Projectile.DirectionOffsetsDegrees[0] != 0 || attack.Projectile.IntervalTicks <= 0 {
+		if err := validateDirectionOffsets(playerTypeID, attack.Projectile.DirectionOffsetsDegrees); err != nil {
+			return err
+		}
+		if attack.Projectile.Count <= 1 || len(attack.Projectile.DirectionOffsetsDegrees) != 1 || attack.Projectile.DirectionOffsetsDegrees[0] != 0 || attack.Projectile.IntervalTicks <= 0 {
 			return fmt.Errorf("game config player type %q burst projectile shape is invalid", playerTypeID)
 		}
 	case NormalAttackMelee:
@@ -316,6 +322,15 @@ func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, 
 	}
 	if _, ok := config.ProjectileType(attack.Projectile.Type); !ok {
 		return fmt.Errorf("game config player type %q normalAttack projectile type %q is not defined", playerTypeID, attack.Projectile.Type)
+	}
+	return nil
+}
+
+func validateDirectionOffsets(playerTypeID string, offsets []float64) error {
+	for _, offset := range offsets {
+		if math.IsNaN(offset) || math.IsInf(offset, 0) {
+			return fmt.Errorf("game config player type %q normalAttack projectile direction offsets must be finite", playerTypeID)
+		}
 	}
 	return nil
 }

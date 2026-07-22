@@ -227,10 +227,27 @@ func TestResolveGameConfigRejectsInvalidNormalAttackCombinations(t *testing.T) {
 		}},
 		{"unknown projectile reference", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Type = "missing" }},
 		{"duplicate projectile id", func(c *GameConfig) { c.Projectile.Types = append(c.Projectile.Types, c.Projectile.Types[0]) }},
+		{"spread zero count", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.Count = 0
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees = nil
+		}},
 		{"spread count mismatch", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Count = 4 }},
+		{"spread nan offset", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[0] = math.NaN() }},
+		{"spread positive infinite offset", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[1] = math.Inf(1)
+		}},
+		{"spread negative infinite offset", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[2] = math.Inf(-1)
+		}},
 		{"spread interval", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.IntervalTicks = 1 }},
 		{"burst count", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.Count = 1 }},
 		{"burst offset", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{1} }},
+		{"burst nan offset", func(c *GameConfig) {
+			c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.NaN()}
+		}},
+		{"burst infinite offset", func(c *GameConfig) {
+			c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.Inf(1)}
+		}},
 		{"burst interval", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.IntervalTicks = 0 }},
 	}
 

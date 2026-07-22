@@ -2,6 +2,8 @@ package simulation
 
 import "math"
 
+const meleeContactEpsilon = 1e-9
+
 type meleeIntent struct {
 	ownerIndex int
 	origin     Vector2
@@ -48,7 +50,7 @@ func (s *State) firstMeleeTarget(intent meleeIntent, players []PlayerData) int {
 			continue
 		}
 		t, hit := segmentCircleHit(intent.origin, end, target.Pos, target.Radius)
-		if hit && t < blockingT {
+		if hit && t < blockingT-meleeContactEpsilon {
 			return index
 		}
 	}

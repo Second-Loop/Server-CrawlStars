@@ -106,7 +106,7 @@ server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Cl
 
 - Shelly는 activation tick에 5발을 동시에 만들고 조준 방향 기준 `-12,-6,0,6,12`도 spread를 적용합니다.
 - Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick에는 새 activation을 겹치지 않고 `A+31`부터 다음 공격을 승인합니다. Burst 방향은 activation 때 고정되며 owner가 사망하면 남은 emission을 취소합니다.
-- Lily는 2.2 tile centerline에서 첫 eligible target 하나를 찾습니다. 모든 Lily intent는 입력 전 player snapshot을 기준으로 target을 고르고 same-tick batched damage로 일괄 적용하므로 서로를 1100 HP로 맞춘 reciprocal 공격은 둘 다 사망합니다.
+- Lily는 2.2 tile centerline에서 첫 eligible target 하나를 찾습니다. 모든 Lily intent는 모든 input과 movement 적용 뒤 clone한 post-movement player snapshot을 기준으로 target을 고르고 same-tick batched damage로 일괄 적용하므로 서로를 1100 HP로 맞춘 reciprocal 공격은 둘 다 사망합니다.
 
 Projectile은 남은 configured range까지 이동량을 먼저 clamp한 뒤 map Wall/boundary 충돌, selected mode player hit, 미충돌 range 만료 순서로 처리합니다. 따라서 range endpoint의 tangent hit은 포함됩니다. Lily는 wall/boundary까지의 range를 먼저 잘라 centerline target을 찾고 target과 blocking contact가 같으면 Wall/boundary가 우선합니다. Bush와 Water는 Lily centerline을 막지 않습니다.
 

@@ -152,6 +152,65 @@ func TestLilyBoundaryTruncatesCenterline(t *testing.T) {
 	assertPlayerHP(t, snapshot, "target", DefaultPlayerHP, false)
 }
 
+func TestLilyDiagonalWallAndBoundaryEqualityPreferBlockingContact(t *testing.T) {
+	diagonal := math.Sqrt(0.5)
+	ground := func(size int) [][]TileType {
+		rows := make([][]TileType, size)
+		for y := range rows {
+			rows[y] = make([]TileType, size)
+		}
+		return rows
+	}
+	tests := []struct {
+		name      string
+		origin    Vector2
+		targetPos Vector2
+		gameMap   MapData
+	}{
+		{
+			name:      "wall corner equality",
+			origin:    Vector2{X: -2, Y: -1.5},
+			targetPos: Vector2{X: -0.5 + diagonal*DefaultPlayerRadius, Y: diagonal * DefaultPlayerRadius},
+			gameMap: func() MapData {
+				rows := ground(5)
+				rows[2][2] = TileWall
+				return MapData{Width: 5, Height: 5, MaxPlayers: 6, TileSize: 1, Map: rows}
+			}(),
+		},
+		{
+			name:      "boundary tangent equality",
+			origin:    Vector2{X: 2.5 - 0.895*2.2*diagonal, Y: -0.895 * 2.2 * diagonal},
+			targetPos: Vector2{X: 2.5 + diagonal*DefaultPlayerRadius, Y: -diagonal * DefaultPlayerRadius},
+			gameMap:   MapData{Width: 5, Height: 5, MaxPlayers: 6, TileSize: 1, Map: ground(5)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newLilyTestState([]PlayerData{
+				{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: tt.origin},
+				{ID: "target", Team: TeamBlue, Pos: tt.targetPos},
+			}, tt.gameMap)
+			direction := normalizeDirection(Vector2{X: 1, Y: 1})
+			attack, ok := state.normalAttackConfig("lily")
+			if !ok {
+				t.Fatal("Lily normal attack config is missing")
+			}
+			end := Vector2{
+				X: tt.origin.X + direction.X*attack.RangeTiles*state.resolvedTileSize(),
+				Y: tt.origin.Y + direction.Y*attack.RangeTiles*state.resolvedTileSize(),
+			}
+			targetT, hit := segmentCircleHit(tt.origin, end, tt.targetPos, state.players[1].Radius)
+			blockingT := state.firstBlockingSegmentT(tt.origin, end)
+			if !hit || math.Abs(targetT-blockingT) > meleeContactEpsilon {
+				t.Fatalf("fixture contact targetT=%v blockingT=%v, want equality within %v", targetT, blockingT, meleeContactEpsilon)
+			}
+			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1, Y: 1})})
+
+			assertPlayerHP(t, snapshot, "target", DefaultPlayerHP, false)
+		})
+	}
+}
+
 func TestLilyHitEligibilityMatchesModeRules(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -361,6 +420,71 @@ func TestShellyAttackEmitsConfiguredSpreadFromPostMovementPosition(t *testing.T)
 	}
 }
 
+func TestProjectileAttacksAcceptAlternateConfiguredCountsAndEmitThem(t *testing.T) {
+	tests := []struct {
+		name          string
+		character     CharacterType
+		configure     func(*ProjectileAttackConfig)
+		steps         int
+		wantEmissions int
+	}{
+		{
+			name:      "three pellet spread",
+			character: CharacterTypeShelly,
+			configure: func(projectile *ProjectileAttackConfig) {
+				projectile.Count = 3
+				projectile.DirectionOffsetsDegrees = []float64{-10, 0, 10}
+			},
+			steps:         1,
+			wantEmissions: 3,
+		},
+		{
+			name:      "four shot burst",
+			character: CharacterTypeColt,
+			configure: func(projectile *ProjectileAttackConfig) {
+				projectile.Count = 4
+				projectile.DirectionOffsetsDegrees = []float64{0}
+				projectile.IntervalTicks = 2
+			},
+			steps:         7,
+			wantEmissions: 4,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gameConfig := StaticGameConfig()
+			gameConfig.Map = lineMapWithTile(0, TileGround)
+			for index := range gameConfig.Player.Types {
+				if gameConfig.Player.Types[index].CharacterType == tt.character {
+					tt.configure(gameConfig.Player.Types[index].NormalAttack.Projectile)
+				}
+			}
+			resolved, err := ResolveGameConfig(gameConfig)
+			if err != nil {
+				t.Fatalf("ResolveGameConfig() error = %v, want alternate count accepted", err)
+			}
+			state := NewStateWithConfig([]PlayerData{{
+				ID:            "owner",
+				Team:          TeamRed,
+				CharacterType: tt.character,
+				Pos:           Vector2{X: -1.5},
+			}}, Config{Game: resolved})
+
+			var snapshot Snapshot
+			for step := 1; step <= tt.steps; step++ {
+				var inputs []InputCommand
+				if step == 1 {
+					inputs = []InputCommand{{PlayerID: "owner", AttackDir: Vector2{X: 1}, PressedAttack: true}}
+				}
+				snapshot = state.Step(inputs)
+			}
+			if got := len(snapshot.Projectiles); got != tt.wantEmissions {
+				t.Fatalf("projectile emissions = %d, want %d", got, tt.wantEmissions)
+			}
+		})
+	}
+}
+
 func TestColtBurstEmitsOnConfiguredTicksFromCurrentPositionWithFixedDirection(t *testing.T) {
 	state := NewState([]PlayerData{{
 		ID:            "colt",
@@ -492,6 +616,40 @@ func TestColtBurstCancelsDueEmissionWhenOwnerDiesInPrePhase(t *testing.T) {
 	}
 	if _, active := state.burstStates["colt"]; active {
 		t.Fatal("dead Colt burst must be deleted")
+	}
+}
+
+func TestColtDueEmissionSurvivesSamePhaseLilyKillThenFutureBurstCancels(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: "colt", Team: TeamBlue, CharacterType: CharacterTypeColt, HP: 1100},
+		{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: -2}},
+	})
+	state.Step([]InputCommand{{
+		PlayerID:      "colt",
+		AttackDir:     Vector2{Y: 1},
+		PressedAttack: true,
+	}})
+	for snapshotTick := Tick(2); snapshotTick < 7; snapshotTick++ {
+		state.Step(nil)
+	}
+
+	killSnapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
+
+	assertPlayerHP(t, killSnapshot, "colt", 0, true)
+	if got := len(killSnapshot.Projectiles); got != 2 {
+		t.Fatalf("projectiles on due-and-kill tick = %d, want activation and already-due emissions", got)
+	}
+	if killSnapshot.Projectiles[1].OwnerID != "colt" {
+		t.Fatalf("due projectile owner = %q, want colt", killSnapshot.Projectiles[1].OwnerID)
+	}
+	for snapshotTick := Tick(8); snapshotTick <= 13; snapshotTick++ {
+		state.Step(nil)
+	}
+	if got := len(state.projectiles); got != 2 {
+		t.Fatalf("projectiles after future due tick = %d, want no future Colt emission", got)
+	}
+	if _, active := state.burstStates["colt"]; active {
+		t.Fatal("dead Colt future burst must be canceled")
 	}
 }
 
@@ -728,18 +886,23 @@ func newProjectileRangeState(tileSize float64, target *PlayerData) *State {
 }
 
 func newSingleProjectileTestState(players []PlayerData, config Config) *State {
-	state := NewStateWithConfig(players, config)
-	// Movement and collision tests isolate one centered pellet after config validation;
+	// Movement and collision tests resolve a valid one-pellet alternate config;
 	// public/default behavior tests continue to exercise Shelly's configured spread.
-	for index := range state.gameConfig.Player.Types {
-		attack := &state.gameConfig.Player.Types[index].NormalAttack
-		if state.gameConfig.Player.Types[index].CharacterType != CharacterTypeShelly || attack.Projectile == nil {
+	if config.Game.Version != ServerGameConfigVersion {
+		config.Game = StaticGameConfig()
+		if config.Map.Width == 0 && config.Map.Height == 0 && len(config.Map.Map) == 0 {
+			config.Game.Map = MapData{}
+		}
+	}
+	for index := range config.Game.Player.Types {
+		attack := &config.Game.Player.Types[index].NormalAttack
+		if config.Game.Player.Types[index].CharacterType != CharacterTypeShelly || attack.Projectile == nil {
 			continue
 		}
 		attack.Projectile.Count = 1
 		attack.Projectile.DirectionOffsetsDegrees = []float64{0}
 	}
-	return state
+	return NewStateWithConfig(players, config)
 }
 
 func assertAttackCharges(t *testing.T, state *State, wants map[PlayerID]int) {

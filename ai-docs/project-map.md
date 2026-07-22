@@ -211,7 +211,7 @@ Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movem
 
 새 projectile은 생성된 tick에는 owner 위치에 보이고 다음 tick부터 이동합니다.
 
-Shelly는 activation tick에 `-12,-6,0,6,12`도 5발을 동시에 생성합니다. Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 발사하고 마지막 emission과 새 activation을 겹치지 않아 `A+31`부터 재공격할 수 있습니다. Lily는 wall/boundary까지 잘린 2.2 tile centerline의 첫 eligible target을 고르고 모든 melee intent를 입력 전 player snapshot에 대해 계산한 뒤 same-tick batched damage를 적용합니다.
+Shelly는 activation tick에 `-12,-6,0,6,12`도 5발을 동시에 생성합니다. Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 발사하고 마지막 emission과 새 activation을 겹치지 않아 `A+31`부터 재공격할 수 있습니다. Lily는 wall/boundary까지 잘린 2.2 tile centerline의 첫 eligible target을 고르고 모든 melee intent를 모든 input과 movement 적용 뒤 clone한 post-movement player snapshot에 대해 계산한 뒤 same-tick batched damage를 적용합니다.
 
 이 실행기는 기존 `PressedAttack`, `Damage`, `Type`, HP/death snapshot과 room GameEnd 계산기를 재사용합니다. 새 wire field, client parser는 아직 범위 밖이고 final balancing도 후속 작업입니다.
 

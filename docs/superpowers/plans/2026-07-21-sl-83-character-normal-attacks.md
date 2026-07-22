@@ -171,12 +171,16 @@ tests := []struct {
 	{"unknown projectile reference", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Type = "missing" }},
 	{"duplicate projectile id", func(c *GameConfig) { c.Projectile.Types = append(c.Projectile.Types, c.Projectile.Types[0]) }},
 	{"spread count mismatch", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Count = 4 }},
+	{"spread non-finite offset", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[0] = math.NaN() }},
 	{"spread interval", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.IntervalTicks = 1 }},
 	{"burst count", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.Count = 1 }},
 	{"burst offset", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{1} }},
+	{"burst non-finite offset", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.Inf(1)} }},
 	{"burst interval", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.IntervalTicks = 0 }},
 }
 ```
+
+Positive validation/runtime 회귀로 spread의 `count=3`, offsets `[-10,0,10]`과 burst의 `count=4`, 단일 offset `0`, positive interval 조합이 `ResolveGameConfig`를 통과하고 각각 실제 3개/4개 emission을 만드는지도 확인합니다.
 
 - [ ] **Step 5: Implement minimal validation and exact fallback values**
 
