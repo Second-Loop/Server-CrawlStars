@@ -850,7 +850,7 @@ function validateCharacterNormalAttackContract() {
 
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config"]],
+    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge"]],
     [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
     [apiReferenceText, "api reference", ["server config v3의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
