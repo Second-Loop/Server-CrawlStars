@@ -181,7 +181,7 @@ func (s *State) orderedBurstOwnerIDs() []PlayerID {
 }
 
 func rotateDirection(direction Vector2, degrees float64) Vector2 {
-	radians := degrees * math.Pi / 180
+	radians := math.Mod(degrees, 360) * math.Pi / 180
 	cosine := math.Cos(radians)
 	sine := math.Sin(radians)
 	return Vector2{

@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"strconv"
@@ -482,6 +483,45 @@ func TestProjectileAttacksAcceptAlternateConfiguredCountsAndEmitThem(t *testing.
 				t.Fatalf("projectile emissions = %d, want %d", got, tt.wantEmissions)
 			}
 		})
+	}
+}
+
+func TestSpreadProjectileHugeFiniteOffsetEmitsFiniteMarshalableSnapshot(t *testing.T) {
+	gameConfig := StaticGameConfig()
+	gameConfig.Map = lineMapWithTile(0, TileGround)
+	for index := range gameConfig.Player.Types {
+		if gameConfig.Player.Types[index].CharacterType != CharacterTypeShelly {
+			continue
+		}
+		gameConfig.Player.Types[index].NormalAttack.Projectile.Count = 1
+		gameConfig.Player.Types[index].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.MaxFloat64}
+	}
+	resolved, err := ResolveGameConfig(gameConfig)
+	if err != nil {
+		t.Fatalf("ResolveGameConfig() error = %v, want finite offset accepted", err)
+	}
+	state := NewStateWithConfig([]PlayerData{{
+		ID:            "shelly",
+		Team:          TeamRed,
+		CharacterType: CharacterTypeShelly,
+		Pos:           Vector2{X: -1.5},
+	}}, Config{Game: resolved})
+
+	snapshot := state.Step([]InputCommand{{
+		PlayerID:      "shelly",
+		AttackDir:     Vector2{X: 1},
+		PressedAttack: true,
+	}})
+
+	if got := len(snapshot.Projectiles); got != 1 {
+		t.Fatalf("projectiles = %d, want 1", got)
+	}
+	direction := snapshot.Projectiles[0].Dir
+	if math.IsNaN(direction.X) || math.IsInf(direction.X, 0) || math.IsNaN(direction.Y) || math.IsInf(direction.Y, 0) {
+		t.Errorf("projectile direction = %+v, want finite X/Y", direction)
+	}
+	if _, err := json.Marshal(snapshot); err != nil {
+		t.Errorf("json.Marshal(snapshot) error = %v", err)
 	}
 }
 
