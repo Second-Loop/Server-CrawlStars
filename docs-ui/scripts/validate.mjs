@@ -848,6 +848,20 @@ function validateCharacterNormalAttackContract() {
     "ProjectileData.Type must document normalAttack.projectile.type ownership",
   );
 
+  const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");
+  const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
+  assertYAMLShellySpreadExample(gameplay, "AsyncAPI gameplay example");
+  assertJSONShellySpreadExample(extractDocsJSONExample("Gameplay").Snapshot, "docs UI Gameplay example");
+  assertJSONShellySpreadExample(
+    extractMarkdownJSONExample(apiReferenceText, "Server snapshot:", "api reference Server snapshot"),
+    "api reference Server snapshot",
+  );
+  assertJSONShellySpreadExample(
+    extractMarkdownJSONExample(apiDocsText, "Server message wrapper:", "api docs Server message wrapper"),
+    "api docs Server message wrapper",
+  );
+
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
     [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
@@ -953,6 +967,88 @@ function extractExampleACK(object) {
   const matches = [...object.matchAll(/^\s+LastProcessedClientTick:\s+(\d+)$/gm)];
   assert(matches.length === 1, "gameplay player must expose exactly one ACK before value inspection");
   return BigInt(matches[0][1]);
+}
+
+function extractMarkdownJSONExample(text, marker, name) {
+  const markerStart = text.indexOf(marker);
+  assert(markerStart >= 0, `${name} is missing marker ${marker}`);
+  const fence = "```json\n";
+  const payloadStart = text.indexOf(fence, markerStart);
+  assert(payloadStart >= 0, `${name} is missing JSON fence`);
+  const payloadEnd = text.indexOf("\n```", payloadStart + fence.length);
+  assert(payloadEnd > payloadStart, `${name} JSON fence is not closed`);
+  return JSON.parse(text.slice(payloadStart + fence.length, payloadEnd));
+}
+
+function extractYAMLScalar(object, field, name) {
+  const match = new RegExp(`^\\s+(?:-\\s+)?${field}:\\s+([^\\s#]+)\\s*$`, "m").exec(object);
+  assert(match, `${name} is missing ${field}`);
+  return match[1];
+}
+
+function extractYAMLVector(object, field, name) {
+  const number = "([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?)";
+  const match = new RegExp(`^\\s+${field}:\\s*$[\\s\\S]*?^\\s+x:\\s+${number}\\s*$[\\s\\S]*?^\\s+y:\\s+${number}\\s*$`, "mi").exec(object);
+  assert(match, `${name} is missing ${field}.x/y`);
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
+function shellySpreadDirections() {
+  return [
+    { x: -0.9781476007338057, y: 0.20791169081775931 },
+    { x: -0.9945218953682733, y: 0.10452846326765346 },
+    { x: -1, y: 0 },
+    { x: -0.9945218953682733, y: -0.10452846326765346 },
+    { x: -0.9781476007338057, y: -0.20791169081775931 },
+  ];
+}
+
+function assertDirection(actual, expected, name) {
+  assert(Number.isFinite(actual.x) && Number.isFinite(actual.y), `${name} direction must be finite`);
+  assert(
+    Math.abs(actual.x - expected.x) <= 1e-12 && Math.abs(actual.y - expected.y) <= 1e-12,
+    `${name} direction must match the configured Shelly spread`,
+  );
+}
+
+function assertYAMLShellySpreadExample(gameplay, name) {
+  const players = extractYAMLSequenceObjects(gameplay, "Players");
+  const shellyActivations = players.filter(
+    (player) =>
+      extractYAMLScalar(player, "CharacterType", `${name} player`) === "0" &&
+      extractYAMLScalar(player, "PressedAttack", `${name} player`) === "true",
+  );
+  assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
+  const ownerID = extractYAMLScalar(shellyActivations[0], "Id", `${name} Shelly`);
+  const projectiles = extractYAMLSequenceObjects(gameplay, "Projectiles");
+  const expectedDirections = shellySpreadDirections();
+  assert(projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
+  for (const [index, projectile] of projectiles.entries()) {
+    const projectileName = `${name} projectile ${index}`;
+    assert(extractYAMLScalar(projectile, "OwnerId", projectileName) === ownerID, `${projectileName} must use the Shelly owner`);
+    assert(extractYAMLScalar(projectile, "Damage", projectileName) === "280", `${projectileName} must use Shelly damage 280`);
+    assert(extractYAMLScalar(projectile, "Type", projectileName) === "default", `${projectileName} must use the configured projectile type`);
+    assertDirection(extractYAMLVector(projectile, "Dir", projectileName), expectedDirections[index], projectileName);
+  }
+}
+
+function assertJSONShellySpreadExample(message, name) {
+  const snapshot = message.Snapshot ?? message;
+  assert(snapshot && Array.isArray(snapshot.Players), `${name} must contain Snapshot.Players`);
+  const shellyActivations = snapshot.Players.filter(
+    (player) => player.CharacterType === 0 && player.PressedAttack === true,
+  );
+  assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
+  const projectiles = snapshot.Projectiles;
+  const expectedDirections = shellySpreadDirections();
+  assert(Array.isArray(projectiles) && projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
+  for (const [index, projectile] of projectiles.entries()) {
+    const projectileName = `${name} projectile ${index}`;
+    assert(projectile.OwnerId === shellyActivations[0].Id, `${projectileName} must use the Shelly owner`);
+    assert(projectile.Damage === 280, `${projectileName} must use Shelly damage 280`);
+    assert(projectile.Type === "default", `${projectileName} must use the configured projectile type`);
+    assertDirection(projectile.Dir, expectedDirections[index], projectileName);
+  }
 }
 
 function extractSchemaProperty(schema, propertyName) {

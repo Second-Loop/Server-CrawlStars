@@ -142,7 +142,63 @@ Server message wrapper:
         "LastProcessedClientTick": 0
       }
     ],
-    "Projectiles": null
+    "Projectiles": [
+      {
+        "Id": "projectile-1",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9781476007338057, "y": 0.20791169081775931 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-2",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9945218953682733, "y": 0.10452846326765346 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-3",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -1, "y": 0 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-4",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9945218953682733, "y": -0.10452846326765346 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-5",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9781476007338057, "y": -0.20791169081775931 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      }
+    ]
   }
 }
 ```
