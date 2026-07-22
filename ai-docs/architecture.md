@@ -161,7 +161,7 @@ Attack/projectile:
 - zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화합니다.
 - 같은 tick의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다.
 - Shelly/Colt/Lily는 각각 `3/3/2` attack charge로 시작하고, 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다.
-- `PressedAttack = true`, 정규화한 `AttackDir != zero`, 남은 charge가 모두 충족될 때만 charge 1개를 소비하고 projectile을 만듭니다.
+- `PressedAttack = true`, 정규화한 `AttackDir != zero`, 남은 charge가 모두 충족될 때만 charge 1개를 소비하고 projectile emission 또는 Lily melee intent를 승인합니다.
 - snapshot의 `PressedAttack`은 그 tick에 서버가 공격을 승인했을 때만 `true`입니다.
 - 새 projectile은 이동 후 player 위치에서 생성됩니다.
 - 기존 projectile은 tick마다 `Dir * Speed * TickDuration`으로 이동합니다.
