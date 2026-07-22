@@ -119,11 +119,10 @@ func segmentCircleHit(start, end, center Vector2, radius float64) (float64, bool
 	}
 	b := 2 * (offset.X*direction.X + offset.Y*direction.Y)
 	discriminant := b*b - 4*a*c
-	if discriminant < 0 {
-		if discriminant < -1e-12 {
-			return 0, false
-		}
+	if math.Abs(discriminant) <= 1e-12 {
 		discriminant = 0
+	} else if discriminant < 0 {
+		return 0, false
 	}
 	t := (-b - math.Sqrt(discriminant)) / (2 * a)
 	if t < -1e-12 || t > 1+1e-12 {
