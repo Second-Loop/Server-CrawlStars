@@ -20,6 +20,7 @@ func TestSegmentCircleHit(t *testing.T) {
 		{"endpoint tangent", Vector2{X: 1}, Vector2{X: 1.5}, 0.5, true},
 		{"lateral tangent", Vector2{X: 2}, Vector2{X: 1, Y: 0.5}, 0.5, true},
 		{"epsilon outside", Vector2{X: 2}, Vector2{X: 1, Y: 0.500001}, 0.5, false},
+		{"tiny segment clear miss", Vector2{X: 1e-8}, Vector2{Y: 1}, 0.5, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

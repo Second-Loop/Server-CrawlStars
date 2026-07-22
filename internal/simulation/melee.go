@@ -2,7 +2,10 @@ package simulation
 
 import "math"
 
-const meleeContactEpsilon = 1e-9
+const (
+	meleeContactEpsilon                  = 1e-9
+	segmentDiscriminantRelativeTolerance = 16 * 2.220446049250313e-16
+)
 
 type meleeIntent struct {
 	ownerIndex int
@@ -118,8 +121,11 @@ func segmentCircleHit(start, end, center Vector2, radius float64) (float64, bool
 		return 0, false
 	}
 	b := 2 * (offset.X*direction.X + offset.Y*direction.Y)
-	discriminant := b*b - 4*a*c
-	if math.Abs(discriminant) <= 1e-12 {
+	bSquared := b * b
+	fourAC := 4 * a * c
+	discriminant := bSquared - fourAC
+	discriminantTolerance := segmentDiscriminantRelativeTolerance * (math.Abs(bSquared) + math.Abs(fourAC))
+	if math.Abs(discriminant) <= discriminantTolerance {
 		discriminant = 0
 	} else if discriminant < 0 {
 		return 0, false
