@@ -8,6 +8,7 @@ const apiReferenceText = await readFile(new URL("../../ai-docs/api-reference.md"
 const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.meta.url), "utf8");
 const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
 const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
+const decisionsText = await readFile(new URL("../../ai-docs/decisions.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigBytes = await readFile(new URL("../../client-config/game-config.json", import.meta.url));
 const clientGameConfigText = clientGameConfigBytes.toString("utf8");
@@ -178,7 +179,7 @@ for (const [text, name] of [
   [apiReferenceText, "api reference"],
   [projectMapText, "project map"],
 ]) {
-  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "4/30"]) {
+  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "3/3/2"]) {
     assert(text.includes(marker), `${name} must document current character catalog marker ${marker}`);
   }
 }
@@ -415,6 +416,7 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 validateBotIdentitySchemas();
 validateClientTickACKContract();
 validateCharacterTypeContract();
+validateCharacterNormalAttackContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -805,6 +807,52 @@ function validateCharacterTypeContract() {
   const docsGameplay = extractDocsJSONExample("Gameplay");
   assertEveryJSONPlayerHasCharacterType(docsReady.Players, "docs UI Ready example");
   assertEveryJSONPlayerHasCharacterType(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
+}
+
+function validateCharacterNormalAttackContract() {
+  const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
+  const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
+  for (const marker of ["server config v3", "캐릭터별 `normalAttack`", "activation 요청"]) {
+    assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
+  }
+
+  const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
+  const snapshotPressedAttack = extractSchemaProperty(playerSchema, "PressedAttack");
+  for (const marker of ["activation tick", "공격이 승인됐을 때만 true"]) {
+    assert(snapshotPressedAttack.includes(marker), `PlayerData.PressedAttack must document ${marker}`);
+  }
+
+  const snapshotSchema = extractYAMLSchema(asyncAPIText, "Snapshot");
+  for (const marker of ["State.Step` 한 번", "같은 tick의 melee 피해", "GameEnd 계산"]) {
+    assert(snapshotSchema.includes(marker), `Snapshot must document ${marker}`);
+  }
+  const projectilesProperty = extractSchemaProperty(snapshotSchema, "Projectiles");
+  assert(
+    projectilesProperty.includes("attack activation에서 생성되거나 이동/충돌로 갱신된 projectile history"),
+    "Snapshot.Projectiles must document character attack projectile history",
+  );
+
+  const projectileSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
+  assert(
+    extractSchemaProperty(projectileSchema, "Damage").includes("normalAttack.damagePerHit"),
+    "ProjectileData.Damage must document normalAttack.damagePerHit ownership",
+  );
+  assert(
+    extractSchemaProperty(projectileSchema, "Type").includes("normalAttack.projectile.type"),
+    "ProjectileData.Type must document normalAttack.projectile.type ownership",
+  );
+
+  for (const [text, name, markers] of [
+    [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
+    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config"]],
+    [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "same-tick batched damage", "client parser는 아직 범위 밖"]],
+    [apiReferenceText, "api reference", ["server config v3의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
+  ]) {
+    for (const marker of markers) {
+      assert(text.includes(marker), `${name} must document normal attack marker ${marker}`);
+    }
+  }
 }
 
 function validateClientTickACKContract() {

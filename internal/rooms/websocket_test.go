@@ -4808,101 +4808,145 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 	}
 }
 
-func TestWebSocketSendsGameEndWinLoseAndCleansUpRoom(t *testing.T) {
+func TestWebSocketColtCharacterAttackReachesGameEndWinLose(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{
 		Map:        verticalDuelMap(),
-		GameConfig: fastRechargeGameConfig(),
+		GameConfig: characterAttackGameConfig(t, simulation.CharacterTypeColt),
 	})
 	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
-	room := createRoom(t, handler)
-	red := issuePlayer(t, handler, room.ID)
-	blue := issuePlayer(t, handler, room.ID)
-	startRoom(t, handler, room.ID)
+	red := joinMatchmakingWithCharacter(t, handler, simulation.CharacterTypeColt)
+	blue := joinMatchmakingWithCharacter(t, handler, simulation.CharacterTypeColt)
 
 	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
 	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
-	waitForAttachedClient(t, store, room.ID, red.ID)
-	waitForAttachedClient(t, store, room.ID, blue.ID)
-	internalRoom := store.lookupRoom(room.ID)
+	waitForAttachedClient(t, store, red.Room.ID, red.Player.ID)
+	waitForAttachedClient(t, store, red.Room.ID, blue.Player.ID)
+	_ = readReadyEventMessage(t, redConn)
+	_ = readReadyEventMessage(t, blueConn)
+	writeWSJSON(t, redConn, readyMessage{Type: "ready"})
+	writeWSJSON(t, blueConn, readyMessage{Type: "ready"})
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarting, 2, 2)
+	_ = readMatchSnapshotMessage(t, redConn)
+	_ = readMatchSnapshotMessage(t, blueConn)
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarted, 2, 2)
+	_ = readMatchSnapshotMessage(t, redConn)
+	_ = readMatchSnapshotMessage(t, blueConn)
+	internalRoom := store.lookupRoom(red.Room.ID)
 	if internalRoom == nil {
 		t.Fatal("expected Duel room before terminal tick")
 	}
 
-	for hitCount := 0; hitCount < 1; hitCount++ {
-		writeWSJSON(t, redConn, inputMessage{
-			AttackDir:     simulation.Vector2{X: 0, Y: -1},
-			PressedAttack: true,
-		})
-		waitForPendingInput(t, store, room.ID, red.ID)
-		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
-		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	baseline := tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	blueBefore := findSnapshotPlayer(t, baseline.Snapshot, simulation.PlayerID(blue.Player.ID))
+	if blueBefore.CharacterType != simulation.CharacterTypeColt || blueBefore.HP != 340 || blueBefore.IsDead {
+		t.Fatalf("expected live 340-HP Colt target before attack, got %+v", blueBefore)
 	}
 
-	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Win")
-	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Lose")
+	writeWSJSON(t, redConn, inputMessage{
+		AttackDir:     simulation.Vector2{X: 0, Y: -1},
+		PressedAttack: true,
+	})
+	waitForPendingInput(t, store, red.Room.ID, red.Player.ID)
+	_ = tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	terminal := tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	bluePlayer := findSnapshotPlayer(t, terminal.Snapshot, simulation.PlayerID(blue.Player.ID))
+	if bluePlayer.HP != 0 || !bluePlayer.IsDead {
+		t.Fatalf("expected one Colt projectile hit to produce terminal death snapshot, got %+v", bluePlayer)
+	}
+
+	assertGameEnd(t, readGameEndMessage(t, redConn), red.Player.ID, "Win")
+	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.Player.ID, "Lose")
 	acknowledgeWebSocketClose(t, redConn)
 	acknowledgeWebSocketClose(t, blueConn)
 	waitForGameEndCleanup(t, internalRoom)
-	if got := store.lookupRoom(room.ID); got != nil {
+	if got := store.lookupRoom(red.Room.ID); got != nil {
 		t.Fatal("expected Duel room removal after GameEnd cleanup")
 	}
 }
 
-func TestWebSocketSendsDrawToBothPlayersWhenBothDieOnSameTick(t *testing.T) {
+func TestWebSocketLilyCharacterAttackReachesGameEndDraw(t *testing.T) {
 	fakeClock := newFakeClock()
 	store := newStore(5, fakeClock, StoreConfig{
 		Map:        verticalDuelMap(),
-		GameConfig: fastRechargeGameConfig(),
+		GameConfig: characterAttackGameConfig(t, simulation.CharacterTypeLily),
 	})
 	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	defer store.Close()
 
-	room := createRoom(t, handler)
-	red := issuePlayer(t, handler, room.ID)
-	blue := issuePlayer(t, handler, room.ID)
-	startRoom(t, handler, room.ID)
+	red := joinMatchmakingWithCharacter(t, handler, simulation.CharacterTypeLily)
+	blue := joinMatchmakingWithCharacter(t, handler, simulation.CharacterTypeLily)
 
 	redConn := dialIssuedPlayer(t, server.URL, red.WebSocketPath)
 	defer redConn.Close(websocket.StatusNormalClosure, "")
 	blueConn := dialIssuedPlayer(t, server.URL, blue.WebSocketPath)
 	defer blueConn.Close(websocket.StatusNormalClosure, "")
-	waitForAttachedClient(t, store, room.ID, red.ID)
-	waitForAttachedClient(t, store, room.ID, blue.ID)
-	internalRoom := store.lookupRoom(room.ID)
+	waitForAttachedClient(t, store, red.Room.ID, red.Player.ID)
+	waitForAttachedClient(t, store, red.Room.ID, blue.Player.ID)
+	_ = readReadyEventMessage(t, redConn)
+	_ = readReadyEventMessage(t, blueConn)
+	writeWSJSON(t, redConn, readyMessage{Type: "ready"})
+	writeWSJSON(t, blueConn, readyMessage{Type: "ready"})
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarting, 2, 2)
+	_ = readMatchSnapshotMessage(t, redConn)
+	_ = readMatchSnapshotMessage(t, blueConn)
+	for range matchCountdownSeconds {
+		fakeClock.TickTicker(time.Second, 0)
+	}
+	waitForMatchLifecycleState(t, store, red.Room.ID, MatchStatusStarted, 2, 2)
+	_ = readMatchSnapshotMessage(t, redConn)
+	_ = readMatchSnapshotMessage(t, blueConn)
+	internalRoom := store.lookupRoom(red.Room.ID)
 	if internalRoom == nil {
 		t.Fatal("expected Duel room before terminal tick")
 	}
 
-	for hitCount := 0; hitCount < 1; hitCount++ {
-		writeWSJSON(t, redConn, inputMessage{
-			AttackDir:     simulation.Vector2{X: 0, Y: -1},
-			PressedAttack: true,
-		})
-		writeWSJSON(t, blueConn, inputMessage{
-			AttackDir:     simulation.Vector2{X: 0, Y: 1},
-			PressedAttack: true,
-		})
-		waitForPendingInput(t, store, room.ID, red.ID)
-		waitForPendingInput(t, store, room.ID, blue.ID)
-		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
-		tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	baseline := tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	redBefore := findSnapshotPlayer(t, baseline.Snapshot, simulation.PlayerID(red.Player.ID))
+	blueBefore := findSnapshotPlayer(t, baseline.Snapshot, simulation.PlayerID(blue.Player.ID))
+	if redBefore.CharacterType != simulation.CharacterTypeLily || redBefore.HP != 1100 || redBefore.IsDead ||
+		blueBefore.CharacterType != simulation.CharacterTypeLily || blueBefore.HP != 1100 || blueBefore.IsDead {
+		t.Fatalf("expected two live 1100-HP Lily players before attack, red=%+v blue=%+v", redBefore, blueBefore)
+	}
+	distance := math.Hypot(redBefore.Pos.X-blueBefore.Pos.X, redBefore.Pos.Y-blueBefore.Pos.Y)
+	if distance > 2.2*simulation.TileSize {
+		t.Fatalf("expected Lily players in mutual 2.2-tile range, distance=%v red=%+v blue=%+v", distance, redBefore.Pos, blueBefore.Pos)
 	}
 
-	assertGameEnd(t, readGameEndMessage(t, redConn), red.ID, "Draw")
-	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.ID, "Draw")
+	writeWSJSON(t, redConn, inputMessage{
+		AttackDir:     simulation.Vector2{X: 0, Y: -1},
+		PressedAttack: true,
+	})
+	writeWSJSON(t, blueConn, inputMessage{
+		AttackDir:     simulation.Vector2{X: 0, Y: 1},
+		PressedAttack: true,
+	})
+	waitForPendingInput(t, store, red.Room.ID, red.Player.ID)
+	waitForPendingInput(t, store, red.Room.ID, blue.Player.ID)
+	terminal := tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
+	redPlayer := findSnapshotPlayer(t, terminal.Snapshot, simulation.PlayerID(red.Player.ID))
+	bluePlayer := findSnapshotPlayer(t, terminal.Snapshot, simulation.PlayerID(blue.Player.ID))
+	if redPlayer.HP != 0 || !redPlayer.IsDead || bluePlayer.HP != 0 || !bluePlayer.IsDead {
+		t.Fatalf("expected reciprocal Lily attacks to produce a terminal Draw snapshot, red=%+v blue=%+v", redPlayer, bluePlayer)
+	}
+
+	assertGameEnd(t, readGameEndMessage(t, redConn), red.Player.ID, "Draw")
+	assertGameEnd(t, readGameEndMessage(t, blueConn), blue.Player.ID, "Draw")
 	acknowledgeWebSocketClose(t, redConn)
 	acknowledgeWebSocketClose(t, blueConn)
 	waitForGameEndCleanup(t, internalRoom)
-	if got := store.lookupRoom(room.ID); got != nil {
+	if got := store.lookupRoom(red.Room.ID); got != nil {
 		t.Fatal("expected drawn Duel room removal after GameEnd cleanup")
 	}
 }
@@ -5668,6 +5712,21 @@ func fastRechargeGameConfig() simulation.GameConfig {
 		config.Player.Types[index].NormalAttack.RechargeTicks = 1
 	}
 	return config
+}
+
+func characterAttackGameConfig(t *testing.T, characterType simulation.CharacterType) simulation.GameConfig {
+	t.Helper()
+	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
+	for index := range config.Player.Types {
+		playerType := &config.Player.Types[index]
+		if playerType.CharacterType != characterType {
+			continue
+		}
+		playerType.HP = playerType.NormalAttack.DamagePerHit
+		return config
+	}
+	t.Fatalf("missing character type %d in server game config", characterType)
+	return simulation.GameConfig{}
 }
 
 func newFakeClockAt(now time.Time) *fakeClock {

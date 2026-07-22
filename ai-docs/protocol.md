@@ -11,6 +11,7 @@
 - player Wall/Water/boundary collision과 projectile Wall/boundary destroy
 - Bush는 둘 다 통과하고 projectile은 Water도 통과
 - selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP, death snapshot
+- server config v3 기반 Shelly spread, Colt burst, Lily centerline melee 일반 공격
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
 - session/credential 없는 server-owned bot participant와 결정적 basic controller
@@ -43,14 +44,14 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 
 1. 모든 player의 transient `PressedAttack`을 `false`로 초기화
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
-3. 기존 projectile 이동
-4. projectile의 Wall/boundary 충돌 destroy와 selected mode별 player hit 처리
+3. 기존 projectile을 남은 range까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 player hit, range 만료 순서로 처리
+4. 현재 snapshot tick에 예정된 Colt burst projectile 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
 6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
 7. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
-8. 공격 입력, non-zero 방향, 남은 charge가 모두 유효하면 projectile 생성
-9. tick 증가
-10. processed input ACK가 포함된 snapshot 반환
+8. 공격 요청, non-zero 방향, 남은 캐릭터별 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
+9. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/ordinal 순서로 생성
+10. tick 증가 후 processed input ACK, HP/death, projectile history가 포함된 snapshot 반환
 
 현재 값:
 
@@ -59,10 +60,11 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultPlayerSpeed = 2`
 - `DefaultPlayerRadius = 0.5`
 - character catalog/HP = `0=Shelly/4000`, `1=Colt/3100`, `2=Lily/4100`
-- `MaxAttackCharges = 4`
-- `AttackRechargeTicks = 30`
+- normal attack charge/recharge = Shelly `3/30`, Colt `3/30`, Lily `2/30`
+- Shelly = `spread_projectile`, damage `280`, range `7.2 tiles`, offsets `-12,-6,0,6,12`
+- Colt = `burst_projectile`, damage `340`, range `9 tiles`, 6발/6 tick interval
+- Lily = `melee`, damage `1100`, range `2.2 tiles`
 - `DefaultProjectileSpeed = 13`
-- `DefaultProjectileDamage = 10`
 - `DefaultProjectileRadius = 0.3`
 - tile 값은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`
 - Player는 Wall/Water/boundary, projectile은 Wall/boundary에 충돌
@@ -83,12 +85,13 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 
 `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다.
 
-Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100`, attack `4/30`이며 이 mapping이 canonical source입니다.
+Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100`, attack charge/recharge `3/30`, `3/30`, `2/30`이며 이 mapping이 canonical source입니다. 줄여 쓰면 `3/3/2 charge`, 공통 `30 tick recharge`입니다.
 
 - `tickRate`
 - `tile.size`
-- player type별 `id/radius/hp/speed/maxAttackCharges/attackRechargeTicks`
-- projectile type별 `id/radius/damage/speed`
+- player type별 `id/characterType/radius/hp/speed/normalAttack`
+- `normalAttack`의 `kind/damagePerHit/rangeTiles/maxCharges/rechargeTicks`와 projectile attack의 `type/count/directionOffsetsDegrees/intervalTicks`
+- projectile type별 `id/radius/speed`
 - `mode.default`
 - `mode.catalog[].id`, `mode.catalog[].playersPerMatch`, `mode.catalog[].teams`, `mode.catalog[].rules`
 - `map`: client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 exact grid
@@ -96,6 +99,18 @@ Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100
 Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server snapshot이나 Ready event로 받거나 서버만 판단하므로 client 공유 config에 넣지 않습니다.
 Mode/team rule도 server-only입니다. REST join response와 Room은 선택된 mode ID만 `gameMode`로 노출하고 `friendlyFire`, `teamBehavior`, 전체 catalog는 노출하지 않습니다. Projectile hit은 room-local selected mode rules를 사용합니다. Solo는 owner가 아닌 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 이 동작은 WebSocket message shape를 바꾸지 않습니다.
 Attack charge와 recharge 진행도도 server-only state이며 client config나 snapshot에 새 field로 노출하지 않습니다.
+
+### SL-83 캐릭터 일반 공격
+
+server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Client config v2는 캐릭터 identity와 렌더 metadata만 유지하며 raw bytes를 바꾸지 않습니다.
+
+- Shelly는 activation tick에 5발을 동시에 만들고 조준 방향 기준 `-12,-6,0,6,12`도 spread를 적용합니다.
+- Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick에는 새 activation을 겹치지 않고 `A+31`부터 다음 공격을 승인합니다. Burst 방향은 activation 때 고정되며 owner가 사망하면 남은 emission을 취소합니다.
+- Lily는 2.2 tile centerline에서 첫 eligible target 하나를 찾습니다. 모든 Lily intent는 입력 전 player snapshot을 기준으로 target을 고르고 same-tick batched damage로 일괄 적용하므로 서로를 1100 HP로 맞춘 reciprocal 공격은 둘 다 사망합니다.
+
+Projectile은 남은 configured range까지 이동량을 먼저 clamp한 뒤 map Wall/boundary 충돌, selected mode player hit, 미충돌 range 만료 순서로 처리합니다. 따라서 range endpoint의 tangent hit은 포함됩니다. Lily는 wall/boundary까지의 range를 먼저 잘라 centerline target을 찾고 target과 blocking contact가 같으면 Wall/boundary가 우선합니다. Bush와 Water는 Lily centerline을 막지 않습니다.
+
+`PressedAttack`은 activation 승인 tick만 `true`입니다. Colt의 후속 scheduled emission은 새 activation이 아니므로 `false`이고, projectile `Damage`는 owner의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 결정됩니다. 새 wire field는 없습니다. Client parser 구현과 final balancing은 범위 밖입니다.
 
 Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Human command의 `ClientTick`은 merge 뒤에도 유지하고 bot command는 `ClientTick: 0`을 사용합니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge와 최종 processed input ACK는 계속 `internal/simulation`이 판정합니다.
 
@@ -299,12 +314,12 @@ Solo 중간 탈락은 해당 session에만 `terminal snapshot -> GameEnd -> clos
 `AttackDir`와 `PressedAttack`은 분리합니다.
 
 - input `AttackDir`: 현재 조준 방향. zero가 아닌 유한한 값은 서버가 unit vector로 정규화합니다.
-- input `PressedAttack`: 이번 tick의 발사 요청
-- snapshot `PressedAttack`: 방향과 charge 검증을 통과해 서버가 이번 tick 공격을 승인했는지 나타내는 transient 결과
+- input `PressedAttack`: 이번 tick의 캐릭터 일반 공격 activation 요청
+- snapshot `PressedAttack`: 방향과 캐릭터별 charge 검증을 통과해 서버가 이번 tick activation을 승인했는지 나타내는 transient 결과
 
 `AttackDir != zero`로 공격을 추론하면 조준 유지 중 매 tick 발사될 수 있습니다. 그래서 input 계약에서는 `PressedAttack`을 유지합니다.
 
-`MoveDir`은 크기가 `1` 이하면 아날로그 입력을 그대로 보존하고, 더 크면 서버가 크기 `1`로 clamp합니다. 각 player는 4 charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. Zero `AttackDir`, 소진된 charge, 사망한 player input은 projectile을 만들지 않습니다.
+`MoveDir`은 크기가 `1` 이하면 아날로그 입력을 그대로 보존하고, 더 크면 서버가 크기 `1`로 clamp합니다. Shelly/Colt/Lily는 각각 `3/3/2` charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. Zero `AttackDir`, 소진된 charge, 사망한 player input은 공격을 승인하지 않습니다.
 
 `ClientTick`과 `LastProcessedClientTick`은 입력 순서와 처리 완료를 연결합니다.
 
