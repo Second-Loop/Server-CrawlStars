@@ -904,8 +904,11 @@ function validateClientTickACKContract() {
   const startingSignal = extractYAMLNamedBlock(snapshotMessage, "        - name: startingSignal");
   const startedControl = extractYAMLNamedBlock(snapshotMessage, "        - name: startedControl");
   const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
-  assertLifecyclePlayersNull(startingSignal, "starting", "startingSignal");
-  assertLifecyclePlayersNull(startedControl, "started", "startedControl");
+  assertLifecycleSnapshotNull(startingSignal, "starting", "startingSignal");
+  assertLifecycleSnapshotNull(startedControl, "started", "startedControl");
+
+  assertJSONLifecycleSnapshotNull(extractDocsJSONExample("Starting Signal"), "starting", "docs UI Starting Signal");
+  assertJSONLifecycleSnapshotNull(extractDocsJSONExample("Started Control"), "started", "docs UI Started Control");
 
   const gameplayPlayers = extractYAMLSequenceObjects(gameplay, "Players");
   assertEveryGameplayPlayerHasClientTickACK(gameplayPlayers, "AsyncAPI gameplay example");
@@ -941,10 +944,19 @@ function validateClientTickACKContract() {
   assertTopLevelRequiredFieldsParserContract();
 }
 
-function assertLifecyclePlayersNull(example, status, name) {
+function assertLifecycleSnapshotNull(example, status, name) {
   assert(example.includes(`status: ${status}`), `${name} must use status ${status}`);
   assert(hasTrimmedLine(example, "Tick: 0"), `${name} must keep Tick 0`);
   assert(hasTrimmedLine(example, "Players: null"), `${name} must keep Players null`);
+  assert(hasTrimmedLine(example, "Projectiles: null"), `${name} must keep Projectiles null`);
+}
+
+function assertJSONLifecycleSnapshotNull(message, status, name) {
+  const snapshot = message.Snapshot;
+  assert(snapshot && snapshot.status === status, `${name} must use status ${status}`);
+  assert(snapshot.Tick === 0, `${name} must keep Tick 0`);
+  assert(snapshot.Players === null, `${name} must keep Players null`);
+  assert(snapshot.Projectiles === null, `${name} must keep Projectiles null`);
 }
 
 function assertEveryGameplayPlayerHasClientTickACK(objects, name) {
@@ -993,14 +1005,28 @@ function extractYAMLVector(object, field, name) {
   return { x: Number(match[1]), y: Number(match[2]) };
 }
 
-function shellySpreadDirections() {
-  return [
-    { x: -0.9781476007338057, y: 0.20791169081775931 },
-    { x: -0.9945218953682733, y: 0.10452846326765346 },
-    { x: -1, y: 0 },
-    { x: -0.9945218953682733, y: -0.10452846326765346 },
-    { x: -0.9781476007338057, y: -0.20791169081775931 },
-  ];
+function shellySpreadDirections(attackDirection) {
+  const shelly = serverGameConfig.player.types.find((playerType) => playerType.characterType === 0);
+  assert(shelly, "server config must contain Shelly characterType 0");
+  const offsets = shelly.normalAttack?.projectile?.directionOffsetsDegrees;
+  assert(Array.isArray(offsets) && offsets.length > 0, "Shelly config must contain projectile direction offsets");
+
+  assert(
+    Number.isFinite(attackDirection?.x) && Number.isFinite(attackDirection?.y),
+    "Shelly example AttackDir must contain finite numbers",
+  );
+  const magnitude = Math.hypot(attackDirection.x, attackDirection.y);
+  assert(magnitude > 0, "Shelly example AttackDir must be a non-zero vector");
+  const direction = { x: attackDirection.x / magnitude, y: attackDirection.y / magnitude };
+  return offsets.map((degrees) => {
+    const radians = (degrees % 360) * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    return {
+      x: direction.x * cosine - direction.y * sine,
+      y: direction.x * sine + direction.y * cosine,
+    };
+  });
 }
 
 function assertDirection(actual, expected, name) {
@@ -1020,8 +1046,9 @@ function assertYAMLShellySpreadExample(gameplay, name) {
   );
   assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
   const ownerID = extractYAMLScalar(shellyActivations[0], "Id", `${name} Shelly`);
+  const attackDirection = extractYAMLVector(shellyActivations[0], "AttackDir", `${name} Shelly`);
   const projectiles = extractYAMLSequenceObjects(gameplay, "Projectiles");
-  const expectedDirections = shellySpreadDirections();
+  const expectedDirections = shellySpreadDirections(attackDirection);
   assert(projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
   for (const [index, projectile] of projectiles.entries()) {
     const projectileName = `${name} projectile ${index}`;
@@ -1040,7 +1067,7 @@ function assertJSONShellySpreadExample(message, name) {
   );
   assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
   const projectiles = snapshot.Projectiles;
-  const expectedDirections = shellySpreadDirections();
+  const expectedDirections = shellySpreadDirections(shellyActivations[0].AttackDir);
   assert(Array.isArray(projectiles) && projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
   for (const [index, projectile] of projectiles.entries()) {
     const projectileName = `${name} projectile ${index}`;
