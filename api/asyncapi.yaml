@@ -12,6 +12,7 @@ info:
     Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다.
     `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
     REST join에서 선택된 CharacterType은 Ready와 gameplay Snapshot까지 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
+    일반 공격은 server config v3의 캐릭터별 `normalAttack`이 소유합니다. Shelly는 activation tick에 5발을 동시에 만들고, Colt는 activation tick A부터 6 tick 간격으로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다. 이 동작은 기존 InputMessage, PlayerData, ProjectileData, Snapshot shape를 재사용합니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
     일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
@@ -300,7 +301,72 @@ components:
                   PressedAttack: true
                   IsDead: false
                   LastProcessedClientTick: 0
-              Projectiles: null
+              Projectiles:
+                - Id: projectile-1
+                  OwnerId: player_AbCdEfGhIjKlMnOpQrStUv
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  Dir:
+                    x: -0.9781476007338057
+                    y: 0.20791169081775931
+                  Speed: 13
+                  Damage: 280
+                  Radius: 0.3
+                  Type: default
+                  IsDestroyed: false
+                - Id: projectile-2
+                  OwnerId: player_AbCdEfGhIjKlMnOpQrStUv
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  Dir:
+                    x: -0.9945218953682733
+                    y: 0.10452846326765346
+                  Speed: 13
+                  Damage: 280
+                  Radius: 0.3
+                  Type: default
+                  IsDestroyed: false
+                - Id: projectile-3
+                  OwnerId: player_AbCdEfGhIjKlMnOpQrStUv
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  Dir:
+                    x: -1
+                    y: 0
+                  Speed: 13
+                  Damage: 280
+                  Radius: 0.3
+                  Type: default
+                  IsDestroyed: false
+                - Id: projectile-4
+                  OwnerId: player_AbCdEfGhIjKlMnOpQrStUv
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  Dir:
+                    x: -0.9945218953682733
+                    y: -0.10452846326765346
+                  Speed: 13
+                  Damage: 280
+                  Radius: 0.3
+                  Type: default
+                  IsDestroyed: false
+                - Id: projectile-5
+                  OwnerId: player_AbCdEfGhIjKlMnOpQrStUv
+                  Pos:
+                    x: 1.2
+                    y: -1.2
+                  Dir:
+                    x: -0.9781476007338057
+                    y: -0.20791169081775931
+                  Speed: 13
+                  Damage: 280
+                  Radius: 0.3
+                  Type: default
+                  IsDestroyed: false
     GameEndMessage:
       name: GameEndMessage
       title: Game end
@@ -355,7 +421,7 @@ components:
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
         양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. Legacy 0은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 ACK를 바꾸지 않습니다. 음수는 `invalid_input`입니다.
         유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
-        Player는 server-only 4 attack charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
+        Player의 server-only attack charge는 Shelly/Colt/Lily 순서로 3/3/2이며 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
       properties:
         ClientTick:
           type: integer
@@ -368,7 +434,7 @@ components:
           $ref: "#/components/schemas/Vector2"
         PressedAttack:
           type: boolean
-          description: 이번 tick의 공격 요청입니다. 조준 유지용 AttackDir와 분리하며, 실제 승인 결과는 snapshot PlayerData.PressedAttack에서 확인합니다.
+          description: server config v3의 캐릭터별 `normalAttack` activation 요청입니다. 조준 유지용 AttackDir와 분리하며, 실제 승인 결과는 snapshot PlayerData.PressedAttack에서 확인합니다.
     ReadyEventMessage:
       type: object
       required: [Type, Map, Players]
@@ -455,6 +521,7 @@ components:
         WebSocket server-authoritative snapshot입니다.
         `status`는 lowercase match lifecycle field이고, gameplay data field는 Unity prototype과 맞춰 PascalCase를 유지합니다.
         `starting`과 직후 `started` control에서는 gameplay tick이 아직 돌지 않아 `Tick`은 0이고 `Players`는 null입니다. 첫 gameplay snapshot은 `Tick: 1`부터 모든 player의 processed input ACK를 포함합니다.
+        Gameplay snapshot은 production `State.Step` 한 번의 player, projectile, HP/death 결과입니다. 같은 tick의 melee 피해를 일괄 적용한 뒤 room이 그 snapshot으로 기존 GameEnd 계산을 수행합니다.
       properties:
         status:
           $ref: "#/components/schemas/MatchStatus"
@@ -479,7 +546,7 @@ components:
               items:
                 $ref: "#/components/schemas/ProjectileData"
             - type: "null"
-          description: active/destroyed projectile state입니다. projectile이 없거나 starting/started control snapshot이면 null일 수 있습니다.
+          description: Character attack activation에서 생성되거나 이동/충돌로 갱신된 projectile history입니다. projectile이 없거나 starting/started control snapshot이면 null일 수 있습니다.
     MatchStatus:
       type: string
       enum: [starting, started]
@@ -574,7 +641,7 @@ components:
           format: double
         PressedAttack:
           type: boolean
-          description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 해당 tick 공격을 승인했을 때만 true인 transient 결과입니다.
+          description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 activation tick에 공격이 승인됐을 때만 true인 transient 결과입니다. 이후 Colt burst emission tick에는 새 activation이 아니므로 false입니다.
         IsDead:
           type: boolean
         LastProcessedClientTick:
@@ -606,10 +673,12 @@ components:
         Damage:
           type: number
           format: double
+          description: Owner 캐릭터의 server config v3 `normalAttack.damagePerHit`에서 복사한 authoritative 피해입니다.
         Radius:
           type: number
           format: double
         Type:
           type: string
+          description: Owner 캐릭터의 server config v3 `normalAttack.projectile.type`이 가리킨 projectile type ID입니다.
         IsDestroyed:
           type: boolean

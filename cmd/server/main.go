@@ -415,5 +415,9 @@ func loadGameConfigFrom(reader io.Reader, logger *slog.Logger) simulation.GameCo
 		logger.Warn("game_config_fallback", "error", err.Error())
 		return simulation.StaticGameConfig()
 	}
+	if gameConfig.Version != simulation.ServerGameConfigVersion {
+		logger.Warn("game_config_fallback", "error", "unexpected server game config version")
+		return simulation.StaticGameConfig()
+	}
 	return gameConfig
 }

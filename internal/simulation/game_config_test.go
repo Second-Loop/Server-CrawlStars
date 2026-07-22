@@ -2,6 +2,7 @@ package simulation
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,8 +14,8 @@ import (
 func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T) {
 	config := loadClientSharedGameConfig(t)
 
-	if config.Version != GameConfigVersion {
-		t.Fatalf("expected client config version %d, got %d", GameConfigVersion, config.Version)
+	if config.Version != ClientGameConfigVersion {
+		t.Fatalf("expected client config version %d, got %d", ClientGameConfigVersion, config.Version)
 	}
 	if config.TileSize != TileSize {
 		t.Fatalf("expected tile size %f, got %f", TileSize, config.TileSize)
@@ -39,8 +40,8 @@ func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T)
 func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) {
 	config := loadServerGameConfig(t)
 
-	if config.Version != GameConfigVersion {
-		t.Fatalf("expected server config version %d, got %d", GameConfigVersion, config.Version)
+	if config.Version != ServerGameConfigVersion {
+		t.Fatalf("expected server config version %d, got %d", ServerGameConfigVersion, config.Version)
 	}
 	if config.TickRate != TickRate {
 		t.Fatalf("expected tick rate %d, got %d", TickRate, config.TickRate)
@@ -79,34 +80,37 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 	if config.Projectile.Types[0].Radius != DefaultProjectileRadius {
 		t.Fatalf("expected projectile radius %f, got %f", DefaultProjectileRadius, config.Projectile.Types[0].Radius)
 	}
-	if config.Projectile.Types[0].Damage != DefaultProjectileDamage {
-		t.Fatalf("expected projectile damage %f, got %f", DefaultProjectileDamage, config.Projectile.Types[0].Damage)
-	}
 	if config.Projectile.Types[0].Speed != DefaultProjectileSpeed {
 		t.Fatalf("expected projectile speed %f, got %f", DefaultProjectileSpeed, config.Projectile.Types[0].Speed)
 	}
 }
 
-func TestLoadServerGameConfigIncludesAttackBudget(t *testing.T) {
+func TestLoadServerGameConfigIncludesCharacterNormalAttacks(t *testing.T) {
 	config := loadServerGameConfig(t)
-	player := config.DefaultPlayerType()
-
-	if got := player.MaxAttackCharges; got != 4 {
-		t.Fatalf("expected 4 max attack charges, got %d", got)
+	if config.Version != ServerGameConfigVersion {
+		t.Fatalf("server version = %d, want %d", config.Version, ServerGameConfigVersion)
 	}
-	if got := player.AttackRechargeTicks; got != 30 {
-		t.Fatalf("expected 30 attack recharge ticks, got %d", got)
+	wants := map[CharacterType]NormalAttackConfig{
+		CharacterTypeShelly: {Kind: NormalAttackSpreadProjectile, DamagePerHit: 280, RangeTiles: 7.2, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 5, DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12}}},
+		CharacterTypeColt:   {Kind: NormalAttackBurstProjectile, DamagePerHit: 340, RangeTiles: 9, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 6, DirectionOffsetsDegrees: []float64{0}, IntervalTicks: 6}},
+		CharacterTypeLily:   {Kind: NormalAttackMelee, DamagePerHit: 1100, RangeTiles: 2.2, MaxCharges: 2, RechargeTicks: 30},
+	}
+	for characterType, want := range wants {
+		got, ok := config.PlayerType(characterType)
+		if !ok {
+			t.Fatalf("missing character type %d", characterType)
+		}
+		if !reflect.DeepEqual(got.NormalAttack, want) {
+			t.Fatalf("character type %d normal attack = %#v, want %#v", characterType, got.NormalAttack, want)
+		}
 	}
 }
 
-func TestStaticGameConfigIncludesAttackBudget(t *testing.T) {
-	player := StaticGameConfig().DefaultPlayerType()
-
-	if got := player.MaxAttackCharges; got != 4 {
-		t.Fatalf("expected 4 max attack charges, got %d", got)
-	}
-	if got := player.AttackRechargeTicks; got != 30 {
-		t.Fatalf("expected 30 attack recharge ticks, got %d", got)
+func TestClientAndServerConfigVersionsAreIndependent(t *testing.T) {
+	client := loadClientSharedGameConfig(t)
+	server := loadServerGameConfig(t)
+	if client.Version != ClientGameConfigVersion || server.Version != ServerGameConfigVersion {
+		t.Fatalf("versions = client %d server %d, want %d/%d", client.Version, server.Version, ClientGameConfigVersion, ServerGameConfigVersion)
 	}
 }
 
@@ -118,8 +122,8 @@ func TestClientAndServerCharacterCatalogMappingsMatch(t *testing.T) {
 		CharacterTypeColt:   "colt",
 		CharacterTypeLily:   "lily",
 	}
-	if client.Version != GameConfigVersion || server.Version != GameConfigVersion {
-		t.Fatalf("client/server version = %d/%d, want %d", client.Version, server.Version, GameConfigVersion)
+	if client.Version != ClientGameConfigVersion || server.Version != ServerGameConfigVersion {
+		t.Fatalf("client/server version = %d/%d, want %d/%d", client.Version, server.Version, ClientGameConfigVersion, ServerGameConfigVersion)
 	}
 	clientMapping := make(map[CharacterType]string, len(client.Characters))
 	for _, character := range client.Characters {
@@ -164,7 +168,7 @@ func TestGameConfigPlayerTypeLookupIsIndependentOfCatalogOrder(t *testing.T) {
 func TestResolveGameConfigRejectsUnsupportedVersion(t *testing.T) {
 	config := StaticGameConfig()
 	config.Version = 1
-	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 2") {
+	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 3") {
 		t.Fatalf("ResolveGameConfig(version 1) error = %v, want exact-version rejection", err)
 	}
 }
@@ -206,48 +210,53 @@ func TestResolveGameConfigRejectsInvalidCharacterCatalog(t *testing.T) {
 	}
 }
 
-func TestResolveGameConfigRejectsInvalidAttackBudget(t *testing.T) {
+func TestResolveGameConfigRejectsInvalidNormalAttackCombinations(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*PlayerTypeConfig)
+		mutate func(*GameConfig)
 	}{
-		{
-			name: "zero max attack charges",
-			mutate: func(player *PlayerTypeConfig) {
-				player.MaxAttackCharges = 0
-			},
-		},
-		{
-			name: "negative max attack charges",
-			mutate: func(player *PlayerTypeConfig) {
-				player.MaxAttackCharges = -1
-			},
-		},
-		{
-			name: "zero attack recharge ticks",
-			mutate: func(player *PlayerTypeConfig) {
-				player.AttackRechargeTicks = 0
-			},
-		},
-		{
-			name: "negative attack recharge ticks",
-			mutate: func(player *PlayerTypeConfig) {
-				player.AttackRechargeTicks = -1
-			},
-		},
+		{"unknown kind", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Kind = "unknown" }},
+		{"zero damage", func(c *GameConfig) { c.Player.Types[0].NormalAttack.DamagePerHit = 0 }},
+		{"nan range", func(c *GameConfig) { c.Player.Types[0].NormalAttack.RangeTiles = math.NaN() }},
+		{"zero charges", func(c *GameConfig) { c.Player.Types[0].NormalAttack.MaxCharges = 0 }},
+		{"zero recharge", func(c *GameConfig) { c.Player.Types[0].NormalAttack.RechargeTicks = 0 }},
+		{"missing projectile", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile = nil }},
+		{"melee projectile", func(c *GameConfig) {
+			p := c.Player.Types[0].NormalAttack.Projectile
+			c.Player.Types[2].NormalAttack.Projectile = p
+		}},
+		{"unknown projectile reference", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Type = "missing" }},
+		{"duplicate projectile id", func(c *GameConfig) { c.Projectile.Types = append(c.Projectile.Types, c.Projectile.Types[0]) }},
+		{"spread zero count", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.Count = 0
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees = nil
+		}},
+		{"spread count mismatch", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.Count = 4 }},
+		{"spread nan offset", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[0] = math.NaN() }},
+		{"spread positive infinite offset", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[1] = math.Inf(1)
+		}},
+		{"spread negative infinite offset", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[2] = math.Inf(-1)
+		}},
+		{"spread interval", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.IntervalTicks = 1 }},
+		{"burst count", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.Count = 1 }},
+		{"burst offset", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{1} }},
+		{"burst nan offset", func(c *GameConfig) {
+			c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.NaN()}
+		}},
+		{"burst infinite offset", func(c *GameConfig) {
+			c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.Inf(1)}
+		}},
+		{"burst interval", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.IntervalTicks = 0 }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := StaticGameConfig()
-			tt.mutate(&config.Player.Types[0])
-
-			_, err := ResolveGameConfig(config)
-			if err == nil {
-				t.Fatal("expected attack budget to be rejected")
-			}
-			if !strings.Contains(err.Error(), "shelly") {
-				t.Fatalf("expected error to include player type ID, got %v", err)
+			tt.mutate(&config)
+			if _, err := ResolveGameConfig(config); err == nil {
+				t.Fatal("expected normal attack combination to be rejected")
 			}
 		})
 	}
