@@ -7,15 +7,15 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
-func TestNewStoreWithConfigFallsBackFromVersionOneToStaticV2Config(t *testing.T) {
+func TestNewStoreWithConfigFallsBackFromVersionOneToStaticV3Config(t *testing.T) {
 	store := NewStoreWithConfig(1, StoreConfig{
 		GameConfig: simulation.GameConfig{Version: 1},
 	})
 	t.Cleanup(store.Close)
 
 	want := simulation.StaticGameConfig()
-	if store.gameConfig.Version != simulation.GameConfigVersion {
-		t.Fatalf("store config version = %d, want %d", store.gameConfig.Version, simulation.GameConfigVersion)
+	if store.gameConfig.Version != simulation.ServerGameConfigVersion {
+		t.Fatalf("store config version = %d, want %d", store.gameConfig.Version, simulation.ServerGameConfigVersion)
 	}
 	if !reflect.DeepEqual(store.gameConfig.Player.Types, want.Player.Types) {
 		t.Fatalf("store character catalog = %+v, want %+v", store.gameConfig.Player.Types, want.Player.Types)

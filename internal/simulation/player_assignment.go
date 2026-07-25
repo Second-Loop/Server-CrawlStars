@@ -33,7 +33,7 @@ func PlayerAssignments(playerIDs []PlayerID, config GameConfig) []PlayerAssignme
 }
 
 func resolveAssignmentGameConfig(config GameConfig) GameConfig {
-	if config.Version != GameConfigVersion {
+	if config.Version != ServerGameConfigVersion {
 		return StaticGameConfig()
 	}
 	gameMap := config.Map

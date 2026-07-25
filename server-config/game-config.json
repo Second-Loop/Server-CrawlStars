@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "tickRate": 30,
   "tile": {
     "size": 1.2
@@ -12,8 +12,19 @@
         "radius": 0.5,
         "hp": 4000,
         "speed": 2,
-        "maxAttackCharges": 4,
-        "attackRechargeTicks": 30
+        "normalAttack": {
+          "kind": "spread_projectile",
+          "damagePerHit": 280,
+          "rangeTiles": 7.2,
+          "maxCharges": 3,
+          "rechargeTicks": 30,
+          "projectile": {
+            "type": "default",
+            "count": 5,
+            "directionOffsetsDegrees": [-12, -6, 0, 6, 12],
+            "intervalTicks": 0
+          }
+        }
       },
       {
         "characterType": 1,
@@ -21,8 +32,19 @@
         "radius": 0.5,
         "hp": 3100,
         "speed": 2,
-        "maxAttackCharges": 4,
-        "attackRechargeTicks": 30
+        "normalAttack": {
+          "kind": "burst_projectile",
+          "damagePerHit": 340,
+          "rangeTiles": 9,
+          "maxCharges": 3,
+          "rechargeTicks": 30,
+          "projectile": {
+            "type": "default",
+            "count": 6,
+            "directionOffsetsDegrees": [0],
+            "intervalTicks": 6
+          }
+        }
       },
       {
         "characterType": 2,
@@ -30,8 +52,13 @@
         "radius": 0.5,
         "hp": 4100,
         "speed": 2,
-        "maxAttackCharges": 4,
-        "attackRechargeTicks": 30
+        "normalAttack": {
+          "kind": "melee",
+          "damagePerHit": 1100,
+          "rangeTiles": 2.2,
+          "maxCharges": 2,
+          "rechargeTicks": 30
+        }
       }
     ]
   },
@@ -40,7 +67,6 @@
       {
         "id": "default",
         "radius": 0.3,
-        "damage": 10,
         "speed": 13
       }
     ]

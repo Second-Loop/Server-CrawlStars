@@ -330,7 +330,9 @@ Client input:
 
 `ClientTick`은 optional `int64`이고 `0` 이상입니다. 누락하거나 `0`을 보내면 legacy input으로 처리합니다. 양수 tick은 해당 player의 마지막 processed input ACK와 현재 positive pending tick보다 클 때만 command 전체를 저장합니다. 이미 처리했거나 더 높은 pending이 있는 stale/duplicate 양수 tick은 error frame 없이 조용히 무시합니다. Legacy `0`은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 `LastProcessedClientTick`은 바꾸지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
 
-서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. 각 player는 server-only 4 attack charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. `PressedAttack: true`여도 player가 사망했거나 방향이 zero이거나 charge가 소진됐으면 공격을 거부합니다. Live player의 유한한 양수 input은 Wall 충돌, zero attack 방향, charge 소진처럼 눈에 보이는 효과가 없어도 처리한 것으로 ACK합니다. Unknown/dead player, non-finite, 음수, stale/duplicate input은 ACK하지 않습니다.
+서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Shelly/Colt/Lily는 server-only `3/3/2` attack charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. `PressedAttack: true`여도 player가 사망했거나 방향이 zero이거나 charge가 소진됐으면 공격을 거부합니다. Live player의 유한한 양수 input은 Wall 충돌, zero attack 방향, charge 소진처럼 눈에 보이는 효과가 없어도 처리한 것으로 ACK합니다. Unknown/dead player, non-finite, 음수, stale/duplicate input은 ACK하지 않습니다.
+
+Input `PressedAttack`은 server config v3의 캐릭터별 일반 공격 activation 요청입니다. Shelly는 같은 tick에 5발, Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발, Lily는 2.2 tile centerline melee를 실행합니다. Colt의 후속 emission은 새 activation이 아니므로 snapshot `PressedAttack`은 activation tick에만 `true`입니다.
 
 같은 gameplay `State.Step`의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이 순서는 room의 pending input map 순회 순서와 무관한 input 결정성 기준이며 projectile hit target의 순서와는 별개입니다.
 
@@ -418,12 +420,70 @@ Server snapshot:
         "LastProcessedClientTick": 0
       }
     ],
-    "Projectiles": null
+    "Projectiles": [
+      {
+        "Id": "projectile-1",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9781476007338057, "y": 0.20791169081775931 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-2",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9945218953682733, "y": 0.10452846326765346 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-3",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -1, "y": 0 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-4",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9945218953682733, "y": -0.10452846326765346 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      },
+      {
+        "Id": "projectile-5",
+        "OwnerId": "player_AbCdEfGhIjKlMnOpQrStUv",
+        "Pos": { "x": 1.2, "y": -1.2 },
+        "Dir": { "x": -0.9781476007338057, "y": -0.20791169081775931 },
+        "Speed": 13,
+        "Damage": 280,
+        "Radius": 0.3,
+        "Type": "default",
+        "IsDestroyed": false
+      }
+    ]
   }
 }
 ```
 
 Snapshot의 `Players[].PressedAttack`은 input echo가 아니라 방향, 생존 상태, 남은 charge를 검증한 뒤 서버가 해당 tick의 공격을 승인했는지 나타내는 transient 결과입니다.
+
+Snapshot `Projectiles[]`는 기존 `Damage`와 `Type` wire field를 그대로 씁니다. `Damage`는 owner 캐릭터의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 복사합니다. Projectile은 configured range endpoint까지 clamp한 위치에서 Wall/boundary 충돌, player hit, range 만료 순서로 판정하므로 endpoint tangent hit도 포함됩니다. Lily 피해는 `Projectiles`가 아니라 같은 gameplay snapshot의 `Players[].HP/IsDead`로 나타납니다.
 
 Snapshot의 `Players[].IsBot`은 Ready의 participant identity를 그대로 유지합니다. Bot도 human과 같은 `PlayerData`로 simulation에 들어가며 별도 bot snapshot schema를 만들지 않습니다.
 
@@ -522,17 +582,17 @@ Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking
 - player speed: 2
 - player radius: 0.5
 - character catalog: `0=Shelly`, `1=Colt`, `2=Lily`; HP는 각각 `4000/3100/4100`
-- attack charges: 4
-- attack recharge: 30 tick마다 1 charge
+- attack charges: Shelly/Colt/Lily `3/3/2`
+- attack recharge: 캐릭터별 최대치보다 적을 때 30 tick마다 1 charge
 - projectile speed: 13
-- projectile damage: 10
+- projectile damage: owner의 `normalAttack.damagePerHit` (`280/340`; Lily `1100`은 melee)
 - projectile radius: 0.3
 - map/debug room max players: 6
 
 Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 공유 config입니다. legacy `playerTypes: ["default"]` mirror와 함께 v2 `characters` catalog (`0/1/2 = shelly/colt/lily`)를 포함합니다. radius `0.5`, speed `2`, HP `4000/3100/4100`, attack `4/30`의 canonical runtime mapping은 server config가 소유합니다.
-- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다. `tickRate`, `tile.size`, player type별 `maxAttackCharges`/`attackRechargeTicks`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다.
+- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 공유 config입니다. legacy `playerTypes: ["default"]` mirror와 함께 v2 `characters` catalog (`0/1/2 = shelly/colt/lily`)를 포함합니다. radius `0.5`, speed `2`, HP `4000/3100/4100`의 canonical runtime mapping은 server config가 소유합니다.
+- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v3 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`입니다.
 
 Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map과 attack charge 진행도는 server-only config/state나 Ready/snapshot message의 책임입니다.
 
@@ -559,7 +619,7 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 
 `POST /matchmaking/join`의 optional lower-camel `characterType`은 stable ID `0=Shelly`, `1=Colt`, `2=Lily`를 받습니다. 새 client는 값을 명시하고, SL-82에서는 legacy field 생략만 Shelly `0`으로 보정하며 structured warning을 한 번 기록합니다. explicit `null`, non-integer, string/bool/object/array, 지원하지 않는 정수는 400 `invalid_character_type`이고 SL-98에서 request field를 required로 전환합니다.
 
-REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot/debug participant는 Shelly `0`입니다. Config v2의 현재 stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP이며 attack charge/recharge는 계속 `4/30`입니다.
+REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot/debug participant는 Shelly `0`입니다. Config v2는 identity/render catalog를 유지하고 server config v3의 현재 stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge입니다.
 
 ## 제약
 

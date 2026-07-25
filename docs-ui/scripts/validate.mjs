@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 const openAPIText = await readFile(new URL("../../api/openapi.yaml", import.meta.url), "utf8");
 const asyncAPIText = await readFile(new URL("../../api/asyncapi.yaml", import.meta.url), "utf8");
@@ -7,8 +8,10 @@ const apiReferenceText = await readFile(new URL("../../ai-docs/api-reference.md"
 const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.meta.url), "utf8");
 const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
 const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
+const decisionsText = await readFile(new URL("../../ai-docs/decisions.md", import.meta.url), "utf8");
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
-const clientGameConfigText = await readFile(new URL("../../client-config/game-config.json", import.meta.url), "utf8");
+const clientGameConfigBytes = await readFile(new URL("../../client-config/game-config.json", import.meta.url));
+const clientGameConfigText = clientGameConfigBytes.toString("utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
 const serverGameConfig = JSON.parse(serverGameConfigText);
@@ -176,7 +179,7 @@ for (const [text, name] of [
   [apiReferenceText, "api reference"],
   [projectMapText, "project map"],
 ]) {
-  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "4/30"]) {
+  for (const marker of ["0=Shelly", "1=Colt", "2=Lily", "4000/3100/4100", "3/3/2"]) {
     assert(text.includes(marker), `${name} must document current character catalog marker ${marker}`);
   }
 }
@@ -413,6 +416,7 @@ assertNoColonSpacePlainScalars(asyncAPIText, "api/asyncapi.yaml");
 validateBotIdentitySchemas();
 validateClientTickACKContract();
 validateCharacterTypeContract();
+validateCharacterNormalAttackContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -428,7 +432,13 @@ assert(
   !docsBuildText.includes("6 human connection") && !docsBuildText.includes("bot fill 없음"),
   "docs UI must not describe the participant capacity as all-human or claim bot absence",
 );
-for (const marker of ["optional `gameMode`", "participant capacity", "human session", "raw body가 1024 bytes"]) {
+for (const marker of [
+  "optional `gameMode`",
+  "participant capacity",
+  "human session",
+  "raw body가 1024 bytes",
+  "Shelly/Colt/Lily 순서로 `3/3/2` charge",
+]) {
   assert(apiDocsText.includes(marker), `ai-docs/api-docs.md must document ${marker}`);
 }
 const apiDocsSessionLifecycle = extractDelimitedText(
@@ -473,8 +483,23 @@ for (const [text, name, allowedTokens] of [
 }
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
+const approvedClientGameConfigSHA256 = "b351ce594e6fbed9df59ea778d63897c6696510611485691cefcc5eade7fd70d";
+assert(
+  createHash("sha256").update(clientGameConfigBytes).digest("hex") === approvedClientGameConfigSHA256,
+  "client-config/game-config.json must be byte-identical to the approved v2 artifact",
+);
 assert(clientGameConfig.version === 2, "client config version must be 2");
-assert(serverGameConfig.version === 2, "server config version must be 2");
+assert(serverGameConfig.version === 3, "server config version must be 3");
+for (const legacyField of [
+  '  "version": 2,',
+  '  "tileSize": 1.2,',
+  '  "playerRadius": 0.5,',
+  '  "playerTypes": ["default"],',
+  '  "projectileRadius": 0.3,',
+  '  "projectileTypes": ["default"]',
+]) {
+  assert(clientGameConfigText.includes(legacyField), `client legacy field must remain byte-for-byte: ${legacyField}`);
+}
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "playerTypes", "characters", "projectileRadius", "projectileTypes"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
 assert(JSON.stringify(clientGameConfig.playerTypes) === JSON.stringify(["default"]), "legacy playerTypes must stay [default]");
@@ -503,16 +528,24 @@ assert(hasValue(clientGameConfig.projectileTypes, "default"), "client-config/gam
 assert(serverGameConfig.tickRate === 30, "server-config/game-config.json must expose tickRate 30");
 assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must expose tile.size 1.2");
 const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
+const expectedNormalAttacks = new Map([
+  [0, { kind: "spread_projectile", damagePerHit: 280, rangeTiles: 7.2, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 5, directionOffsetsDegrees: [-12, -6, 0, 6, 12], intervalTicks: 0 } }],
+  [1, { kind: "burst_projectile", damagePerHit: 340, rangeTiles: 9, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 6, directionOffsetsDegrees: [0], intervalTicks: 6 } }],
+  [2, { kind: "melee", damagePerHit: 1100, rangeTiles: 2.2, maxCharges: 2, rechargeTicks: 30 }],
+]);
 for (const playerType of serverGameConfig.player.types) {
   assert(playerType.radius === 0.5, `server player radius drift for ${playerType.id}`);
   assert(playerType.hp === expectedServerPlayerTypes.get(playerType.characterType), `server player HP drift for ${playerType.id}`);
   assert(playerType.speed === 2, `server player speed drift for ${playerType.id}`);
-  assert(playerType.maxAttackCharges === 4, `server player maxAttackCharges drift for ${playerType.id}`);
-  assert(playerType.attackRechargeTicks === 30, `server player attackRechargeTicks drift for ${playerType.id}`);
+  assert(!Object.hasOwn(playerType, "maxAttackCharges"), `server player must not expose legacy maxAttackCharges for ${playerType.id}`);
+  assert(!Object.hasOwn(playerType, "attackRechargeTicks"), `server player must not expose legacy attackRechargeTicks for ${playerType.id}`);
+  assert(JSON.stringify(playerType.normalAttack) === JSON.stringify(expectedNormalAttacks.get(playerType.characterType)), `server normalAttack drift for ${playerType.id}`);
 }
 assert(hasTypeRadius(serverGameConfig.projectile?.types, "default", 0.3), "server-config/game-config.json must expose default projectile radius 0.3");
-assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "damage", 10), "server-config/game-config.json must expose default projectile damage 10");
 assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13), "server-config/game-config.json must expose default projectile speed 13");
+for (const projectileType of serverGameConfig.projectile?.types ?? []) {
+  assert(!Object.hasOwn(projectileType, "damage"), `server projectile type must not expose damage for ${projectileType.id}`);
+}
 assert(serverGameConfig.map?.width === 20, "server-config/game-config.json must expose the runtime map width");
 assert(serverGameConfig.map?.height === 20, "server-config/game-config.json must expose the runtime map height");
 assert(serverGameConfig.map?.maxPlayers === 6, "server-config/game-config.json must expose map maxPlayers 6");
@@ -782,6 +815,66 @@ function validateCharacterTypeContract() {
   assertEveryJSONPlayerHasCharacterType(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
 }
 
+function validateCharacterNormalAttackContract() {
+  const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
+  const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
+  for (const marker of ["server config v3", "캐릭터별 `normalAttack`", "activation 요청"]) {
+    assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
+  }
+
+  const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
+  const snapshotPressedAttack = extractSchemaProperty(playerSchema, "PressedAttack");
+  for (const marker of ["activation tick", "공격이 승인됐을 때만 true"]) {
+    assert(snapshotPressedAttack.includes(marker), `PlayerData.PressedAttack must document ${marker}`);
+  }
+
+  const snapshotSchema = extractYAMLSchema(asyncAPIText, "Snapshot");
+  for (const marker of ["State.Step` 한 번", "같은 tick의 melee 피해", "GameEnd 계산"]) {
+    assert(snapshotSchema.includes(marker), `Snapshot must document ${marker}`);
+  }
+  const projectilesProperty = extractSchemaProperty(snapshotSchema, "Projectiles");
+  assert(
+    projectilesProperty.includes("attack activation에서 생성되거나 이동/충돌로 갱신된 projectile history"),
+    "Snapshot.Projectiles must document character attack projectile history",
+  );
+
+  const projectileSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
+  assert(
+    extractSchemaProperty(projectileSchema, "Damage").includes("normalAttack.damagePerHit"),
+    "ProjectileData.Damage must document normalAttack.damagePerHit ownership",
+  );
+  assert(
+    extractSchemaProperty(projectileSchema, "Type").includes("normalAttack.projectile.type"),
+    "ProjectileData.Type must document normalAttack.projectile.type ownership",
+  );
+
+  const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");
+  const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
+  assertYAMLShellySpreadExample(gameplay, "AsyncAPI gameplay example");
+  assertJSONShellySpreadExample(extractDocsJSONExample("Gameplay").Snapshot, "docs UI Gameplay example");
+  assertJSONShellySpreadExample(
+    extractMarkdownJSONExample(apiReferenceText, "Server snapshot:", "api reference Server snapshot"),
+    "api reference Server snapshot",
+  );
+  assertJSONShellySpreadExample(
+    extractMarkdownJSONExample(apiDocsText, "Server message wrapper:", "api docs Server message wrapper"),
+    "api docs Server message wrapper",
+  );
+
+  for (const [text, name, markers] of [
+    [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
+    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
+    [apiReferenceText, "api reference", ["server config v3의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
+  ]) {
+    for (const marker of markers) {
+      assert(text.includes(marker), `${name} must document normal attack marker ${marker}`);
+    }
+  }
+}
+
 function validateClientTickACKContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const clientTickProperty = extractSchemaProperty(inputSchema, "ClientTick");
@@ -811,8 +904,11 @@ function validateClientTickACKContract() {
   const startingSignal = extractYAMLNamedBlock(snapshotMessage, "        - name: startingSignal");
   const startedControl = extractYAMLNamedBlock(snapshotMessage, "        - name: startedControl");
   const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
-  assertLifecyclePlayersNull(startingSignal, "starting", "startingSignal");
-  assertLifecyclePlayersNull(startedControl, "started", "startedControl");
+  assertLifecycleSnapshotNull(startingSignal, "starting", "startingSignal");
+  assertLifecycleSnapshotNull(startedControl, "started", "startedControl");
+
+  assertJSONLifecycleSnapshotNull(extractDocsJSONExample("Starting Signal"), "starting", "docs UI Starting Signal");
+  assertJSONLifecycleSnapshotNull(extractDocsJSONExample("Started Control"), "started", "docs UI Started Control");
 
   const gameplayPlayers = extractYAMLSequenceObjects(gameplay, "Players");
   assertEveryGameplayPlayerHasClientTickACK(gameplayPlayers, "AsyncAPI gameplay example");
@@ -848,10 +944,19 @@ function validateClientTickACKContract() {
   assertTopLevelRequiredFieldsParserContract();
 }
 
-function assertLifecyclePlayersNull(example, status, name) {
+function assertLifecycleSnapshotNull(example, status, name) {
   assert(example.includes(`status: ${status}`), `${name} must use status ${status}`);
   assert(hasTrimmedLine(example, "Tick: 0"), `${name} must keep Tick 0`);
   assert(hasTrimmedLine(example, "Players: null"), `${name} must keep Players null`);
+  assert(hasTrimmedLine(example, "Projectiles: null"), `${name} must keep Projectiles null`);
+}
+
+function assertJSONLifecycleSnapshotNull(message, status, name) {
+  const snapshot = message.Snapshot;
+  assert(snapshot && snapshot.status === status, `${name} must use status ${status}`);
+  assert(snapshot.Tick === 0, `${name} must keep Tick 0`);
+  assert(snapshot.Players === null, `${name} must keep Players null`);
+  assert(snapshot.Projectiles === null, `${name} must keep Projectiles null`);
 }
 
 function assertEveryGameplayPlayerHasClientTickACK(objects, name) {
@@ -874,6 +979,103 @@ function extractExampleACK(object) {
   const matches = [...object.matchAll(/^\s+LastProcessedClientTick:\s+(\d+)$/gm)];
   assert(matches.length === 1, "gameplay player must expose exactly one ACK before value inspection");
   return BigInt(matches[0][1]);
+}
+
+function extractMarkdownJSONExample(text, marker, name) {
+  const markerStart = text.indexOf(marker);
+  assert(markerStart >= 0, `${name} is missing marker ${marker}`);
+  const fence = "```json\n";
+  const payloadStart = text.indexOf(fence, markerStart);
+  assert(payloadStart >= 0, `${name} is missing JSON fence`);
+  const payloadEnd = text.indexOf("\n```", payloadStart + fence.length);
+  assert(payloadEnd > payloadStart, `${name} JSON fence is not closed`);
+  return JSON.parse(text.slice(payloadStart + fence.length, payloadEnd));
+}
+
+function extractYAMLScalar(object, field, name) {
+  const match = new RegExp(`^\\s+(?:-\\s+)?${field}:\\s+([^\\s#]+)\\s*$`, "m").exec(object);
+  assert(match, `${name} is missing ${field}`);
+  return match[1];
+}
+
+function extractYAMLVector(object, field, name) {
+  const number = "([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?)";
+  const match = new RegExp(`^\\s+${field}:\\s*$[\\s\\S]*?^\\s+x:\\s+${number}\\s*$[\\s\\S]*?^\\s+y:\\s+${number}\\s*$`, "mi").exec(object);
+  assert(match, `${name} is missing ${field}.x/y`);
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
+function shellySpreadDirections(attackDirection) {
+  const shelly = serverGameConfig.player.types.find((playerType) => playerType.characterType === 0);
+  assert(shelly, "server config must contain Shelly characterType 0");
+  const offsets = shelly.normalAttack?.projectile?.directionOffsetsDegrees;
+  assert(Array.isArray(offsets) && offsets.length > 0, "Shelly config must contain projectile direction offsets");
+
+  assert(
+    Number.isFinite(attackDirection?.x) && Number.isFinite(attackDirection?.y),
+    "Shelly example AttackDir must contain finite numbers",
+  );
+  const magnitude = Math.hypot(attackDirection.x, attackDirection.y);
+  assert(magnitude > 0, "Shelly example AttackDir must be a non-zero vector");
+  const direction = { x: attackDirection.x / magnitude, y: attackDirection.y / magnitude };
+  return offsets.map((degrees) => {
+    const radians = (degrees % 360) * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    return {
+      x: direction.x * cosine - direction.y * sine,
+      y: direction.x * sine + direction.y * cosine,
+    };
+  });
+}
+
+function assertDirection(actual, expected, name) {
+  assert(Number.isFinite(actual.x) && Number.isFinite(actual.y), `${name} direction must be finite`);
+  assert(
+    Math.abs(actual.x - expected.x) <= 1e-12 && Math.abs(actual.y - expected.y) <= 1e-12,
+    `${name} direction must match the configured Shelly spread`,
+  );
+}
+
+function assertYAMLShellySpreadExample(gameplay, name) {
+  const players = extractYAMLSequenceObjects(gameplay, "Players");
+  const shellyActivations = players.filter(
+    (player) =>
+      extractYAMLScalar(player, "CharacterType", `${name} player`) === "0" &&
+      extractYAMLScalar(player, "PressedAttack", `${name} player`) === "true",
+  );
+  assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
+  const ownerID = extractYAMLScalar(shellyActivations[0], "Id", `${name} Shelly`);
+  const attackDirection = extractYAMLVector(shellyActivations[0], "AttackDir", `${name} Shelly`);
+  const projectiles = extractYAMLSequenceObjects(gameplay, "Projectiles");
+  const expectedDirections = shellySpreadDirections(attackDirection);
+  assert(projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
+  for (const [index, projectile] of projectiles.entries()) {
+    const projectileName = `${name} projectile ${index}`;
+    assert(extractYAMLScalar(projectile, "OwnerId", projectileName) === ownerID, `${projectileName} must use the Shelly owner`);
+    assert(extractYAMLScalar(projectile, "Damage", projectileName) === "280", `${projectileName} must use Shelly damage 280`);
+    assert(extractYAMLScalar(projectile, "Type", projectileName) === "default", `${projectileName} must use the configured projectile type`);
+    assertDirection(extractYAMLVector(projectile, "Dir", projectileName), expectedDirections[index], projectileName);
+  }
+}
+
+function assertJSONShellySpreadExample(message, name) {
+  const snapshot = message.Snapshot ?? message;
+  assert(snapshot && Array.isArray(snapshot.Players), `${name} must contain Snapshot.Players`);
+  const shellyActivations = snapshot.Players.filter(
+    (player) => player.CharacterType === 0 && player.PressedAttack === true,
+  );
+  assert(shellyActivations.length === 1, `${name} must contain exactly one approved Shelly activation`);
+  const projectiles = snapshot.Projectiles;
+  const expectedDirections = shellySpreadDirections(shellyActivations[0].AttackDir);
+  assert(Array.isArray(projectiles) && projectiles.length === expectedDirections.length, `${name} Shelly activation must contain five projectiles`);
+  for (const [index, projectile] of projectiles.entries()) {
+    const projectileName = `${name} projectile ${index}`;
+    assert(projectile.OwnerId === shellyActivations[0].Id, `${projectileName} must use the Shelly owner`);
+    assert(projectile.Damage === 280, `${projectileName} must use Shelly damage 280`);
+    assert(projectile.Type === "default", `${projectileName} must use the configured projectile type`);
+    assertDirection(projectile.Dir, expectedDirections[index], projectileName);
+  }
 }
 
 function extractSchemaProperty(schema, propertyName) {

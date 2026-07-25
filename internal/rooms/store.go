@@ -138,7 +138,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		random = rand.Reader
 	}
 	gameConfig := config.GameConfig
-	if gameConfig.Version != simulation.GameConfigVersion {
+	if gameConfig.Version != simulation.ServerGameConfigVersion {
 		gameConfig = simulation.StaticGameConfig()
 	}
 	if config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0 {

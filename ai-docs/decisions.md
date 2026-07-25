@@ -648,7 +648,32 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Bot/debug participant는 Shelly `0`입니다. Starting/started control의 `Players: null`은 바꾸지 않습니다.
 - SL-98에서 client rollout을 확인한 뒤 join request field를 required로 전환합니다. SL-83의 `3/3/2` planning value는 현재 SL-82 catalog가 아닙니다.
 
+후속 반영 (SL-83): 위 `4/30`과 planning-only 문구는 ADR-0035 시점의 상태입니다. ADR-0036부터 client config v2는 identity/render catalog를 그대로 유지하고 server config v3가 runtime HP와 Shelly/Colt/Lily `3/3/2` charge, 캐릭터별 일반 공격을 소유합니다.
+
 결과:
 
 - Client는 Ready와 gameplay에서 같은 stable identity를 렌더하고 config/API mapping drift는 source validator와 embedded docs test가 막습니다.
 - Legacy client는 제한된 migration 기간에만 동작하며, invalid explicit input이 silent fallback으로 숨지 않습니다.
+
+## ADR-0036: SL-83 캐릭터 일반 공격은 Server Config v3와 Simulation이 소유
+
+상태: 승인됨
+
+맥락: ADR-0022의 단일 projectile과 공통 `4/30` budget은 입력 검증을 먼저 고정한 단계였습니다. SL-82는 stable `CharacterType` 전파를 추가했지만 client config v2를 바꾸지 않고 캐릭터별 공격 damage, range, charge와 실행 schedule을 서버 권위로 연결해야 합니다. Room의 기존 death snapshot과 GameEnd 계산도 test-only damage 없이 이 production 경로를 받아야 합니다.
+
+결정:
+
+- Client config v2는 approved raw bytes를 유지합니다. Server config v3가 player type별 `normalAttack`의 kind, `damagePerHit`, `rangeTiles`, max charge, 30 tick recharge와 projectile schedule을 소유합니다. Shelly/Colt/Lily max charge는 `3/3/2`입니다.
+- Shelly는 activation tick에 조준 기준 `-12,-6,0,6,12`도 5발을 동시에 생성합니다. Projectile emission은 owner `PlayerID`와 ordinal 순서로 정렬합니다.
+- Colt는 activation 방향을 고정하고 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick과 새 activation은 겹치지 않으며 `A+31`부터 재공격을 승인합니다. Owner가 사망하면 남은 burst를 취소합니다.
+- Lily는 2.2 tile centerline에서 selected mode의 첫 eligible target을 찾습니다. 모든 melee intent는 모든 input과 movement 적용 뒤 clone한 post-movement player snapshot으로 target을 고르고 same-tick batched damage로 합산한 뒤 HP/death를 갱신합니다. 따라서 reciprocal 1100-HP 공격은 둘 다 죽고 room의 기존 Duel GameEnd 계산은 Draw를 반환합니다.
+- Projectile range 판정 순서는 남은 configured range clamp, Wall/boundary 충돌, player hit, 미충돌 range 만료입니다. Endpoint tangent hit은 포함합니다. Lily는 wall/boundary contact까지 centerline을 자르고 target과 blocking contact가 같으면 blocking이 우선합니다. Bush/Water는 melee centerline을 막지 않습니다.
+- `PressedAttack`은 activation 승인 tick만 `true`입니다. Projectile `Damage`는 owner attack의 `damagePerHit`, `Type`은 attack의 projectile type reference를 기존 field로 전달합니다. InputMessage, PlayerData, ProjectileData, Snapshot, GameEnd에 새 wire field를 추가하지 않습니다.
+- Room regression은 room-local server config v3, explicit `CharacterType`, Ready/countdown/spawn과 production input/`State.Step`을 사용합니다. Room이나 simulation에 test-only damage branch를 추가하지 않습니다.
+- Client parser 구현과 final balancing, skill/ultimate는 후속 범위입니다.
+
+결과:
+
+- Character identity는 client v2, authoritative combat execution은 server v3라는 소유권이 분리됩니다.
+- Scheduled projectile와 melee가 같은 room tick/snapshot/GameEnd 파이프라인을 사용해 transport와 simulation 사이에 두 번째 combat truth가 생기지 않습니다.
+- 기존 WebSocket parser와 wire schema는 호환되고, client 쪽 실행 지원과 수치 조정은 별도 issue로 남습니다.

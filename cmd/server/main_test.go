@@ -15,7 +15,7 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
-func TestLoadGameConfigFromFallsBackToStaticV2Catalog(t *testing.T) {
+func TestLoadGameConfigFromFallsBackToStaticV3Catalog(t *testing.T) {
 	for name, payload := range map[string]string{
 		"malformed JSON": `{`,
 		"version 1":      `{"version":1}`,
@@ -26,8 +26,8 @@ func TestLoadGameConfigFromFallsBackToStaticV2Catalog(t *testing.T) {
 
 			config := loadGameConfigFrom(strings.NewReader(payload), logger)
 
-			if config.Version != simulation.GameConfigVersion {
-				t.Fatalf("fallback version = %d, want %d", config.Version, simulation.GameConfigVersion)
+			if config.Version != simulation.ServerGameConfigVersion {
+				t.Fatalf("fallback version = %d, want %d", config.Version, simulation.ServerGameConfigVersion)
 			}
 			for characterType, wantID := range map[simulation.CharacterType]string{
 				simulation.CharacterTypeShelly: "shelly",
