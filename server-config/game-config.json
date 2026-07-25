@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "tickRate": 30,
   "tile": {
     "size": 1.2
@@ -7,9 +7,28 @@
   "player": {
     "types": [
       {
-        "id": "default",
+        "characterType": 0,
+        "id": "shelly",
         "radius": 0.5,
-        "hp": 100,
+        "hp": 4000,
+        "speed": 2,
+        "maxAttackCharges": 4,
+        "attackRechargeTicks": 30
+      },
+      {
+        "characterType": 1,
+        "id": "colt",
+        "radius": 0.5,
+        "hp": 3100,
+        "speed": 2,
+        "maxAttackCharges": 4,
+        "attackRechargeTicks": 30
+      },
+      {
+        "characterType": 2,
+        "id": "lily",
+        "radius": 0.5,
+        "hp": 4100,
         "speed": 2,
         "maxAttackCharges": 4,
         "attackRechargeTicks": 30

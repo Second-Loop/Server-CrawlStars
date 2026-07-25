@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -474,6 +475,55 @@ func TestNewStateUsesClientPlayerDefaults(t *testing.T) {
 	}
 
 	t.Fatal("expected snapshot to include red-1")
+}
+
+func TestNewStateWithConfigUsesCharacterTypeStats(t *testing.T) {
+	players := []PlayerData{
+		{ID: "shelly", CharacterType: CharacterTypeShelly},
+		{ID: "colt", CharacterType: CharacterTypeColt},
+		{ID: "lily", CharacterType: CharacterTypeLily},
+	}
+	snapshot := NewStateWithConfig(players, Config{Game: StaticGameConfig()}).Step(nil)
+	want := map[PlayerID]struct {
+		characterType CharacterType
+		hp            float64
+	}{
+		"shelly": {CharacterTypeShelly, 4000},
+		"colt":   {CharacterTypeColt, 3100},
+		"lily":   {CharacterTypeLily, 4100},
+	}
+	for _, player := range snapshot.Players {
+		expected := want[player.ID]
+		if player.CharacterType != expected.characterType || player.HP != expected.hp || player.Speed != 2 || player.Radius != 0.5 {
+			t.Fatalf("player %q = %+v, want type=%d hp=%v speed=2 radius=0.5", player.ID, player, expected.characterType, expected.hp)
+		}
+	}
+}
+
+func TestNewStateWithConfigKeepsMixedCharacterStatsIndependent(t *testing.T) {
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "colt", CharacterType: CharacterTypeColt},
+		{ID: "lily", CharacterType: CharacterTypeLily},
+	}, Config{Game: StaticGameConfig()})
+	first := state.Step(nil)
+	first.Players[0].HP = 1
+	second := state.Step(nil)
+	assertPlayerHP(t, second, "colt", 3100, false)
+	assertPlayerHP(t, second, "lily", 4100, false)
+}
+
+func TestNewStateWithConfigPreservesPositiveCharacterStatOverrides(t *testing.T) {
+	snapshot := NewStateWithConfig([]PlayerData{{
+		ID:            "fixture",
+		CharacterType: CharacterTypeLily,
+		HP:            77,
+		Speed:         3,
+		Radius:        0.25,
+	}}, Config{Game: StaticGameConfig()}).Step(nil)
+	got := snapshot.Players[0]
+	if got.HP != 77 || got.Speed != 3 || got.Radius != 0.25 || got.CharacterType != CharacterTypeLily {
+		t.Fatalf("positive fixture override changed: %+v", got)
+	}
 }
 
 func TestTeamSlotsAreNotLimitedToOnePlayerPerTeam(t *testing.T) {
@@ -981,48 +1031,56 @@ func TestStepDoesNotCreateProjectileWhenAttackIsNotPressed(t *testing.T) {
 }
 
 func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
-	state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}})
+	for _, characterType := range []CharacterType{CharacterTypeShelly, CharacterTypeColt, CharacterTypeLily} {
+		t.Run(fmt.Sprintf("%d", characterType), func(t *testing.T) {
+			state := NewState([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed, CharacterType: characterType}})
 
-	for attack := 0; attack < 4; attack++ {
-		snapshot := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-		if !snapshot.Players[0].PressedAttack {
-			t.Fatalf("expected attack %d to be accepted", attack+1)
-		}
-	}
-	exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+			for attack := 0; attack < 4; attack++ {
+				snapshot := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+				if !snapshot.Players[0].PressedAttack {
+					t.Fatalf("expected attack %d to be accepted", attack+1)
+				}
+			}
+			exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
 
-	if got := len(exhausted.Projectiles); got != 4 {
-		t.Fatalf("expected exhausted fifth attack to be ignored, got %d projectiles", got)
-	}
-	if exhausted.Players[0].PressedAttack {
-		t.Fatal("expected exhausted fifth attack to leave PressedAttack false")
+			if got := len(exhausted.Projectiles); got != 4 {
+				t.Fatalf("expected exhausted fifth attack to be ignored, got %d projectiles", got)
+			}
+			if exhausted.Players[0].PressedAttack {
+				t.Fatal("expected exhausted fifth attack to leave PressedAttack false")
+			}
+		})
 	}
 }
 
 func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
-	gameConfig := StaticGameConfig()
-	gameConfig.Player.Types[0].MaxAttackCharges = 1
-	gameConfig.Map = MapData{}
-	state := NewStateWithConfig([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed}}, Config{Game: gameConfig})
+	for _, characterType := range []CharacterType{CharacterTypeShelly, CharacterTypeColt, CharacterTypeLily} {
+		t.Run(fmt.Sprintf("%d", characterType), func(t *testing.T) {
+			gameConfig := StaticGameConfig()
+			gameConfig.Player.Types[0].MaxAttackCharges = 1
+			gameConfig.Map = MapData{}
+			state := NewStateWithConfig([]PlayerData{{ID: PlayerID("red-1"), Team: TeamRed, CharacterType: characterType}}, Config{Game: gameConfig})
 
-	state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-	for tick := 0; tick < 28; tick++ {
-		state.Step(nil)
-	}
-	notYetRecharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-	if got := len(notYetRecharged.Projectiles); got != 1 {
-		t.Fatalf("expected no recharge before 30 ticks, got %d projectiles", got)
-	}
-	if notYetRecharged.Players[0].PressedAttack {
-		t.Fatal("expected attack before recharge completion to be ignored")
-	}
+			state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+			for tick := 0; tick < 28; tick++ {
+				state.Step(nil)
+			}
+			notYetRecharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+			if got := len(notYetRecharged.Projectiles); got != 1 {
+				t.Fatalf("expected no recharge before 30 ticks, got %d projectiles", got)
+			}
+			if notYetRecharged.Players[0].PressedAttack {
+				t.Fatal("expected attack before recharge completion to be ignored")
+			}
 
-	recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-	if got := len(recharged.Projectiles); got != 2 {
-		t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
-	}
-	if !recharged.Players[0].PressedAttack {
-		t.Fatal("expected attack after recharge completion to be accepted")
+			recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+			if got := len(recharged.Projectiles); got != 2 {
+				t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
+			}
+			if !recharged.Players[0].PressedAttack {
+				t.Fatal("expected attack after recharge completion to be accepted")
+			}
+		})
 	}
 }
 

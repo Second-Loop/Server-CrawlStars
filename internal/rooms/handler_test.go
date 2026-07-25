@@ -1909,7 +1909,7 @@ func TestMatchmakingJoinGameModeRateLimitPrecedesBodyDecode(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("expected first join status 201, got %d", first.Code)
 	}
-	malformed := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":`)
+	malformed := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":,"characterType":3}`)
 	if malformed.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected rate limit before malformed body decode, got %d: %s", malformed.Code, malformed.Body.String())
 	}
@@ -1917,7 +1917,7 @@ func TestMatchmakingJoinGameModeRateLimitPrecedesBodyDecode(t *testing.T) {
 }
 
 func TestMatchmakingJoinRejectsOversizedBody(t *testing.T) {
-	oversizedBody := `{"gameMode":"solo","padding":"` + strings.Repeat("x", 2*1024) + `"}`
+	oversizedBody := `{"gameMode":"solo","characterType":3,"padding":"` + strings.Repeat("x", 2*1024) + `"}`
 
 	t.Run("accepted request is capped", func(t *testing.T) {
 		store := NewStore(5)
@@ -2031,6 +2031,7 @@ func TestMatchmakingJoinRawJSONExposesHumanBotFlagAtBothLevels(t *testing.T) {
 		t.Fatalf("decode matchmaking response: %v", err)
 	}
 	assertExactBotJSONKey(t, responseObject["player"], "isBot", "IsBot", false)
+	assertCharacterTypeJSONKey(t, responseObject["player"], "characterType", "CharacterType", simulation.CharacterTypeShelly)
 
 	var roomObject map[string]json.RawMessage
 	if err := json.Unmarshal(responseObject["room"], &roomObject); err != nil {
@@ -2044,6 +2045,7 @@ func TestMatchmakingJoinRawJSONExposesHumanBotFlagAtBothLevels(t *testing.T) {
 		t.Fatalf("expected one nested room player, got %d", len(roomPlayers))
 	}
 	assertExactBotJSONKey(t, roomPlayers[0], "isBot", "IsBot", false)
+	assertCharacterTypeJSONKey(t, roomPlayers[0], "characterType", "CharacterType", simulation.CharacterTypeShelly)
 
 	var typed matchmakingJoinResponse
 	if err := json.Unmarshal(payload, &typed); err != nil {

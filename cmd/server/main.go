@@ -406,7 +406,11 @@ func parseTrustedProxyPrefixes(value string) ([]netip.Prefix, error) {
 }
 
 func loadGameConfig(logger *slog.Logger) simulation.GameConfig {
-	gameConfig, err := simulation.LoadGameConfig(serverconfig.Reader())
+	return loadGameConfigFrom(serverconfig.Reader(), logger)
+}
+
+func loadGameConfigFrom(reader io.Reader, logger *slog.Logger) simulation.GameConfig {
+	gameConfig, err := simulation.LoadGameConfig(reader)
 	if err != nil {
 		logger.Warn("game_config_fallback", "error", err.Error())
 		return simulation.StaticGameConfig()

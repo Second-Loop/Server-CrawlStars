@@ -1,8 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "tileSize": 1.2,
   "playerRadius": 0.5,
   "playerTypes": ["default"],
+  "characters": [
+    {"characterType": 0, "id": "shelly", "name": "Shelly", "role": "damage_dealer"},
+    {"characterType": 1, "id": "colt", "name": "Colt", "role": "damage_dealer"},
+    {"characterType": 2, "id": "lily", "name": "Lily", "role": "assassin"}
+  ],
   "projectileRadius": 0.3,
   "projectileTypes": ["default"]
 }

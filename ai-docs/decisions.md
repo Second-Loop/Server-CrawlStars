@@ -625,10 +625,30 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Processed input ACK는 player별로 단조 증가하고 input이 없는 tick에도 유지됩니다. Human `ClientTick`은 bot merge 뒤에도 보존하고 bot command와 bot ACK는 `0`입니다.
 - 같은 started match의 reconnect는 simulation state에 남은 ACK를 이어 쓰며 새 match는 `0`에서 시작합니다. 별도 reconnect grace나 input retransmission buffer는 추가하지 않습니다.
 - Match 시작용 `{"Type":"ready"}` Ready ACK는 human-only quorum이고 `LastProcessedClientTick` processed input ACK와 별개입니다. `starting`과 `started` control snapshot은 계속 `Tick: 0`, `Players: null`이며 첫 gameplay `Tick: 1`부터 모든 `PlayerData`에 ACK를 포함합니다.
-- AsyncAPI 계약 version은 `0.5.0`으로 올리고 input tick은 optional, gameplay player ACK는 required로 둡니다. REST OpenAPI에는 gameplay `PlayerData`나 `ClientTick` schema를 추가하지 않습니다.
+- 당시 AsyncAPI 계약 version은 `0.5.0`이었고, SL-82의 ADR-0035가 CharacterType 전파와 함께 현재 `0.6.0`으로 올렸습니다. input tick은 optional, gameplay player ACK는 required로 둡니다. REST OpenAPI에는 gameplay `PlayerData`나 `ClientTick` schema를 추가하지 않습니다.
 
 결과:
 
 - Client는 snapshot ACK를 기준으로 처리 완료된 prediction input만 제거할 수 있고 network 순서 역전이나 중복 때문에 authoritative state가 되감기지 않습니다.
 - Legacy client는 기존 last-write-wins input을 계속 사용할 수 있으며 ACK 값은 잘못 증가하지 않습니다.
 - ACK의 최종 의미가 simulation 처리 완료로 고정되고 room admission guard는 불필요한 stale command를 Step 전에 줄이는 역할로 제한됩니다.
+
+## ADR-0035: CharacterType stable numeric contract와 단계적 required 전환
+
+상태: 승인됨
+
+맥락: client와 server가 캐릭터를 string/name으로 다시 해석하면 config 순서 변경과 transport casing 차이로 Ready와 gameplay identity가 drift할 수 있습니다. 기존 join caller는 request field 없이도 동작하므로 한 번에 required로 바꾸면 compatibility break가 됩니다.
+
+결정:
+
+- Stable numeric ID는 `0=Shelly`, `1=Colt`, `2=Lily`이며 재번호화하지 않습니다.
+- SL-82 join request의 lower-camel `characterType`은 optional입니다. missing field만 Shelly `0`으로 fallback하고 structured warning을 한 번 남깁니다. explicit null, non-integer, string/bool/object/array, 지원하지 않는 integer는 400 `invalid_character_type`입니다.
+- REST `Player.characterType`은 required이고 ReadyPlayer/PlayerData는 required PascalCase `CharacterType`입니다. Room canonical participant가 값을 저장해 join → Ready → Snapshot에서 보존합니다.
+- Config v2 catalog가 mapping과 stats의 source of truth입니다. Shelly/Colt/Lily HP는 `4000/3100/4100`이고 attack charge/recharge는 기존 `4/30`을 유지합니다.
+- Bot/debug participant는 Shelly `0`입니다. Starting/started control의 `Players: null`은 바꾸지 않습니다.
+- SL-98에서 client rollout을 확인한 뒤 join request field를 required로 전환합니다. SL-83의 `3/3/2` planning value는 현재 SL-82 catalog가 아닙니다.
+
+결과:
+
+- Client는 Ready와 gameplay에서 같은 stable identity를 렌더하고 config/API mapping drift는 source validator와 embedded docs test가 막습니다.
+- Legacy client는 제한된 migration 기간에만 동작하며, invalid explicit input이 silent fallback으로 숨지 않습니다.

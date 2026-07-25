@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,8 +13,8 @@ import (
 func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T) {
 	config := loadClientSharedGameConfig(t)
 
-	if config.Version != 1 {
-		t.Fatalf("expected client config version 1, got %d", config.Version)
+	if config.Version != GameConfigVersion {
+		t.Fatalf("expected client config version %d, got %d", GameConfigVersion, config.Version)
 	}
 	if config.TileSize != TileSize {
 		t.Fatalf("expected tile size %f, got %f", TileSize, config.TileSize)
@@ -38,8 +39,8 @@ func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T)
 func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) {
 	config := loadServerGameConfig(t)
 
-	if config.Version != 1 {
-		t.Fatalf("expected server config version 1, got %d", config.Version)
+	if config.Version != GameConfigVersion {
+		t.Fatalf("expected server config version %d, got %d", GameConfigVersion, config.Version)
 	}
 	if config.TickRate != TickRate {
 		t.Fatalf("expected tick rate %d, got %d", TickRate, config.TickRate)
@@ -47,20 +48,27 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 	if config.Tile.Size != TileSize {
 		t.Fatalf("expected tile size %f, got %f", TileSize, config.Tile.Size)
 	}
-	if len(config.Player.Types) != 1 {
-		t.Fatalf("expected one player type, got %+v", config.Player.Types)
+	if len(config.Player.Types) != 3 {
+		t.Fatalf("expected three player types, got %+v", config.Player.Types)
 	}
-	if config.Player.Types[0].ID != "default" {
-		t.Fatalf("expected default player type, got %+v", config.Player.Types[0])
-	}
-	if config.Player.Types[0].Radius != DefaultPlayerRadius {
-		t.Fatalf("expected player radius %f, got %f", DefaultPlayerRadius, config.Player.Types[0].Radius)
-	}
-	if config.Player.Types[0].HP != DefaultPlayerHP {
-		t.Fatalf("expected player HP %f, got %f", DefaultPlayerHP, config.Player.Types[0].HP)
-	}
-	if config.Player.Types[0].Speed != DefaultPlayerSpeed {
-		t.Fatalf("expected player speed %f, got %f", DefaultPlayerSpeed, config.Player.Types[0].Speed)
+	for characterType, wantHP := range map[CharacterType]float64{
+		CharacterTypeShelly: 4000,
+		CharacterTypeColt:   3100,
+		CharacterTypeLily:   4100,
+	} {
+		player, ok := config.PlayerType(characterType)
+		if !ok {
+			t.Fatalf("missing player type %d", characterType)
+		}
+		if player.Radius != DefaultPlayerRadius {
+			t.Fatalf("player %q radius = %f, want %f", player.ID, player.Radius, DefaultPlayerRadius)
+		}
+		if player.HP != wantHP {
+			t.Fatalf("player %q HP = %f, want %f", player.ID, player.HP, wantHP)
+		}
+		if player.Speed != DefaultPlayerSpeed {
+			t.Fatalf("player %q speed = %f, want %f", player.ID, player.Speed, DefaultPlayerSpeed)
+		}
 	}
 	if len(config.Projectile.Types) != 1 {
 		t.Fatalf("expected one projectile type, got %+v", config.Projectile.Types)
@@ -102,6 +110,102 @@ func TestStaticGameConfigIncludesAttackBudget(t *testing.T) {
 	}
 }
 
+func TestClientAndServerCharacterCatalogMappingsMatch(t *testing.T) {
+	client := loadClientSharedGameConfig(t)
+	server := loadServerGameConfig(t)
+	want := map[CharacterType]string{
+		CharacterTypeShelly: "shelly",
+		CharacterTypeColt:   "colt",
+		CharacterTypeLily:   "lily",
+	}
+	if client.Version != GameConfigVersion || server.Version != GameConfigVersion {
+		t.Fatalf("client/server version = %d/%d, want %d", client.Version, server.Version, GameConfigVersion)
+	}
+	clientMapping := make(map[CharacterType]string, len(client.Characters))
+	for _, character := range client.Characters {
+		clientMapping[character.CharacterType] = character.ID
+	}
+	serverMapping := make(map[CharacterType]string, len(server.Player.Types))
+	for _, playerType := range server.Player.Types {
+		serverMapping[playerType.CharacterType] = playerType.ID
+	}
+	if len(client.Characters) != len(want) || len(clientMapping) != len(client.Characters) {
+		t.Fatalf("client character catalog is not exact/unique: entries=%d mapping=%v", len(client.Characters), clientMapping)
+	}
+	if len(server.Player.Types) != len(want) || len(serverMapping) != len(server.Player.Types) {
+		t.Fatalf("server character catalog is not exact/unique: entries=%d mapping=%v", len(server.Player.Types), serverMapping)
+	}
+	if !reflect.DeepEqual(clientMapping, want) || !reflect.DeepEqual(serverMapping, want) {
+		t.Fatalf("character mapping drift: client=%v server=%v want=%v", clientMapping, serverMapping, want)
+	}
+	if !reflect.DeepEqual(client.PlayerTypes, []string{"default"}) || client.PlayerRadius != 0.5 {
+		t.Fatalf("legacy client mirror changed: playerTypes=%v playerRadius=%v", client.PlayerTypes, client.PlayerRadius)
+	}
+}
+
+func TestGameConfigPlayerTypeLookupIsIndependentOfCatalogOrder(t *testing.T) {
+	config := StaticGameConfig()
+	slices.Reverse(config.Player.Types)
+	for characterType, wantHP := range map[CharacterType]float64{
+		CharacterTypeShelly: 4000,
+		CharacterTypeColt:   3100,
+		CharacterTypeLily:   4100,
+	} {
+		got, ok := config.PlayerType(characterType)
+		if !ok || got.HP != wantHP {
+			t.Fatalf("PlayerType(%d) = %+v, %t; want HP %v", characterType, got, ok, wantHP)
+		}
+	}
+	if got := config.DefaultPlayerType(); got.CharacterType != CharacterTypeShelly || got.ID != "shelly" {
+		t.Fatalf("DefaultPlayerType() = %+v, want Shelly", got)
+	}
+}
+
+func TestResolveGameConfigRejectsUnsupportedVersion(t *testing.T) {
+	config := StaticGameConfig()
+	config.Version = 1
+	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 2") {
+		t.Fatalf("ResolveGameConfig(version 1) error = %v, want exact-version rejection", err)
+	}
+}
+
+func TestPlayerTypeConfigRejectsMissingOrNullCharacterType(t *testing.T) {
+	for name, payload := range map[string]string{
+		"missing": `{"id":"shelly","radius":0.5,"hp":4000,"speed":2,"maxAttackCharges":4,"attackRechargeTicks":30}`,
+		"null":    `{"characterType":null,"id":"shelly","radius":0.5,"hp":4000,"speed":2,"maxAttackCharges":4,"attackRechargeTicks":30}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var playerType PlayerTypeConfig
+			if err := json.Unmarshal([]byte(payload), &playerType); err == nil {
+				t.Fatal("expected missing/null characterType to fail")
+			}
+		})
+	}
+}
+
+func TestResolveGameConfigRejectsInvalidCharacterCatalog(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GameConfig)
+	}{
+		{"duplicate numeric", func(c *GameConfig) { c.Player.Types[1].CharacterType = CharacterTypeShelly }},
+		{"duplicate string", func(c *GameConfig) { c.Player.Types[1].ID = "shelly" }},
+		{"missing lily", func(c *GameConfig) { c.Player.Types = c.Player.Types[:2] }},
+		{"unknown numeric", func(c *GameConfig) { c.Player.Types[2].CharacterType = CharacterType(3) }},
+		{"stable mapping drift", func(c *GameConfig) { c.Player.Types[1].ID = "lily" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := StaticGameConfig()
+			tt.mutate(&config)
+			if _, err := ResolveGameConfig(config); err == nil || (!strings.Contains(err.Error(), "character") && !strings.Contains(err.Error(), "player type")) {
+				t.Fatalf("ResolveGameConfig() error = %v, want character catalog rejection", err)
+			}
+		})
+	}
+}
+
 func TestResolveGameConfigRejectsInvalidAttackBudget(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -136,14 +240,13 @@ func TestResolveGameConfigRejectsInvalidAttackBudget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := StaticGameConfig()
-			config.Player.Types[0].ID = "configured-player"
 			tt.mutate(&config.Player.Types[0])
 
 			_, err := ResolveGameConfig(config)
 			if err == nil {
 				t.Fatal("expected attack budget to be rejected")
 			}
-			if !strings.Contains(err.Error(), "configured-player") {
+			if !strings.Contains(err.Error(), "shelly") {
 				t.Fatalf("expected error to include player type ID, got %v", err)
 			}
 		})
@@ -492,14 +595,22 @@ func TestGameConfigAssignsConfiguredMatchTeams(t *testing.T) {
 	}
 }
 
+type clientCharacterConfig struct {
+	CharacterType CharacterType `json:"characterType"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Role          string        `json:"role"`
+}
+
 type clientSharedGameConfig struct {
-	Version            int      `json:"version"`
-	TileSize           float64  `json:"tileSize"`
-	PlayerRadius       float64  `json:"playerRadius"`
-	PlayerTypes        []string `json:"playerTypes"`
-	ProjectileRadius   float64  `json:"projectileRadius"`
-	ProjectileTypes    []string `json:"projectileTypes"`
-	ContainsServerMode bool     `json:"mode"`
+	Version            int                     `json:"version"`
+	TileSize           float64                 `json:"tileSize"`
+	PlayerRadius       float64                 `json:"playerRadius"`
+	PlayerTypes        []string                `json:"playerTypes"`
+	Characters         []clientCharacterConfig `json:"characters"`
+	ProjectileRadius   float64                 `json:"projectileRadius"`
+	ProjectileTypes    []string                `json:"projectileTypes"`
+	ContainsServerMode bool                    `json:"mode"`
 }
 
 func loadClientSharedGameConfig(t *testing.T) clientSharedGameConfig {
@@ -520,6 +631,7 @@ func loadClientSharedGameConfig(t *testing.T) clientSharedGameConfig {
 		"tileSize":         true,
 		"playerRadius":     true,
 		"playerTypes":      true,
+		"characters":       true,
 		"projectileRadius": true,
 		"projectileTypes":  true,
 	}

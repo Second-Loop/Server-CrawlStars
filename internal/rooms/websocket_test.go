@@ -20,7 +20,10 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const gameplayInterval = time.Second / time.Duration(simulation.TickRate)
+const (
+	gameplayInterval         = time.Second / time.Duration(simulation.TickRate)
+	combatRegressionPlayerHP = 100.0
+)
 
 type snapshotMessage struct {
 	Type     string              `json:"Type"`
@@ -2975,6 +2978,8 @@ func TestWebSocketMatchmakingSendsReadyEventWithMapAndSpawnPositions(t *testing.
 	}
 	assertReadyPlayerTeamSlot(t, redReady.Players, red.Player.ID, "red", 0)
 	assertReadyPlayerTeamSlot(t, redReady.Players, blue.Player.ID, "blue", 0)
+	assertReadyCharacterType(t, redReady.Players, red.Player.ID, simulation.CharacterTypeShelly)
+	assertReadyCharacterType(t, redReady.Players, blue.Player.ID, simulation.CharacterTypeShelly)
 
 	assignments := simulation.PlayerAssignments([]simulation.PlayerID{
 		simulation.PlayerID(red.Player.ID),
@@ -3462,6 +3467,16 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 			for _, bot := range bots {
 				participantIDs = append(participantIDs, bot.ID)
 			}
+			for _, human := range joined {
+				if human.Player.CharacterType != simulation.CharacterTypeShelly {
+					t.Fatalf("human CharacterType=%d, want Shelly", human.Player.CharacterType)
+				}
+			}
+			for _, bot := range bots {
+				if bot.CharacterType != simulation.CharacterTypeShelly {
+					t.Fatalf("bot CharacterType=%d, want Shelly", bot.CharacterType)
+				}
+			}
 
 			var firstReady readyEventMessage
 			for index, conn := range connections {
@@ -3473,6 +3488,11 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 					firstReady = ready
 				} else {
 					assertMatchingReadyEvents(t, firstReady, ready)
+				}
+				for _, player := range ready.Players {
+					if player.CharacterType != simulation.CharacterTypeShelly {
+						t.Fatalf("Ready player %q CharacterType=%d, want Shelly", player.ID, player.CharacterType)
+					}
 				}
 			}
 			for _, conn := range connections {
@@ -3504,6 +3524,12 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 			preTerminalClients := assertRoomRuntimeOwnershipIsHumanOnly(t, room, humanIDs)
 			room.mu.Lock()
 			terminalPlayers := terminalPlayersForBotModeTest(test.mode, room.lastPlayers)
+			for _, player := range terminalPlayers {
+				if player.CharacterType != simulation.CharacterTypeShelly {
+					room.mu.Unlock()
+					t.Fatalf("terminal player %q CharacterType=%d, want Shelly", player.ID, player.CharacterType)
+				}
+			}
 			stepper := &botRecordingStepper{
 				snapshot: simulation.Snapshot{Tick: 1, Players: terminalPlayers},
 			}
@@ -4677,7 +4703,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 		`"MoveDir":{"x":1`,
 		`"AttackDir":{"x":0,"y":1}`,
 		`"PressedAttack":true`,
-		`"HP":100`,
+		`"HP":4000`,
 		`"IsDead":false`,
 		`"OwnerId":"` + player.ID + `"`,
 		`"Dir":{"x":0,"y":1}`,
@@ -4731,11 +4757,11 @@ func TestWebSocketBroadcastsTwoPlayerMovementHitHPAndDeathSnapshots(t *testing.T
 	if redPlayer.Pos.X <= 0 {
 		t.Fatalf("expected red movement to be visible in both snapshots, got %+v", redPlayer.Pos)
 	}
-	if bluePlayer.HP != simulation.DefaultPlayerHP || bluePlayer.IsDead {
+	if bluePlayer.HP != combatRegressionPlayerHP || bluePlayer.IsDead {
 		t.Fatalf("expected blue to start alive at full HP, got %+v", bluePlayer)
 	}
 
-	expectedHP := simulation.DefaultPlayerHP
+	expectedHP := combatRegressionPlayerHP
 	var hit snapshotMessage
 	for hitCount := 0; hitCount < 10; hitCount++ {
 		writeWSJSON(t, redConn, inputMessage{
@@ -5625,7 +5651,10 @@ func distinctDefaultGameConfig() simulation.GameConfig {
 
 func fastRechargeGameConfig() simulation.GameConfig {
 	config := singleModeGameConfig(simulation.DefaultGameModeConfig())
-	config.Player.Types[0].AttackRechargeTicks = 1
+	for index := range config.Player.Types {
+		config.Player.Types[index].HP = combatRegressionPlayerHP
+		config.Player.Types[index].AttackRechargeTicks = 1
+	}
 	return config
 }
 

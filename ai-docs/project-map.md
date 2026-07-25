@@ -8,6 +8,8 @@
 
 ## 현재 상태
 
+SL-82 현재 config v2 catalog는 stable `characterType` `0=Shelly`, `1=Colt`, `2=Lily`이고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel field는 migration 동안 optional이며, canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다.
+
 되는 것:
 
 - health check와 server-hosted API docs
@@ -229,7 +231,7 @@ Attack charge와 recharge 진행도는 `simulation.State` 내부에만 있습니
 
 Room REST response와 Ready event의 `map`은 서버 simulation이 쓰는 `MapData`입니다. Tile은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`이고 `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. Player는 Wall/Water, projectile은 Wall에 충돌하며 map boundary는 둘 다 막습니다. Bush는 둘 다 통과하고 projectile은 Water도 통과합니다.
 
-Gameplay config는 두 파일로 나눕니다. `client-config/game-config.json`은 Unity CI가 서버 repo의 `client-config`만 sparse checkout한 뒤 `Assets/StreamingAssets/GameConfig` 같은 client runtime 경로로 복사하는 공유 config입니다. 이 파일은 `tileSize`, `playerRadius`, `playerTypes`, `projectileRadius`, `projectileTypes`만 담습니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config이며 `tickRate`, HP, speed, attack charge/recharge tick, damage, `mode.default`와 `mode.catalog`, map을 담습니다. Store는 catalog/default source이고 각 room은 생성 때 선택한 config를 immutable하게 소유합니다. Runtime map은 client SL-79 `Map_0`의 exact grid를 값 기준으로 복사하고 Go regression으로 drift를 막습니다. Client는 최종 gameplay state를 여전히 서버 snapshot에서 받습니다.
+Gameplay config는 두 파일로 나눕니다. `client-config/game-config.json`은 Unity CI가 서버 repo의 `client-config`만 sparse checkout한 뒤 `Assets/StreamingAssets/GameConfig` 같은 client runtime 경로로 복사하는 공유 config입니다. legacy `playerTypes: ["default"]` mirror와 v2 `characters` catalog (`0/1/2 = shelly/colt/lily`)를 함께 제공합니다. `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 canonical runtime config이며 speed `2`, radius `0.5`, HP `4000/3100/4100`, attack `4/30`, tickRate, damage, `mode.default`와 `mode.catalog`, map을 담습니다. Store는 catalog/default source이고 각 room은 생성 때 선택한 config를 immutable하게 소유합니다. Runtime map은 client SL-79 `Map_0`의 exact grid를 값 기준으로 복사하고 Go regression으로 drift를 막습니다. Client는 최종 gameplay state를 여전히 서버 snapshot에서 받습니다.
 
 ### 8. Cleanup
 
@@ -292,15 +294,15 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-90`: internal bot participant, 결정적 basic controller, human-only Ready quorum, shared one-Step integration
 - `SL-91`: first-lock-wins 10초 automatic bot fill, human-only Ready quorum, lifecycle cleanup
 - `SL-94`: optional ClientTick, monotonic processed input ACK, legacy zero compatibility, stale/duplicate silent drop
+- `SL-82`: config v2 CharacterType `0/1/2` join-to-Ready/Snapshot contract and docs drift validation
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
 ## 다음 추천 작업
 
-1. `SL-30`: shared constants/config v1 마무리
-   - `client-config/game-config.json`은 client 공유 config, `server-config/game-config.json`은 server runtime config로 사용
-   - Server embed, Go 상수, docs validation drift 검증 유지
-   - Unity 적용 후 필요한 field가 생기면 v2로 확장
+1. `SL-98`: CharacterType request required 전환
+   - SL-82 legacy missing Shelly fallback/warning을 제거하기 전 client rollout을 확인
+   - stable IDs `0=Shelly`, `1=Colt`, `2=Lily`와 REST lower camel/WebSocket PascalCase는 유지
 
 2. `SL-14` closeout
    - `SL-57` client PR 상태 확인
