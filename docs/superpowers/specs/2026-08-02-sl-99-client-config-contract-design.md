@@ -2,18 +2,18 @@
 
 ## 1. 목표
 
-Server의 `client-config/game-config.json`과 Unity의 build preprocessor 및 runtime parser가 하나의 명시적인 v3 계약을 사용하게 해요.
+Server의 `client-config/game-config.json`을 명시적인 v3 계약으로 제공하고, Client 소비자가 따라야 할 검증 경계를 정의해요.
 
 - 클라이언트 개발자가 제시한 캐릭터별 설정 구조와 값을 canonical client artifact로 채택해요.
 - 필수 field 누락과 지원하지 않는 version을 기본값 `0`으로 숨기지 않고 build 또는 startup에서 실패시켜요.
 - client-shared 값과 server-authoritative gameplay 값을 분리해 문서화해요.
-- Server artifact부터 Unity `StreamingAssets` 반영과 runtime parse까지 반복 가능한 cross-repo 회귀 절차를 남겨요.
+- Server artifact의 schema·값·소유권을 Go test와 문서에서 반복 검증해요.
 
 캐릭터 밸런스, server simulation의 일반 공격 판정, 신규 스킬 효과는 바꾸지 않아요.
 
 ## 2. Canonical artifact
 
-`client-config/game-config.json`은 breaking schema 변경을 나타내기 위해 기존 v2에서 v3으로 올려요. v1으로 되돌리지 않고 Unity parser가 정확히 v3만 지원하게 해, 구버전 artifact가 조용히 통과하지 않게 해요.
+`client-config/game-config.json`은 breaking schema 변경을 나타내기 위해 기존 v2에서 v3으로 올려요. v1으로 되돌리지 않고 소비자가 정확히 v3만 지원하게 해, 구버전 artifact가 조용히 통과하지 않게 해요.
 
 ```json
 {
@@ -75,9 +75,9 @@ Server-CrawlStars에서는 다음을 수행해요.
 
 Server runtime은 `server-config/game-config.json` v3를 그대로 embed하고, room/simulation 동작에는 변경을 주지 않아요.
 
-## 5. Unity 변경
+## 5. Client 소비 계약
 
-Client-CrawlStars에서는 parser와 build preprocessor가 같은 검증 함수를 사용하게 해요.
+이 Server PR은 Client-CrawlStars 코드를 수정하지 않아요. Client 저장소 소유자는 artifact를 가져갈 때 parser와 build preprocessor가 같은 검증 경계를 따르게 해요.
 
 1. JSON property를 v3 field에 맞추고 모든 필수 field를 `Required.Always`로 선언해요.
 2. parse 뒤 `version == 3`, exact character type set, 중복 type, 양수 field를 검증해요.
@@ -106,7 +106,7 @@ Server 검증:
 - 구버전, 필수 field 누락, 중복 type, 0/음수 값 거부 테스트
 - `make ci`
 
-Client 검증:
+Client 소비자 권장 검증(Server PR acceptance 범위 밖):
 
 - v3 실제 artifact parse 성공 EditMode 테스트
 - v1/v2 version 거부 테스트
@@ -114,13 +114,13 @@ Client 검증:
 - 중복/미지원 type과 0/음수 값 거부 테스트
 - build preprocessor가 invalid download를 쓰지 않고 build를 실패시키는 테스트
 
-Cross-repo 검증 순서는 다음과 같아요.
+Server PR 검증 순서는 다음과 같아요.
 
-1. Server branch의 `client-config/game-config.json`을 Client test fixture/`StreamingAssets`에 복사해요.
-2. Client EditMode parser test를 실행해 세 캐릭터 mapping을 확인해요.
-3. build preprocessor가 같은 bytes를 받아 validator를 통과한 뒤 `StreamingAssets`에 반영하는지 확인해요.
-4. Server `make ci`와 Client EditMode suite 결과를 두 PR과 SL-99 댓글에 함께 남겨요.
+1. embedded `client-config/game-config.json`을 Go parser로 읽어요.
+2. 세 캐릭터 mapping, 필수 field, version과 invalid fixture를 확인해요.
+3. 문서 drift validator와 전체 `make ci`를 실행해요.
+4. OpenAPI/AsyncAPI가 바뀌지 않았는지 확인하고 결과를 Server PR과 SL-99 댓글에 남겨요.
 
 ## 8. 전달과 순서
 
-Server와 Client 변경은 별도 branch/PR로 유지하되 SL-99로 연결해요. Server PR이 canonical v3 artifact를 제공하고 Client PR이 v3 parser와 build validation을 소비해요. 두 PR과 cross-repo validation이 확인되기 전에는 SL-99를 `Done`으로 옮기지 않아요.
+Server PR 하나가 canonical v3 artifact, Go validator, 소유권 문서를 제공해요. Client 코드 기여는 이 PR에 포함하지 않고 Client 저장소 소유자가 필요할 때 v3 소비 계약을 반영해요. Server PR이 merge되기 전에는 SL-99를 `Done`으로 옮기지 않아요.

@@ -115,7 +115,7 @@ Server-owned bot도 별도 simulation을 만들지 않습니다. 한 room tick�
 
 ### SL-83 일반 공격 소유권
 
-server config v3가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v2는 raw-byte compatible identity/render catalog로 유지합니다.
+server config v3가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 `internal/rooms`는 canonical `CharacterType`, room-local config, human/bot input을 production `State.Step`에 전달하고 authoritative snapshot으로 기존 GameEnd 계산기를 호출합니다. Room은 캐릭터별 피해나 test-only damage branch를 갖지 않습니다. 실제 room regression도 Ready/countdown/spawn 뒤 production input으로 Colt projectile death와 reciprocal 1100-HP Lily Draw를 검증합니다.
 
@@ -305,7 +305,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - reconnect grace
 
-Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 client config v3 artifact입니다. Stable `type 0/1/2`, Unity world unit의 `normalAttackDistance`·`skillAttackDistance`, 초 단위 `normalAttackCoolDown`·`skillAttackCoolDown`, client charge 표현용 `maxBullets`를 담고 필수 field와 version을 build/runtime 양쪽에서 검증합니다. `server-config/game-config.json` v3는 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 canonical runtime config이며 tick rate, speed `2`, radius `0.5`, HP `4000/3100/4100`, 캐릭터별 `normalAttack`, `mode.default`와 `mode.catalog`, map을 담습니다. 실제 hit/range/charge와 스킬 승인 결과는 server-authoritative state와 snapshot이 최종 truth이며 client 설정으로 gameplay를 재판정하지 않습니다. 이 client artifact 변경은 public WebSocket field를 추가하지 않습니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 client config v3 artifact입니다. Stable `type 0/1/2`, Unity world unit의 `normalAttackDistance`·`skillAttackDistance`, 초 단위 `normalAttackCoolDown`·`skillAttackCoolDown`, client charge 표현용 `maxBullets`를 담습니다. Server의 Go parser가 canonical artifact를 검증하고 Client 소비 계약은 필수 field와 version을 build/runtime 양쪽에서 거부하도록 요구합니다. `server-config/game-config.json` v3는 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 canonical runtime config이며 tick rate, speed `2`, radius `0.5`, HP `4000/3100/4100`, 캐릭터별 `normalAttack`, `mode.default`와 `mode.catalog`, map을 담습니다. 실제 hit/range/charge와 스킬 승인 결과는 server-authoritative state와 snapshot이 최종 truth이며 client 설정으로 gameplay를 재판정하지 않습니다. 이 client artifact 변경은 public WebSocket field를 추가하지 않습니다.
 
 ## SL-82 CharacterType ownership
 

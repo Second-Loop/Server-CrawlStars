@@ -691,12 +691,12 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - `client-config/game-config.json`을 breaking client config v3로 올리고 `characters[].type 0/1/2`, `normalAttackDistance 5/1.5/6`, `skillAttackDistance 1/3/7`, `skillAttackCoolDown 10/10/10`, `maxBullets 3/3/4`, `normalAttackCoolDown 1`을 제공합니다.
 - Distance는 Unity world unit, cooldown은 초, `maxBullets`는 client charge 표현 개수입니다. 이 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다.
 - Server의 실제 normal attack range `7.2/9/2.2 tile`, charge `3/3/2`, hit/damage와 skill 승인 결과는 server config와 simulation/snapshot이 소유하는 server-authoritative gameplay truth입니다. Client config로 gameplay를 재판정하지 않습니다.
-- Go validator와 Unity parser는 exact version `3`, 필수 field, finite positive 값, 중복 없는 exact character type set `0/1/2`를 검증합니다. Unknown additive field는 허용합니다.
-- Unity build preprocessor는 다운로드한 client config를 같은 parser로 검증한 뒤에만 `StreamingAssets`를 덮어씁니다. Runtime parser는 전체 검증 성공 뒤에만 static config를 한 번에 적용합니다.
+- Go validator는 exact version `3`, 필수 field, finite positive 값, 중복 없는 exact character type set `0/1/2`를 검증합니다. Unknown additive field는 허용합니다.
+- Client 소비 계약도 build/runtime에서 같은 검증 경계를 요구합니다. Unity parser와 build preprocessor 구현은 Client 저장소 소유자의 범위이며 이 Server PR은 Client 코드를 수정하지 않습니다.
 - 이 변경은 `InputCommand`, `PlayerData`, `ProjectileData`, `Snapshot`, REST/OpenAPI, WebSocket/AsyncAPI field를 바꾸지 않습니다.
 
 결과:
 
-- Server artifact와 Unity parser가 같은 field, 값, 단위, version을 사용하고 missing field가 silent `0`으로 숨지 않습니다.
+- Server artifact가 Client 소비자에게 필요한 field, 값, 단위, version을 명시하고 Go 회귀 test가 drift를 막습니다.
 - Client 표시·입력 보조값과 server-authoritative gameplay 판정의 차이가 명시적으로 유지됩니다.
-- Server와 Client PR의 artifact byte equality와 양쪽 test 결과가 확인되기 전에는 SL-99를 완료하지 않습니다.
+- Server PR의 artifact, validator, 문서와 전체 CI가 확인된 뒤 SL-99를 완료합니다. Client 코드 기여는 Server PR 완료 조건이 아닙니다.

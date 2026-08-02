@@ -591,7 +591,7 @@ Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking
 
 Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 client config v3입니다. `characters[].type`은 `0=Shelly`, `1=Colt`, `2=Lily`이고 `normalAttackDistance`·`skillAttackDistance`는 Unity world unit, `normalAttackCoolDown`·`skillAttackCoolDown`은 초, `maxBullets`는 client charge 표현값입니다. 필수 field와 exact version은 build/runtime parser가 검증합니다.
+- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 client config v3입니다. `characters[].type`은 `0=Shelly`, `1=Colt`, `2=Lily`이고 `normalAttackDistance`·`skillAttackDistance`는 Unity world unit, `normalAttackCoolDown`·`skillAttackCoolDown`은 초, `maxBullets`는 client charge 표현값입니다. Server의 Go parser가 artifact를 검증하며 Client 소비 계약은 필수 field와 exact version을 build/runtime parser에서 거부하도록 요구합니다.
 - `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v3 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`입니다.
 
 Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client의 `normalAttackDistance`, `skillAttackCoolDown`, `maxBullets`는 cooldown UI와 로컬 bot 입력 판단용이며 `HP`, speed, damage, 실제 range/charge/skill 승인 결과는 server-only config/state나 Ready/snapshot message가 소유하는 server-authoritative truth입니다.
