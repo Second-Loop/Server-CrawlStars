@@ -11,7 +11,7 @@
 - player Wall/Water/boundary collision과 projectile Wall/boundary destroy
 - Bush는 둘 다 통과하고 projectile은 Water도 통과
 - selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP, death snapshot
-- server config v3 기반 Shelly spread, Colt burst, Lily centerline melee 일반 공격
+- server config v4 기반 Shelly spread, Colt burst, Lily centerline melee 일반 공격과 캐릭터별 skill cooldown
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
 - session/credential 없는 server-owned bot participant와 결정적 basic controller
@@ -42,16 +42,17 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 
 `Step` 순서:
 
-1. 모든 player의 transient `PressedAttack`을 `false`로 초기화
+1. 모든 player의 transient `PressedAttack`, `PressedSkill`을 `false`로 초기화
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
 3. 기존 projectile을 남은 range까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 player hit, range 만료 순서로 처리
 4. 현재 snapshot tick에 예정된 Colt burst projectile 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
 6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
 7. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
-8. 공격 요청, non-zero 방향, 남은 캐릭터별 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
-9. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/ordinal 순서로 생성
-10. tick 증가 후 processed input ACK, HP/death, projectile history가 포함된 snapshot 반환
+8. `PressedSkill` 시도가 ready이고 방향이 non-zero면 skill을 우선 승인해 attack charge를 보존하고, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through
+9. 공격 요청, non-zero 방향, 남은 캐릭터별 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
+10. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/ordinal 순서로 생성
+11. tick 증가 후 processed input ACK, HP/death, projectile history와 canonical skill ready tick이 포함된 snapshot 반환
 
 현재 값:
 
@@ -61,6 +62,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - `DefaultPlayerRadius = 0.5`
 - character catalog/HP = `0=Shelly/4000`, `1=Colt/3100`, `2=Lily/4100`
 - normal attack charge/recharge = Shelly `3/30`, Colt `3/30`, Lily `2/30`
+- skill cooldown ticks = Shelly `360`, Colt `390`, Lily `330`
 - Shelly = `spread_projectile`, damage `280`, range `7.2 tiles`, offsets `-12,-6,0,6,12`
 - Colt = `burst_projectile`, damage `340`, range `9 tiles`, 6발/6 tick interval
 - Lily = `melee`, damage `1100`, range `2.2 tiles`
@@ -92,7 +94,7 @@ Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100
 
 - `tickRate`
 - `tile.size`
-- player type별 `id/characterType/radius/hp/speed/normalAttack`
+- player type별 `id/characterType/radius/hp/speed/normalAttack/skill.cooldownTicks`
 - `normalAttack`의 `kind/damagePerHit/rangeTiles/maxCharges/rechargeTicks`와 projectile attack의 `type/count/directionOffsetsDegrees/intervalTicks`
 - projectile type별 `id/radius/speed`
 - `mode.default`
@@ -101,11 +103,11 @@ Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100
 
 Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server snapshot이나 Ready event로 받거나 서버만 판단하므로 client 공유 config에 넣지 않습니다.
 Mode/team rule도 server-only입니다. REST join response와 Room은 선택된 mode ID만 `gameMode`로 노출하고 `friendlyFire`, `teamBehavior`, 전체 catalog는 노출하지 않습니다. Projectile hit은 room-local selected mode rules를 사용합니다. Solo는 owner가 아닌 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 이 동작은 WebSocket message shape를 바꾸지 않습니다.
-Attack charge와 recharge 진행도도 server-only state이며 client config나 snapshot에 새 field로 노출하지 않습니다.
+Attack charge와 recharge 진행도는 server-only state입니다. Skill cooldown의 canonical absolute state는 gameplay `PlayerData.SkillReadyTick`으로 노출하지만 client config에는 추가하지 않습니다.
 
 ### SL-83 캐릭터 일반 공격
 
-server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
+server config v4 `normalAttack`이 일반 공격의 source of truth입니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 - Shelly는 activation tick에 5발을 동시에 만들고 조준 방향 기준 `-12,-6,0,6,12`도 spread를 적용합니다.
 - Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick에는 새 activation을 겹치지 않고 `A+31`부터 다음 공격을 승인합니다. Burst 방향은 activation 때 고정되며 owner가 사망하면 남은 emission을 취소합니다.
@@ -113,7 +115,15 @@ server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Cl
 
 Projectile은 남은 configured range까지 이동량을 먼저 clamp한 뒤 map Wall/boundary 충돌, selected mode player hit, 미충돌 range 만료 순서로 처리합니다. 따라서 range endpoint의 tangent hit은 포함됩니다. Lily는 wall/boundary까지의 range를 먼저 잘라 centerline target을 찾고 target과 blocking contact가 같으면 Wall/boundary가 우선합니다. Bush와 Water는 Lily centerline을 막지 않습니다.
 
-`PressedAttack`은 activation 승인 tick만 `true`입니다. Colt의 후속 scheduled emission은 새 activation이 아니므로 `false`이고, projectile `Damage`는 owner의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 결정됩니다. 새 wire field는 없습니다. Client parser 구현과 final balancing은 범위 밖입니다.
+`PressedAttack`은 activation 승인 tick만 `true`입니다. Colt의 후속 scheduled emission은 새 activation이 아니므로 `false`이고, projectile `Damage`는 owner의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 결정됩니다. SL-83의 normal attack wire field는 그대로이며 Client parser 구현과 final balancing은 범위 밖입니다.
+
+### SL-84 Skill input과 cooldown
+
+Input `PressedSkill`은 optional boolean입니다. 누락은 `false`, present `null`이나 wrong type은 `invalid_input`이며 기존 pending input을 보존합니다. `PressedSkill: true`는 command별 독립 시도이고 같은 command의 `AttackDir`을 재사용하지만 `AttackDir` 자체는 skill을 trigger하지 않습니다. Cooldown에 막힌 시도는 queue하지 않으며 유효한 양수 command의 `LastProcessedClientTick` ACK는 진행합니다.
+
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 attack으로 fall through합니다. Gameplay `PlayerData.PressedSkill`은 승인 tick에만 `true`인 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A`에서 승인하면 server config v4의 cooldown `C`를 더해 `A + C`를 기록하며 exact `A + C`도 허용합니다. 초기 state는 `false/0`입니다.
+
+Server config v4의 Shelly/Colt/Lily cooldown은 `360/390/330` tick입니다. SL-84는 SL-99의 Client config v3를 바꾸지 않고 AsyncAPI만 `0.7.0`으로 올리며 REST OpenAPI는 유지합니다. SL-84는 승인과 cooldown까지만 구현하고 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 
 Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Human command의 `ClientTick`은 merge 뒤에도 유지하고 bot command는 `ClientTick: 0`을 사용합니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge와 최종 processed input ACK는 계속 `internal/simulation`이 판정합니다.
 
@@ -150,7 +160,8 @@ Client input:
   "ClientTick": 12,
   "MoveDir": { "x": 1, "y": 0 },
   "AttackDir": { "x": 0, "y": 1 },
-  "PressedAttack": false
+  "PressedAttack": false,
+  "PressedSkill": true
 }
 ```
 
@@ -168,14 +179,16 @@ Server snapshot:
         "Team": "red",
         "Slot": 0,
         "IsBot": false,
-        "CharacterType": 1,
+        "CharacterType": 0,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
         "AttackDir": { "x": 0, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 3100,
+        "HP": 4000,
         "PressedAttack": false,
+        "PressedSkill": true,
+        "SkillReadyTick": 361,
         "IsDead": false,
         "LastProcessedClientTick": 12
       },
@@ -192,6 +205,8 @@ Server snapshot:
         "Radius": 0.5,
         "HP": 4000,
         "PressedAttack": true,
+        "PressedSkill": false,
+        "SkillReadyTick": 0,
         "IsDead": false,
         "LastProcessedClientTick": 0
       }
@@ -204,6 +219,8 @@ Server snapshot:
 `ClientTick`은 optional `int64`이며 누락/`0`은 legacy input입니다. Room은 `room.mu` 아래 마지막 processed ACK와 positive pending을 비교해 더 큰 양수 command만 저장합니다. Stale/duplicate 양수는 error 없이 무시하고, legacy `0`은 last-write-wins로 positive pending도 덮을 수 있지만 ACK를 변경하지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
 
 `LastProcessedClientTick`은 WebSocket 수신이나 pending 저장이 아니라 `State.Step`이 실제 처리한 마지막 양수 tick입니다. Live player의 유한한 input은 충돌이나 공격 budget 때문에 visible effect가 없어도 ACK합니다. Unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다. ACK는 player별로 단조 증가하며 bot command와 bot ACK는 `0`입니다. Match 시작용 Ready ACK와 processed input ACK는 서로 다른 계약입니다.
+
+`PressedSkill`은 input에서 optional이고 snapshot에서는 required입니다. Snapshot의 `PressedSkill`은 승인 pulse, `SkillReadyTick`은 absolute ready state이며 control snapshot은 계속 `Players: null`, `Projectiles: null`입니다.
 
 Matchmaking room은 선택 mode의 full participant capacity를 채운 뒤 room 내 human participant의 WebSocket session이 모두 연결되면 human session에만 `Ready` event를 보냅니다. Human participant가 0명이면 이 gate는 성립하지 않습니다. 이 event는 client가 map을 렌더하고 bot을 포함한 full participant spawn을 배치하는 기준 데이터입니다.
 
@@ -322,6 +339,8 @@ Solo 중간 탈락은 해당 session에만 `terminal snapshot -> GameEnd -> clos
 
 `AttackDir != zero`로 공격을 추론하면 조준 유지 중 매 tick 발사될 수 있습니다. 그래서 input 계약에서는 `PressedAttack`을 유지합니다.
 
+`PressedSkill`도 `AttackDir`와 분리합니다. Input `PressedSkill`만 command-level skill 시도를 만들고, snapshot `PressedSkill`은 서버 승인 결과만 나타냅니다. Snapshot `SkillReadyTick`은 다음 readiness의 canonical absolute tick입니다.
+
 `MoveDir`은 크기가 `1` 이하면 아날로그 입력을 그대로 보존하고, 더 크면 서버가 크기 `1`로 clamp합니다. Shelly/Colt/Lily는 각각 `3/3/2` charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. Zero `AttackDir`, 소진된 charge, 사망한 player input은 공격을 승인하지 않습니다.
 
 `ClientTick`과 `LastProcessedClientTick`은 입력 순서와 처리 완료를 연결합니다.
@@ -336,7 +355,7 @@ Solo 중간 탈락은 해당 session에만 `terminal snapshot -> GameEnd -> clos
 
 `IsDead`는 `HP <= 0`에서 유도할 수 있지만 snapshot에는 유지합니다. Client가 death rule을 재해석하지 않아도 되고, future state를 추가하기 쉽기 때문입니다.
 
-SL-94는 public WebSocket input에 optional `ClientTick`, gameplay `PlayerData`에 required `LastProcessedClientTick`을 추가합니다. Attack charge 자체는 계속 server-only이고 client에 별도 field로 노출하지 않습니다.
+SL-94는 public WebSocket input에 optional `ClientTick`, gameplay `PlayerData`에 required `LastProcessedClientTick`을 추가했습니다. SL-84는 optional input `PressedSkill`과 required gameplay `PressedSkill`/`SkillReadyTick`을 추가했습니다. Attack charge 자체는 계속 server-only입니다.
 
 ## Matchmaking 계약
 

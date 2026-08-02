@@ -146,7 +146,7 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>Input</h3>
-            <p>Optional <code>ClientTick</code>과 <code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>를 보냅니다. 양수 stale/duplicate는 조용히 무시하고, 누락 또는 0은 ACK를 바꾸지 않는 legacy last-write-wins이며, 음수만 <code>invalid_input</code>입니다. Gameplay input에는 <code>Type</code>을 넣지 않습니다.</p>
+            <p>Optional <code>ClientTick</code>과 <code>MoveDir</code>, <code>AttackDir</code>, <code>PressedAttack</code>, <code>PressedSkill</code>을 보냅니다. <code>PressedSkill</code>은 누락하면 false이고 present null/wrong type은 <code>invalid_input</code>입니다. 같은 command의 <code>AttackDir</code>을 재사용하지만 방향 자체가 skill을 trigger하지 않고 blocked attempt를 queue하지 않습니다. 양수 stale/duplicate는 조용히 무시하고, 누락 또는 0은 ACK를 바꾸지 않는 legacy last-write-wins이며, 음수만 <code>invalid_input</code>입니다. Gameplay input에는 <code>Type</code>을 넣지 않습니다.</p>
           </article>
           <article>
             <h3>Ready Event</h3>
@@ -158,7 +158,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity이고, <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity입니다. <code>Players[].PressedSkill</code>은 transient approval pulse이고 <code>Players[].SkillReadyTick</code>은 persistent canonical absolute tick입니다. <code>Snapshot.Tick &gt;= SkillReadyTick</code>이면 ready이며 승인 tick A에는 <code>A + C</code>를 기록해 exact <code>A + C</code>도 허용합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -245,14 +245,16 @@ function renderAsyncAPI(specText) {
         "Team": "red",
         "Slot": 0,
         "IsBot": false,
-        "CharacterType": 1,
+        "CharacterType": 0,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
         "AttackDir": { "x": 0, "y": 0 },
         "Speed": 2,
         "Radius": 0.5,
-        "HP": 3100,
+        "HP": 4000,
         "PressedAttack": false,
+        "PressedSkill": true,
+        "SkillReadyTick": 361,
         "IsDead": false,
         "LastProcessedClientTick": 12
       },
@@ -269,6 +271,8 @@ function renderAsyncAPI(specText) {
         "Radius": 0.5,
         "HP": 4000,
         "PressedAttack": true,
+        "PressedSkill": false,
+        "SkillReadyTick": 0,
         "IsDead": false,
         "LastProcessedClientTick": 0
       }

@@ -88,9 +88,9 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.6.0",
+		"version: 0.7.0",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -118,7 +118,7 @@ func TestHandlerServesCharacterTypeContract(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.6.0",
+		"version: 0.7.0",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
 		"CharacterType: 0",
 		"CharacterType: 1",
@@ -131,6 +131,27 @@ func TestHandlerServesCharacterTypeContract(t *testing.T) {
 	assertStatus(t, docsUI, http.StatusOK)
 	assertBodyContains(t, docsUI, `"CharacterType": 0`)
 	assertBodyContains(t, docsUI, `"CharacterType": 1`)
+}
+
+func TestHandlerServesSkillCooldownContract(t *testing.T) {
+	handler := Handler()
+	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
+	assertStatus(t, asyncAPI, http.StatusOK)
+	for _, marker := range []string{
+		"version: 0.7.0",
+		"PressedSkill:",
+		"SkillReadyTick:",
+		"minimum: 0",
+		"A + C",
+		"360/390/330",
+	} {
+		assertBodyContains(t, asyncAPI, marker)
+	}
+	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
+	if strings.Contains(openAPI.Body.String(), "PressedSkill") ||
+		strings.Contains(openAPI.Body.String(), "SkillReadyTick") {
+		t.Fatal("OpenAPI must not expose gameplay skill fields")
+	}
 }
 
 func TestYAMLTopLevelRequiredFields(t *testing.T) {
@@ -213,7 +234,7 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	asyncAPIText := asyncAPI.Body.String()
 
 	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
-	assertStringContains(t, info, "  version: 0.6.0")
+	assertStringContains(t, info, "  version: 0.7.0")
 
 	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
 	schemas := extractYAMLNamedBlock(t, components, "  schemas:")

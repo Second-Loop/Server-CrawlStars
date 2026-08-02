@@ -28,6 +28,8 @@ const requiredWebSocketFields = [
   "MoveDir",
   "AttackDir",
   "PressedAttack",
+  "PressedSkill",
+  "SkillReadyTick",
   "ReadyEventMessage",
   "ReadyAckMessage",
   "SpawnPosition",
@@ -351,7 +353,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.6.0"), "api/asyncapi.yaml must publish version 0.6.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.7.0"), "api/asyncapi.yaml must publish version 0.7.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -427,6 +429,7 @@ validateBotIdentitySchemas();
 validateClientTickACKContract();
 validateCharacterTypeContract();
 validateCharacterNormalAttackContract();
+validateCharacterSkillCooldownContract();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -504,7 +507,7 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 3, "server config version must be 3");
+assert(serverGameConfig.version === 4, "server config version must be 4");
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "characters", "normalAttackCoolDown", "projectileRadius"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
 assert(clientGameConfig.playerRadius === 0.5, "client-config/game-config.json must expose playerRadius 0.5");
@@ -750,12 +753,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -799,7 +802,7 @@ function validateCharacterTypeContract() {
   const playerSchema = extractYAMLSchema(openAPIText, "Player");
   assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
 
-  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
   for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     const schema = extractYAMLSchema(asyncAPIText, schemaName);
     assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
@@ -822,7 +825,7 @@ function validateCharacterTypeContract() {
 function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
-  for (const marker of ["server config v3", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  for (const marker of ["server config v4", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -868,14 +871,89 @@ function validateCharacterNormalAttackContract() {
 
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [architectureText, "architecture", ["server config v4가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
     [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
-    [apiReferenceText, "api reference", ["server config v3의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [apiReferenceText, "api reference", ["server config v4의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
   ]) {
     for (const marker of markers) {
       assert(text.includes(marker), `${name} must document normal attack marker ${marker}`);
     }
+  }
+}
+
+function validateCharacterSkillCooldownContract() {
+  const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
+  const inputSkill = extractSchemaProperty(inputSchema, "PressedSkill");
+  assert(inputSkill.includes("type: boolean"), "InputMessage.PressedSkill must be boolean");
+  assert(!topLevelRequiredFields(inputSchema).includes("PressedSkill"), "InputMessage.PressedSkill must be optional");
+
+  const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
+  for (const field of ["PressedSkill", "SkillReadyTick"]) {
+    assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
+      `PlayerData must require ${field} exactly once`);
+  }
+  assert(extractSchemaProperty(playerSchema, "PressedSkill").includes("type: boolean"),
+    "PlayerData.PressedSkill must be boolean");
+  const readyTick = extractSchemaProperty(playerSchema, "SkillReadyTick");
+  for (const marker of ["type: integer", "minimum: 0", "A + C"]) {
+    assert(readyTick.includes(marker), `PlayerData.SkillReadyTick must document ${marker}`);
+  }
+
+  assert(serverGameConfig.version === 4, "server config must be version 4");
+  const cooldowns = new Map([[0, 360], [1, 390], [2, 330]]);
+  for (const playerType of serverGameConfig.player.types) {
+    assert(playerType.skill?.cooldownTicks === cooldowns.get(playerType.characterType),
+      `character ${playerType.characterType} skill cooldown drift`);
+  }
+  assert(!openAPIText.includes("PressedSkill") && !openAPIText.includes("SkillReadyTick"),
+    "OpenAPI must not expose gameplay skill fields");
+
+  const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const snapshotMessage = extractYAMLNamedBlock(messages, "    SnapshotMessage:");
+  const gameplayPlayers = extractYAMLSequenceObjects(snapshotMessage, "Players");
+  assertEveryGameplayPlayerHasSkillCooldownState(gameplayPlayers, "AsyncAPI gameplay examples");
+  assert(
+    gameplayPlayers.some((player) => player.includes("PressedSkill: true")),
+    "AsyncAPI gameplay examples must show a skill approval",
+  );
+  assert(
+    gameplayPlayers.some((player) => player.includes("PressedSkill: false") && player.includes("SkillReadyTick: 0")),
+    "AsyncAPI gameplay examples must show initial skill state",
+  );
+
+  const docsGameplayPlayers = extractDocsJSONExample("Gameplay").Snapshot.Players;
+  assertEveryJSONGameplayPlayerHasSkillCooldownState(docsGameplayPlayers, "docs UI Gameplay example");
+  assert(
+    docsGameplayPlayers.some((player) => player.PressedSkill === true),
+    "docs UI Gameplay example must show a skill approval",
+  );
+  assert(
+    docsGameplayPlayers.some((player) => player.PressedSkill === false && player.SkillReadyTick === 0),
+    "docs UI Gameplay example must show initial skill state",
+  );
+}
+
+function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const pressedSkillFields = object.match(/^\s+PressedSkill:\s+(true|false)$/gm) ?? [];
+    const readyTickFields = object.match(/^\s+SkillReadyTick:\s+(\d+)$/gm) ?? [];
+    assert(pressedSkillFields.length === 1, `${name} player ${index} must contain exactly one PressedSkill`);
+    assert(readyTickFields.length === 1, `${name} player ${index} must contain exactly one SkillReadyTick`);
+  }
+}
+
+function assertEveryJSONGameplayPlayerHasSkillCooldownState(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.keys(player).filter((field) => field === "PressedSkill").length === 1,
+      `${name} player ${index} must contain exactly one PressedSkill`);
+    assert(typeof player.PressedSkill === "boolean", `${name} player ${index} must contain boolean PressedSkill`);
+    assert(Object.keys(player).filter((field) => field === "SkillReadyTick").length === 1,
+      `${name} player ${index} must contain exactly one SkillReadyTick`);
+    assert(Number.isSafeInteger(player.SkillReadyTick) && player.SkillReadyTick >= 0,
+      `${name} player ${index} must contain non-negative integer SkillReadyTick`);
   }
 }
 

@@ -111,15 +111,23 @@ Server-owned bot도 별도 simulation을 만들지 않습니다. 한 room tick�
   -> LastProcessedClientTick을 포함한 authoritative snapshot 1개
 ```
 
-`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge와 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
+`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`과 `SkillReadyTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge, skill approval/cooldown과 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
 
 ### SL-83 일반 공격 소유권
 
-server config v3가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
+server config v4가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 `internal/rooms`는 canonical `CharacterType`, room-local config, human/bot input을 production `State.Step`에 전달하고 authoritative snapshot으로 기존 GameEnd 계산기를 호출합니다. Room은 캐릭터별 피해나 test-only damage branch를 갖지 않습니다. 실제 room regression도 Ready/countdown/spawn 뒤 production input으로 Colt projectile death와 reciprocal 1100-HP Lily Draw를 검증합니다.
 
 `internal/simulation`은 activation을 승인하고 캐릭터별 실행기를 고릅니다. Shelly는 같은 activation tick에 5발 spread, Colt는 `A+[0,6,12,18,24,30]` burst와 `A+31` non-overlap, Lily는 wall/boundary로 자른 2.2 tile centerline의 same-tick batched damage를 수행합니다. 이 책임 분리는 기존 InputMessage, PlayerData, ProjectileData, Snapshot wire shape를 바꾸지 않습니다.
+
+### SL-84 Skill cooldown 소유권
+
+Server config v4의 player type별 `skill.cooldownTicks`가 Shelly/Colt/Lily `360/390/330`을 소유합니다. SL-84는 SL-99에서 도입한 Client config v3를 바꾸지 않습니다. `internal/rooms.InputMessage`는 optional `PressedSkill`을 strict boolean으로 decode해 missing은 false로 두고 present null/wrong type은 `invalid_input`으로 거부합니다. `AttackDir`은 같은 command에서 재사용하지만 그 자체가 skill을 trigger하지 않으며, cooldown-blocked attempt는 queue하지 않습니다. 유효한 양수 command라면 skill이 cooldown에 막혀도 processed ACK는 진행합니다.
+
+`internal/simulation.PlayerData.SkillReadyTick`이 persistent canonical absolute state이고 별도 cooldown map을 만들지 않습니다. `Snapshot.Tick >= SkillReadyTick`이면 ready이며 tick `A` 승인 시 cooldown `C`를 더해 `A + C`를 기록하고 exact `A + C` tick도 허용합니다. `PressedSkill`은 각 Step 시작에 false로 reset하고 승인 tick에만 true인 transient server approval pulse입니다. 초기 player state는 `false/0`입니다.
+
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Public AsyncAPI는 `0.7.0`으로 올리고 gameplay `PlayerData.PressedSkill`/`SkillReadyTick`을 required로 두지만, REST OpenAPI와 starting/started control의 `Players: null`, `Projectiles: null`은 유지합니다. 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 
 핵심 값:
 

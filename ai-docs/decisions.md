@@ -700,3 +700,26 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Server artifact가 Client 소비자에게 필요한 field, 값, 단위, version을 명시하고 Go 회귀 test가 drift를 막습니다.
 - Client 표시·입력 보조값과 server-authoritative gameplay 판정의 차이가 명시적으로 유지됩니다.
 - Server PR의 artifact, validator, 문서와 전체 CI가 확인된 뒤 SL-99를 완료합니다. Client 코드 기여는 Server PR 완료 조건이 아닙니다.
+
+## ADR-0038: SL-84 Skill cooldown은 canonical PlayerData와 Server Config v4가 소유
+
+상태: 승인됨
+
+맥락: SL-84는 실제 skill effect보다 먼저 command-level skill 시도, 서버 승인 pulse, 다음 사용 가능 시점을 client/server 공통 계약으로 고정해야 합니다. Cooldown을 private map과 snapshot에 중복 저장하면 두 값이 drift할 수 있고, 조준 방향만으로 skill을 추론하면 command 의도와 무관하게 반복 실행될 수 있습니다.
+
+결정:
+
+- Input `PressedSkill`은 optional boolean입니다. Missing은 `false`, present `null`이나 wrong type은 WebSocket `invalid_input`이며 기존 pending command를 보존합니다.
+- `PressedSkill: true`는 command별 독립 activation attempt입니다. 같은 command의 `AttackDir`을 재사용하지만 `AttackDir` 자체는 skill을 trigger하지 않습니다. Cooldown-blocked attempt는 queue하지 않고, 반복된 true command는 처음 ready인 command에서만 승인될 수 있습니다.
+- `PlayerData.PressedSkill`은 승인 tick에만 true인 transient server approval pulse이고, `PlayerData.SkillReadyTick`은 persistent canonical absolute state입니다. 초기값은 `false/0`이며 control snapshot은 계속 `Players: null`, `Projectiles: null`입니다.
+- Ready predicate는 `Snapshot.Tick >= SkillReadyTick`입니다. Tick `A`에서 승인하고 cooldown이 `C`이면 `A + C`를 기록하며 exact `A + C` tick도 다시 승인할 수 있습니다.
+- Skill-ready와 non-zero direction이면 normal attack보다 우선하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Cooldown에 막힌 유효한 양수 command도 `LastProcessedClientTick` ACK는 진행합니다.
+- Server config v4의 Shelly/Colt/Lily `skill.cooldownTicks`는 `360/390/330`입니다. SL-84는 SL-99에서 도입한 Client config v3를 변경하지 않습니다.
+- AsyncAPI dialect는 `3.0.0`을 유지하고 `info.version`을 `0.7.0`으로 올립니다. Gameplay `PlayerData.PressedSkill`과 `SkillReadyTick`은 required이고, REST OpenAPI에는 gameplay skill field를 추가하지 않습니다.
+- 실제 skill effect와 bot skill use는 SL-85 범위입니다.
+
+결과:
+
+- Cooldown truth가 gameplay snapshot의 canonical player state 하나로 고정되어 reconnect와 다음 tick에서도 같은 absolute readiness를 사용합니다.
+- Client는 approval pulse와 persistent ready tick을 구분해 렌더할 수 있고 blocked attempt를 로컬 queue로 오해하지 않습니다.
+- SL-84는 input/approval/cooldown 계약까지만 닫고 skill별 실제 효과는 SL-85에서 독립적으로 구현할 수 있습니다.
