@@ -100,7 +100,7 @@ type Config struct {
 	TileSize               float64
 	PlayerRadius           float64
 	Characters             []CharacterConfig
-	NormalAttackCoolDown   float64
+	NormalAttackCoolDown   int
 	ProjectileRadius       float64
 }
 
@@ -108,7 +108,7 @@ type CharacterConfig struct {
 	Type                    int
 	NormalAttackDistance    float64
 	SkillAttackDistance     float64
-	SkillAttackCoolDown     float64
+	SkillAttackCoolDown     int
 	MaxBullets              int
 }
 

@@ -8,10 +8,7 @@ import (
 	"math"
 )
 
-const (
-	ClientGameConfigVersion = 2
-	ServerGameConfigVersion = 3
-)
+const ServerGameConfigVersion = 3
 
 type CharacterType int
 
