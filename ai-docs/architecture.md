@@ -270,8 +270,9 @@ WebSocket:
 - `duel_1v1`은 기존 Win/Lose와 동시 사망 Draw를 유지합니다.
 - Solo 중간 탈락은 해당 player의 Lose를 처음 결과로 확정하고 그 session만 닫아 survivor tick을 계속합니다. 마지막 생존자는 Win입니다. 이전 Lose는 유지되며 나중에 전원 사망하면 아직 결과가 없던 player만 Draw입니다.
 - Team 일부 사망은 계속합니다. 한 team 전멸은 3 Lose/3 Win이고 양 team 같은 tick 전멸은 6 Draw입니다.
-- 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다. 일반 gameplay snapshot은 크기 1 latest-only slot에서 coalescing해 느린 client가 room tick이나 다른 client를 막지 않습니다.
-- `Ready`, `starting`, `started`, `error`는 크기 8 reliable control queue에서 순서를 보존합니다. Terminal handoff는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 실행합니다.
+- 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다. 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해 느린 client를 격리합니다.
+- 어느 player라도 `PressedSkill: true`인 non-terminal snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception입니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관합니다. multiple approval은 FIFO로 전달하며 모든 승인 write 성공 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush합니다. accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버립니다. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only입니다. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot `Players: null`/`Projectiles: null`, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.
+- `Ready`, `starting`, `started`, `error`는 같은 size-8 reliable control FIFO에서 순서를 보존합니다.
 - 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
 - malformed JSON과 음수 `ClientTick`은 invalid input error만 보내고 연결은 유지합니다. Stale/duplicate 양수 tick은 error/control frame 없이 무시합니다.
 

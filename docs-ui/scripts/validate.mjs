@@ -9,6 +9,10 @@ const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.
 const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
 const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
 const decisionsText = await readFile(new URL("../../ai-docs/decisions.md", import.meta.url), "utf8");
+const skillCooldownDesignText = await readFile(
+  new URL("../../docs/superpowers/specs/2026-08-02-sl-84-skill-input-cooldown-design.md", import.meta.url),
+  "utf8",
+);
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigBytes = await readFile(new URL("../../client-config/game-config.json", import.meta.url));
 const clientGameConfigText = clientGameConfigBytes.toString("utf8");
@@ -893,8 +897,12 @@ function validateCharacterSkillCooldownContract() {
     assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
       `PlayerData must require ${field} exactly once`);
   }
-  assert(extractSchemaProperty(playerSchema, "PressedSkill").includes("type: boolean"),
+  const snapshotPressedSkill = extractSchemaProperty(playerSchema, "PressedSkill");
+  assert(snapshotPressedSkill.includes("type: boolean"),
     "PlayerData.PressedSkill must be boolean");
+  for (const marker of ["reliable approval exception", "size-8 reliable control FIFO", "fail-closed"]) {
+    assert(snapshotPressedSkill.includes(marker), `PlayerData.PressedSkill must document ${marker}`);
+  }
   const readyTick = extractSchemaProperty(playerSchema, "SkillReadyTick");
   for (const marker of ["type: integer", "minimum: 0", "A + C"]) {
     assert(readyTick.includes(marker), `PlayerData.SkillReadyTick must document ${marker}`);
@@ -954,6 +962,63 @@ function validateCharacterSkillCooldownContract() {
   );
   for (const marker of ["server-only v4 config", "skill.cooldownTicks", "SkillReadyTick"]) {
     assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
+  }
+
+  const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
+  for (const marker of [
+    "capacity-1 latest-only",
+    "size-8 reliable control FIFO",
+    "older pending normal snapshot",
+    "deferred latest",
+    "approval -> latest",
+    "multiple approval",
+    "accepted approval",
+    "deferred normal snapshot",
+    "queue overflow/write failure",
+    "close/release",
+    "무한히 느린 session",
+    "PressedAttack: true-only snapshot",
+    "새 wire field/event",
+  ]) {
+    assert(asyncAPIInfo.includes(marker), `AsyncAPI info must document reliable skill approval marker ${marker}`);
+  }
+
+  for (const marker of [
+    "capacity-1 latest-only",
+    "size-8 reliable control FIFO",
+    "approval -&gt; latest",
+    "multiple approval",
+    "terminal snapshot -&gt; GameEnd -&gt; close",
+    "queue overflow/write failure",
+    "close/release",
+    "PressedAttack: true-only snapshot",
+    "새 wire field/event",
+  ]) {
+    assert(docsBuildText.includes(marker), `docs UI must document reliable skill approval marker ${marker}`);
+  }
+
+  for (const [text, name] of [
+    [apiReferenceText, "api reference"],
+    [apiDocsText, "api docs"],
+    [protocolText, "protocol"],
+    [architectureText, "architecture"],
+    [projectMapText, "project map"],
+    [decisionsText, "decisions"],
+    [skillCooldownDesignText, "skill cooldown design"],
+  ]) {
+    for (const marker of [
+      "capacity-1 latest-only",
+      "size-8 reliable control FIFO",
+      "approval -> latest",
+      "multiple approval",
+      "terminal snapshot -> GameEnd -> close",
+      "queue overflow/write failure",
+      "close/release",
+      "PressedAttack: true-only snapshot",
+      "새 wire field/event",
+    ]) {
+      assert(text.includes(marker), `${name} must document reliable skill approval marker ${marker}`);
+    }
   }
 }
 

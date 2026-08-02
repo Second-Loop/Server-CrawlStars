@@ -144,8 +144,36 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"minimum: 0",
 		"A + C",
 		"360/390/330",
+		"capacity-1 latest-only",
+		"size-8 reliable control FIFO",
+		"older pending normal snapshot",
+		"deferred latest",
+		"approval -> latest",
+		"multiple approval",
+		"accepted approval",
+		"deferred normal snapshot",
+		"queue overflow/write failure",
+		"close/release",
+		"무한히 느린 session",
+		"PressedAttack: true-only snapshot",
+		"새 wire field/event",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
+	}
+	docsUI := request(handler, http.MethodGet, "/asyncapi")
+	assertStatus(t, docsUI, http.StatusOK)
+	coalescingArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Snapshot coalescing</h3>", "</article>")
+	for _, marker := range []string{
+		"capacity-1 latest-only",
+		"size-8 reliable control FIFO",
+		"approval -&gt; latest",
+		"multiple approval",
+		"queue overflow/write failure",
+		"close/release",
+		"PressedAttack: true-only snapshot",
+		"새 wire field/event",
+	} {
+		assertStringContains(t, coalescingArticle, marker)
 	}
 	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
 	if strings.Contains(openAPI.Body.String(), "PressedSkill") ||

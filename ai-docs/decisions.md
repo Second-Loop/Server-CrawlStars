@@ -377,14 +377,14 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 상태: 승인됨
 
-후속 상태: Terminal writer order와 active session registry 원칙은 유지합니다. ADR-0031은 room terminal에서 ticker를 먼저 멈추고 모든 `closeDone` 뒤 normal cleanup을 하며, Shutdown만 forced-teardown 예외로 허용합니다.
+후속 상태: Terminal writer order와 active session registry 원칙은 유지합니다. ADR-0031은 room terminal에서 ticker를 먼저 멈추고 모든 `closeDone` 뒤 normal cleanup을 하며, Shutdown만 forced-teardown 예외로 허용합니다. ADR-0038은 `PressedSkill: true` 승인 snapshot만 기존 reliable control queue로 승격하는 좁은 예외를 추가합니다.
 
 맥락: 하나의 Store lock 아래에서 모든 room tick과 WebSocket write를 직렬화하면 느린 client 하나가 다른 room과 client까지 막습니다. 일반 snapshot을 모두 reliable하게 쌓으면 지연된 과거 state가 backlog가 되고, 반대로 Ready/GameEnd 같은 lifecycle message까지 버리면 client state가 깨집니다. Ping/pong이 없으면 silent peer가 connected 상태로 남아 TTL cleanup도 막습니다.
 
 결정:
 
 - `Store.mu`는 registry/lifecycle, `room.mu`는 한 room의 mutable gameplay/client 상태, `clientSession`은 outbox와 writer/heartbeat lifecycle을 소유합니다. `State.Step`, fanout, network I/O 동안 Store lock을 잡지 않습니다.
-- 일반 gameplay snapshot만 client별 크기 1 latest-only slot에서 coalescing합니다. `Ready`, `starting`, `started`, `error`는 reliable control queue를 사용합니다.
+- 일반 non-terminal gameplay snapshot은 client별 크기 1 latest-only slot에서 coalescing합니다. 단, ADR-0038의 `PressedSkill: true` 승인 snapshot은 reliable control queue로 승격합니다. `Ready`, `starting`, `started`, `error`도 reliable control queue를 사용합니다.
 - Terminal delivery는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 writer 안에서 순서대로 실행합니다. Payload write마다 새 5초 context를 사용합니다.
 - Connection마다 writer와 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once와 expected-session release를 공유합니다.
 - `Store.mu`가 active client session registry를 함께 보호합니다. Attach는 Store close 판정, active 등록, heartbeat 시작을 `Store.mu -> room.mu` 순서 안에서 끝냅니다. Lifecycle monitor는 connection close, writer, heartbeat가 모두 끝난 뒤 session을 registry에서 제거하므로, GameEnd가 room을 먼저 삭제해도 `Store.Close`가 terminal in-flight session을 close하고 join할 수 있습니다.
@@ -716,6 +716,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Skill-ready와 non-zero direction이면 normal attack보다 우선하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Cooldown에 막힌 유효한 양수 command도 `LastProcessedClientTick` ACK는 진행합니다.
 - Server config v4의 Shelly/Colt/Lily `skill.cooldownTicks`는 `360/390/330`입니다. SL-84는 SL-99에서 도입한 Client config v3 artifact를 변경하지 않으며, 그 값은 UI와 로컬 bot 입력 보조용입니다.
 - AsyncAPI dialect는 `3.0.0`을 유지하고 `info.version`을 `0.7.0`으로 올립니다. Gameplay `PlayerData.PressedSkill`과 `SkillReadyTick`은 required이고, REST OpenAPI에는 gameplay skill field를 추가하지 않습니다.
+- 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot을 유지합니다. 어느 player라도 `PressedSkill: true`인 non-terminal snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception입니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관합니다. multiple approval은 FIFO로 전달하며 모든 승인 write 성공 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush합니다. accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버립니다. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only입니다. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot `Players: null`/`Projectiles: null`, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.
 - 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 
 결과:

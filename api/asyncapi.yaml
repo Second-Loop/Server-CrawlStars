@@ -15,7 +15,7 @@ info:
     일반 공격과 skill cooldown은 server config v4가 소유합니다. 캐릭터별 cooldown tick은 Shelly/Colt/Lily 순서로 360/390/330입니다. Shelly는 normal attack activation tick에 5발을 동시에 만들고, Colt는 activation tick A부터 6 tick 간격으로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다.
     Optional `PressedSkill`은 command별 독립적인 활성화 시도입니다. 누락하면 false이고, present null이나 boolean이 아닌 값은 `invalid_input`입니다. Skill은 같은 command의 `AttackDir`을 재사용하지만 방향만으로 시도하지 않으며 cooldown 동안의 시도는 queue하지 않습니다. Skill-ready면 attack보다 우선하고 charge를 보존하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 진행합니다. 실제 skill effect와 bot skill use는 SL-85 범위입니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
-    일반 gameplay snapshot은 client별 latest-only slot에서 coalescing합니다. Ready, starting, started, error는 reliable control 순서를 유지하고, 종료 시에는 terminal snapshot -> GameEnd -> close 순서를 보장합니다.
+    일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 다만 어느 player라도 `PressedSkill: true`인 non-terminal gameplay snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception입니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관합니다. multiple approval은 FIFO로 전달하고, 승인 pending을 모두 성공적으로 쓴 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush합니다. accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버립니다. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only입니다. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
     Team 일부 사망은 match를 계속합니다. 한 team이 전멸하면 패배 team 3명은 Lose, 생존 team 3명은 Win이고, 양 team이 같은 tick에 전멸하면 6명 모두 Draw입니다.
     Terminal room은 ticker를 terminal decision 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 각 session의 connected-client observer는 close lifecycle에서 반영되며 transport closeDone보다 먼저일 수 있습니다. Normal cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 closeDone을 모두 기다립니다. 따라서 current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 registry를 분리하고 active-room observer를 반영한 다음 player ID를 release하고 room_ended log와 resource close를 수행하며 cleanup success signal은 마지막에 닫습니다.
@@ -47,7 +47,7 @@ channels:
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
       Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하지만 matched/loading/starting disconnect는 pre-start cancel을 사용합니다.
       Optional `ClientTick`의 양수 값은 player별 monotonic input 순서와 processed ACK에 사용합니다. 같은 match에 재연결하면 gameplay snapshot의 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내며 새 match는 0에서 시작합니다.
-      일반 gameplay snapshot만 latest-only로 합칠 수 있습니다. Ready/lifecycle/error control은 FIFO로 전달하고 terminal snapshot -> GameEnd -> close는 socket 종료 전에 순서대로 전달합니다.
+      일반 non-terminal gameplay snapshot은 capacity-1 latest-only로 합칩니다. 어느 player라도 `PressedSkill: true`이면 기존 size-8 reliable control FIFO로 승격하고, accepted approval을 모두 쓴 뒤 terminal snapshot -> GameEnd -> close를 실행합니다. Ready/lifecycle/error도 같은 reliable FIFO 순서를 사용합니다.
     bindings:
       ws:
         method: GET
@@ -667,7 +667,7 @@ components:
           description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 activation tick에 공격이 승인됐을 때만 true인 transient 결과입니다. 이후 Colt burst emission tick에는 새 activation이 아니므로 false입니다.
         PressedSkill:
           type: boolean
-          description: Input echo가 아니라 server가 이번 gameplay tick의 skill activation을 승인했을 때만 true인 transient approval pulse입니다. 매 Step 시작에 false로 초기화되며 실제 skill effect와 bot skill use는 SL-85 범위입니다.
+          description: Input echo가 아니라 server가 이번 gameplay tick의 skill activation을 승인했을 때만 true인 transient approval pulse입니다. 이 true를 포함한 non-terminal snapshot은 normal latest-only에서 제외되는 reliable approval exception으로 size-8 reliable control FIFO를 사용하며 queue overflow/write failure는 해당 session을 close/release하는 fail-closed입니다. 매 Step 시작에 false로 초기화되며 실제 skill effect와 bot skill use는 SL-85 범위입니다.
         SkillReadyTick:
           type: integer
           format: int64

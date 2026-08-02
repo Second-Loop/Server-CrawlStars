@@ -55,6 +55,12 @@ Gameplay snapshot에서 command를 처리해 반환하는 tick을 activation tic
 
 Client는 `max(0, SkillReadyTick - Snapshot.Tick)`으로 남은 tick을 계산할 수 있어요. 초 단위 표시와 client artifact의 tick-rate 전달은 SL-99/client 범위이며, SL-84는 새 tick-rate wire field를 추가하지 않아요. 사용 가능 판정은 서버가 이미 확정한 snapshot을 따라요.
 
+### 2.4 승인 snapshot 전달 경계
+
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해 느린 client를 격리해요. 단, 어느 player라도 `PressedSkill: true`인 non-terminal snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception이에요. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관해요. multiple approval은 FIFO로 전달하며 모든 승인 write 성공 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush해요.
+
+accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버려요. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않아요. PressedAttack: true-only snapshot은 계속 latest-only예요. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot `Players: null`/`Projectiles: null`, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지해요.
+
 ## 3. 상태와 config 소유권
 
 ### 3.1 `PlayerData`가 canonical cooldown state를 소유
