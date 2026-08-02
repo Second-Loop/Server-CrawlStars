@@ -717,6 +717,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Server config v4의 Shelly/Colt/Lily `skill.cooldownTicks`는 `360/390/330`입니다. SL-84는 SL-99에서 도입한 Client config v3 artifact를 변경하지 않으며, 그 값은 UI와 로컬 bot 입력 보조용입니다.
 - AsyncAPI dialect는 `3.0.0`을 유지하고 `info.version`을 `0.7.0`으로 올립니다. Gameplay `PlayerData.PressedSkill`과 `SkillReadyTick`은 required이고, REST OpenAPI에는 gameplay skill field를 추가하지 않습니다.
 - 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot을 유지합니다. 어느 player라도 `PressedSkill: true`인 non-terminal snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception입니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관합니다. multiple approval은 FIFO로 전달하며 모든 승인 write 성공 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush합니다. accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버립니다. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only입니다. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot `Players: null`/`Projectiles: null`, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.
+- 이 bounded delivery는 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
 - 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 
 결과:

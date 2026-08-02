@@ -165,13 +165,30 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 	coalescingArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Snapshot coalescing</h3>", "</article>")
 	for _, marker := range []string{
 		"capacity-1 latest-only",
+		"reliable approval exception",
 		"size-8 reliable control FIFO",
+		"older pending normal snapshot",
+		"deferred normal snapshot",
+		"deferred latest",
+		"승인 write가 성공",
 		"approval -&gt; latest",
 		"multiple approval",
+		"accepted approval",
+		"terminal snapshot -&gt; GameEnd -&gt; close",
+		"종료 시 deferred normal snapshot은 버립니다",
 		"queue overflow/write failure",
 		"close/release",
+		"fail-closed",
+		"무한히 느린 session",
+		"application-level ACK/replay",
 		"PressedAttack: true-only snapshot",
 		"새 wire field/event",
+		"AsyncAPI dialect 3.0.0",
+		"info 0.7.0",
+		"Players: null",
+		"Projectiles: null",
+		"SL-85 effect",
+		"SL-99 client config v3/server config v4",
 	} {
 		assertStringContains(t, coalescingArticle, marker)
 	}

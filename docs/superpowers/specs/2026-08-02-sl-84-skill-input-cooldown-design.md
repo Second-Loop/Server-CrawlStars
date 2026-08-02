@@ -61,6 +61,8 @@ Client는 `max(0, SkillReadyTick - Snapshot.Tick)`으로 남은 tick을 계산�
 
 accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버려요. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않아요. PressedAttack: true-only snapshot은 계속 latest-only예요. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot `Players: null`/`Projectiles: null`, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지해요.
 
+이 bounded delivery는 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요.
+
 ## 3. 상태와 config 소유권
 
 ### 3.1 `PlayerData`가 canonical cooldown state를 소유

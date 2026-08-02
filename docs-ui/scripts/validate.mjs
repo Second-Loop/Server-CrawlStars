@@ -20,6 +20,32 @@ const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
 const serverGameConfig = JSON.parse(serverGameConfigText);
 
+const reliableSkillDeliveryMarkerGroups = [
+  ["normal snapshot latest-only", ["capacity-1 latest-only"]],
+  ["reliable approval exception", ["reliable approval exception"]],
+  ["reliable FIFO capacity", ["size-8 reliable control FIFO"]],
+  ["older pending normal drain", ["older pending normal snapshot과 기존 deferred normal snapshot을 버리고", "older pending normal snapshot과 deferred normal snapshot을 버리고"]],
+  ["deferred latest", ["deferred latest 하나만"]],
+  ["successful approval write", ["reliable approval write가 성공", "승인 write가 성공"]],
+  ["approval to latest flush", ["approval -> latest", "approval -&gt; latest"]],
+  ["multiple approval FIFO", ["multiple approval은 FIFO"]],
+  ["accepted approval before terminal", ["accepted approval은 terminal보다 먼저", "accepted approval을 먼저"]],
+  ["terminal order", ["terminal snapshot -> GameEnd -> close", "terminal snapshot -&gt; GameEnd -&gt; close"]],
+  ["terminal deferred normal discard", ["deferred normal snapshot은 종료 시 버", "종료 시 deferred normal snapshot은 버"]],
+  ["overflow or write failure", ["queue overflow/write failure"]],
+  ["session close and release", ["close/release"]],
+  ["fail-closed", ["fail-closed"]],
+  ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않"]],
+  ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only"]],
+  ["no new wire event", ["새 wire field/event"]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0"]],
+  ["AsyncAPI info version", ["info 0.7.0"]],
+  ["control players remain null", ["Players: null"]],
+  ["control projectiles remain null", ["Projectiles: null"]],
+  ["SL-85 effect boundary", ["SL-85 effect"]],
+  ["SL-99 config boundary", ["SL-99 client config v3/server config v4"]],
+];
+
 const requiredRESTPaths = [
   "/health",
   "/matchmaking/join",
@@ -434,6 +460,7 @@ validateClientTickACKContract();
 validateCharacterTypeContract();
 validateCharacterNormalAttackContract();
 validateCharacterSkillCooldownContract();
+validateReliableSkillDeliveryValidatorSelfTests();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -707,6 +734,22 @@ function extractDelimitedText(text, startMarker, endMarker, name) {
   return text.slice(start, end);
 }
 
+function extractMarkdownHeadingSection(text, heading, name) {
+  const headingLevel = /^(#{1,6})\s/.exec(heading)?.[1].length;
+  assert(headingLevel, `${name} heading must start with Markdown hashes`);
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === heading);
+  assert(start >= 0, `${name} is missing heading ${heading}`);
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const nextHeading = /^(#{1,6})\s/.exec(lines[end]);
+    if (nextHeading && nextHeading[1].length <= headingLevel) break;
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
 function assertEveryJSONPlayerHasIsBot(players, name) {
   assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
   for (const [index, player] of players.entries()) {
@@ -965,60 +1008,94 @@ function validateCharacterSkillCooldownContract() {
   }
 
   const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-  for (const marker of [
-    "capacity-1 latest-only",
-    "size-8 reliable control FIFO",
-    "older pending normal snapshot",
-    "deferred latest",
-    "approval -> latest",
-    "multiple approval",
-    "accepted approval",
-    "deferred normal snapshot",
-    "queue overflow/write failure",
-    "close/release",
-    "무한히 느린 session",
-    "PressedAttack: true-only snapshot",
-    "새 wire field/event",
+  assertScopedReliableSkillDeliveryContract(asyncAPIInfo, "AsyncAPI info current delivery", "일반 non-terminal gameplay snapshot은", "\n    duel_1v1은");
+
+  const docsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
+  assertReliableSkillDeliveryContract(docsUICoalescingArticle, "docs UI Snapshot coalescing article");
+
+  for (const [text, name, startMarker, endMarker] of [
+    [apiReferenceText, "api reference current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
+    [apiDocsText, "api docs current delivery", "일반 non-terminal gameplay snapshot은", "\n\nInput field는"],
+    [protocolText, "protocol current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
+    [architectureText, "architecture current WebSocket delivery", "- 각 client는 독립 writer를 가지며", "\n- 각 client는 writer와 독립적인 30초 heartbeat"],
+    [projectMapText, "project map current tick delivery", "8. `{\"Type\":\"snapshot\",\"Snapshot\":...}`", "\n9. Solo 중간 탈락이면"],
   ]) {
-    assert(asyncAPIInfo.includes(marker), `AsyncAPI info must document reliable skill approval marker ${marker}`);
+    assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker);
   }
 
-  for (const marker of [
-    "capacity-1 latest-only",
-    "size-8 reliable control FIFO",
-    "approval -&gt; latest",
-    "multiple approval",
-    "terminal snapshot -&gt; GameEnd -&gt; close",
-    "queue overflow/write failure",
-    "close/release",
-    "PressedAttack: true-only snapshot",
-    "새 wire field/event",
-  ]) {
-    assert(docsBuildText.includes(marker), `docs UI must document reliable skill approval marker ${marker}`);
+  const skillCooldownDesignDelivery = extractMarkdownHeadingSection(skillCooldownDesignText, "### 2.4 승인 snapshot 전달 경계", "skill cooldown design current delivery");
+  assertReliableSkillDeliveryContract(skillCooldownDesignDelivery, "skill cooldown design current delivery");
+
+  const adr0024 = extractMarkdownHeadingSection(decisionsText, "## ADR-0024: SL-81 Room/Session 동시성과 WebSocket 전달 경계", "ADR-0024");
+  const adr0024FollowUp = extractDelimitedText(adr0024, "후속 상태:", "\n\n맥락:", "ADR-0024 follow-up");
+  for (const marker of ["ADR-0038", "`PressedSkill: true`", "기존 reliable control queue", "좁은 예외"]) {
+    assert(adr0024FollowUp.includes(marker), `ADR-0024 follow-up must document ${marker}`);
   }
 
-  for (const [text, name] of [
-    [apiReferenceText, "api reference"],
-    [apiDocsText, "api docs"],
-    [protocolText, "protocol"],
-    [architectureText, "architecture"],
-    [projectMapText, "project map"],
-    [decisionsText, "decisions"],
-    [skillCooldownDesignText, "skill cooldown design"],
-  ]) {
-    for (const marker of [
-      "capacity-1 latest-only",
-      "size-8 reliable control FIFO",
-      "approval -> latest",
-      "multiple approval",
-      "terminal snapshot -> GameEnd -> close",
-      "queue overflow/write failure",
-      "close/release",
-      "PressedAttack: true-only snapshot",
-      "새 wire field/event",
-    ]) {
-      assert(text.includes(marker), `${name} must document reliable skill approval marker ${marker}`);
+  const adr0038 = extractMarkdownHeadingSection(decisionsText, "## ADR-0038: SL-84 Skill cooldown은 canonical PlayerData와 Server Config v4가 소유", "ADR-0038");
+  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 current delivery");
+}
+
+function validateReliableSkillDeliveryValidatorSelfTests() {
+  const movedMarkerFixture = `## Current delivery
+일반 non-terminal gameplay snapshot은 capacity-1 latest-only이고 PressedSkill approval은 size-8 reliable control FIFO인 reliable approval exception입니다.
+후속 normal은 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO이고 reliable approval write가 성공한 뒤 approval -> latest로 flush합니다.
+accepted approval 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 버립니다.
+queue overflow/write failure는 close/release fail-closed이며 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only이고 새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0, control Players: null과 Projectiles: null, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.
+## Historical note
+older pending normal snapshot과 deferred normal snapshot을 버리고 다음 단계로 간다는 설명은 여기에서만 언급합니다.
+## End`;
+
+  let rejectedMovedMarker = false;
+  try {
+    assertScopedReliableSkillDeliveryContract(
+      movedMarkerFixture,
+      "synthetic moved-marker delivery contract",
+      "## Current delivery",
+      "## Historical note",
+    );
+  } catch (error) {
+    rejectedMovedMarker = error instanceof Error && error.message.includes("older pending normal drain");
+  }
+  assert(
+    rejectedMovedMarker,
+    "scoped reliable skill delivery validator must reject a required marker moved outside the current block",
+  );
+}
+
+function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
+  const block = extractDelimitedText(text, startMarker, endMarker, name);
+  assertReliableSkillDeliveryContract(block, name);
+  return block;
+}
+
+function assertReliableSkillDeliveryContract(block, name) {
+  const positions = new Map();
+  for (const [meaning, allowedMarkers] of reliableSkillDeliveryMarkerGroups) {
+    let position = -1;
+    for (const marker of allowedMarkers) {
+      const candidate = block.indexOf(marker);
+      if (candidate >= 0 && (position < 0 || candidate < position)) position = candidate;
     }
+    assert(position >= 0, `${name} must document ${meaning}; allowed markers: ${allowedMarkers.join(" | ")}`);
+    positions.set(meaning, position);
+  }
+
+  for (const [before, after] of [
+    ["older pending normal drain", "successful approval write"],
+    ["successful approval write", "approval to latest flush"],
+    ["deferred latest", "approval to latest flush"],
+    ["multiple approval FIFO", "approval to latest flush"],
+    ["accepted approval before terminal", "terminal order"],
+    ["terminal order", "terminal deferred normal discard"],
+  ]) {
+    assert(
+      positions.get(before) < positions.get(after),
+      `${name} must order ${before} before ${after}`,
+    );
   }
 }
 
