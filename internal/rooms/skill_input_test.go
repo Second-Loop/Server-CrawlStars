@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 	"nhooyr.io/websocket"
@@ -57,6 +58,95 @@ func TestWebSocketPressedSkillAppearsInAuthoritativeSnapshot(t *testing.T) {
 	if secondPlayer.PressedSkill || secondPlayer.SkillReadyTick != 361 {
 		t.Fatalf("second skill player=%+v", secondPlayer)
 	}
+}
+
+func TestTickRoomStateReliablyOrdersSkillApprovalBetweenCoalescedSnapshots(t *testing.T) {
+	store, room, conn, playerID := blockedTickSequenceFixture(t, func(step int, player *simulation.PlayerData) {
+		player.PressedSkill = step == 2
+		if step >= 2 {
+			player.SkillReadyTick = 362
+		}
+	})
+	tickThreeTimesBehindBlockedWriter(t, store, room, conn)
+
+	for index, want := range []struct {
+		tick         simulation.Tick
+		pressedSkill bool
+	}{
+		{tick: 1, pressedSkill: false},
+		{tick: 2, pressedSkill: true},
+		{tick: 3, pressedSkill: false},
+	} {
+		message := readFakeGameplaySnapshot(t, conn)
+		player := findSnapshotPlayer(t, message.Snapshot, simulation.PlayerID(playerID))
+		if message.Snapshot.Tick != want.tick || player.PressedSkill != want.pressedSkill {
+			t.Fatalf("delivery %d snapshot tick/PressedSkill=%d/%t, want %d/%t", index+1, message.Snapshot.Tick, player.PressedSkill, want.tick, want.pressedSkill)
+		}
+	}
+}
+
+func TestTickRoomStateKeepsPressedAttackSnapshotsLatestOnly(t *testing.T) {
+	store, room, conn, playerID := blockedTickSequenceFixture(t, func(step int, player *simulation.PlayerData) {
+		player.PressedAttack = step == 2
+	})
+	tickThreeTimesBehindBlockedWriter(t, store, room, conn)
+
+	first := readFakeGameplaySnapshot(t, conn)
+	latest := readFakeGameplaySnapshot(t, conn)
+	if first.Snapshot.Tick != 1 || latest.Snapshot.Tick != 3 {
+		t.Fatalf("PressedAttack-only delivery ticks=%d,%d, want latest-only 1,3", first.Snapshot.Tick, latest.Snapshot.Tick)
+	}
+	if player := findSnapshotPlayer(t, latest.Snapshot, simulation.PlayerID(playerID)); player.PressedAttack || player.PressedSkill {
+		t.Fatalf("latest normal snapshot retained transient input: %+v", player)
+	}
+	assertNoFakeClientWrite(t, conn)
+}
+
+func blockedTickSequenceFixture(
+	t *testing.T,
+	mutate func(step int, player *simulation.PlayerData),
+) (*Store, *room, *fakeClientConn, string) {
+	t.Helper()
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	started := createStartedRoomInStore(t, store)
+	room := store.lookupRoom(started.ID)
+	if room == nil || len(started.Players) != 1 {
+		t.Fatalf("invalid started room fixture room=%v players=%+v", room, started.Players)
+	}
+
+	conn := newFakeClientConn(true)
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() { session.close(websocket.StatusNormalClosure, "test complete") })
+	playerID := started.Players[0].ID
+	step := 0
+	room.mu.Lock()
+	players := append([]simulation.PlayerData(nil), room.lastPlayers...)
+	room.state = testRoomStepper(func([]simulation.InputCommand) simulation.Snapshot {
+		step++
+		tickPlayers := append([]simulation.PlayerData(nil), players...)
+		mutate(step, &tickPlayers[0])
+		return simulation.Snapshot{
+			Tick:    simulation.Tick(step),
+			Players: tickPlayers,
+		}
+	})
+	room.clients[playerID] = session
+	room.mu.Unlock()
+	return store, room, conn, playerID
+}
+
+func tickThreeTimesBehindBlockedWriter(t *testing.T, store *Store, room *room, conn *fakeClientConn) {
+	t.Helper()
+	store.tickRoomState(room)
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected tick-1 normal snapshot write to start")
+	}
+	store.tickRoomState(room)
+	store.tickRoomState(room)
+	close(conn.allowWrite)
 }
 
 func TestWebSocketReconnectPreservesSkillReadyTick(t *testing.T) {

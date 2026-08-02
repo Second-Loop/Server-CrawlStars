@@ -56,6 +56,7 @@ type writerCommandKind uint8
 
 const (
 	writerCommandPayload writerCommandKind = iota
+	writerCommandReliableSnapshot
 	writerCommandClose
 )
 
@@ -103,6 +104,8 @@ type clientSession struct {
 	publicationDraining bool
 	heartbeatStarted    bool
 	terminal            bool
+	reliablePending     int
+	deferredLatest      []byte
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
@@ -257,7 +260,15 @@ func (s *clientSession) enqueueSnapshot(payload []byte) {
 		return
 	default:
 	}
+	if s.reliablePending > 0 {
+		s.deferredLatest = payload
+		return
+	}
 
+	s.enqueueLatestSnapshotLocked(payload)
+}
+
+func (s *clientSession) enqueueLatestSnapshotLocked(payload []byte) {
 	select {
 	case s.snapshots <- payload:
 	default:
@@ -270,6 +281,65 @@ func (s *clientSession) enqueueSnapshot(payload []byte) {
 		case <-s.done:
 		}
 	}
+}
+
+func (s *clientSession) enqueueSkillApprovalSnapshot(payload []byte) bool {
+	s.enqueueMu.Lock()
+	if s.terminal {
+		s.enqueueMu.Unlock()
+		return false
+	}
+	select {
+	case <-s.done:
+		s.enqueueMu.Unlock()
+		return false
+	default:
+	}
+
+	select {
+	case <-s.snapshots:
+	default:
+	}
+	s.deferredLatest = nil
+	queued := false
+	shouldClose := false
+	select {
+	case s.control <- writerCommand{kind: writerCommandReliableSnapshot, payload: payload}:
+		s.reliablePending++
+		queued = true
+	default:
+		shouldClose = true
+	}
+	s.enqueueMu.Unlock()
+
+	if shouldClose {
+		s.close(websocket.StatusGoingAway, "control queue overflow")
+	}
+	return queued
+}
+
+func (s *clientSession) completeReliableSnapshot() {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.reliablePending == 0 {
+		return
+	}
+	s.reliablePending--
+	if s.reliablePending > 0 || len(s.deferredLatest) == 0 {
+		return
+	}
+
+	payload := s.deferredLatest
+	s.deferredLatest = nil
+	if s.terminal {
+		return
+	}
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+	s.enqueueLatestSnapshotLocked(payload)
 }
 
 func (s *clientSession) enqueueControl(payload []byte) bool {
@@ -320,6 +390,7 @@ func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason 
 	case <-s.snapshots:
 	default:
 	}
+	s.deferredLatest = nil
 	s.terminalHandoff <- terminalWriterCommand{snapshot: snapshot, gameEnd: gameEnd, reason: reason}
 	s.enqueueMu.Unlock()
 	return true
@@ -414,6 +485,9 @@ func (s *clientSession) writeCommand(command writerCommand) bool {
 	if err != nil {
 		s.closeWithIOError(websocket.StatusGoingAway, "write failed", "write_failed", "")
 		return false
+	}
+	if command.kind == writerCommandReliableSnapshot {
+		s.completeReliableSnapshot()
 	}
 	return true
 }
@@ -990,6 +1064,13 @@ func (s *Store) tickRoomState(room *room) {
 	room.lastPlayers = append([]simulation.PlayerData(nil), snapshot.Players...)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
+	hasSkillApproval := false
+	for _, player := range snapshot.Players {
+		if player.PressedSkill {
+			hasSkillApproval = true
+			break
+		}
+	}
 	results := room.calculateGameEndResults(snapshot)
 	claimed := room.claimFinalizedGameEndResults(results)
 	snapshotSessions = room.snapshotSessionsWithoutFinalizedGameEnd()
@@ -1018,7 +1099,11 @@ func (s *Store) tickRoomState(room *room) {
 		return
 	}
 	for _, session := range snapshotSessions {
-		session.enqueueSnapshot(snapshotPayload)
+		if hasSkillApproval {
+			session.enqueueSkillApprovalSnapshot(snapshotPayload)
+		} else {
+			session.enqueueSnapshot(snapshotPayload)
+		}
 	}
 
 	closeReason := defaultPlayerEliminatedCloseMsg

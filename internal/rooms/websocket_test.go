@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -680,6 +681,191 @@ func TestClientOutboxPreservesOrderedControlBeforeSnapshot(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("expected payload %q", want)
 		}
+	}
+}
+
+func TestClientOutboxSkillApprovalDiscardsStaleSnapshotAndOrdersBeforeLatest(t *testing.T) {
+	conn := newFakeClientConn(true)
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	session.enqueueSnapshot([]byte("tick-1-in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take tick-1 normal snapshot")
+	}
+
+	session.enqueueSnapshot([]byte("tick-2-stale"))
+	if !session.enqueueSkillApprovalSnapshot([]byte("tick-3-approval")) {
+		t.Fatal("expected skill approval snapshot to enter reliable queue")
+	}
+	session.enqueueSnapshot([]byte("tick-4-latest"))
+	close(conn.allowWrite)
+
+	for _, want := range []string{"tick-1-in-flight", "tick-3-approval", "tick-4-latest"} {
+		select {
+		case payload := <-conn.writes:
+			if string(payload) != want {
+				t.Fatalf("expected payload %q, got %q", want, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected payload %q", want)
+		}
+	}
+	assertNoFakeClientWrite(t, conn)
+}
+
+func TestClientOutboxSkillApprovalWinsIdleWriterSelectRace(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previousProcs)
+
+	for iteration := 0; iteration < 100; iteration++ {
+		conn := newFakeClientConn(false)
+		session := newClientSession(conn, nil)
+		runtime.Gosched()
+
+		approval := fmt.Sprintf("approval-%d", iteration)
+		latest := fmt.Sprintf("latest-%d", iteration)
+		if !session.enqueueSkillApprovalSnapshot([]byte(approval)) {
+			t.Fatalf("iteration %d approval did not enqueue", iteration)
+		}
+		session.enqueueSnapshot([]byte(latest))
+
+		for position, want := range []string{approval, latest} {
+			select {
+			case payload := <-conn.writes:
+				if string(payload) != want {
+					t.Fatalf("iteration %d position %d payload=%q, want %q", iteration, position+1, payload, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("iteration %d expected payload %q", iteration, want)
+			}
+		}
+		session.close(websocket.StatusNormalClosure, "iteration complete")
+	}
+}
+
+func TestClientOutboxMultipleSkillApprovalsKeepFIFOAndOnlyLatestDeferredSnapshot(t *testing.T) {
+	conn := newFakeClientConn(true)
+	session := newClientSession(conn, nil)
+	t.Cleanup(func() {
+		session.close(websocket.StatusNormalClosure, "test complete")
+	})
+
+	session.enqueueSnapshot([]byte("tick-1-in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take tick-1 normal snapshot")
+	}
+	session.enqueueSnapshot([]byte("tick-2-stale"))
+	if !session.enqueueSkillApprovalSnapshot([]byte("tick-3-approval")) {
+		t.Fatal("expected first skill approval snapshot to enqueue")
+	}
+	session.enqueueSnapshot([]byte("tick-4-deferred-stale"))
+	if !session.enqueueSkillApprovalSnapshot([]byte("tick-5-approval")) {
+		t.Fatal("expected second skill approval snapshot to enqueue")
+	}
+	session.enqueueSnapshot([]byte("tick-6-deferred-latest"))
+	close(conn.allowWrite)
+
+	for _, want := range []string{
+		"tick-1-in-flight",
+		"tick-3-approval",
+		"tick-5-approval",
+		"tick-6-deferred-latest",
+	} {
+		select {
+		case payload := <-conn.writes:
+			if string(payload) != want {
+				t.Fatalf("expected payload %q, got %q", want, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected payload %q", want)
+		}
+	}
+	assertNoFakeClientWrite(t, conn)
+}
+
+func TestClientOutboxTerminalDropsDeferredNormalAfterAcceptedSkillApproval(t *testing.T) {
+	conn := newFakeClientConn(true)
+	conn.events = make(chan string, 8)
+	session := newClientSession(conn, nil)
+
+	session.enqueueSnapshot([]byte("in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take in-flight normal snapshot")
+	}
+	if !session.enqueueSkillApprovalSnapshot([]byte("approval")) {
+		t.Fatal("expected skill approval snapshot to enqueue")
+	}
+	session.enqueueSnapshot([]byte("deferred-normal"))
+	if !session.enqueueTerminal([]byte("terminal-snapshot"), []byte("GameEnd"), "game ended") {
+		t.Fatal("expected terminal command sequence to enqueue")
+	}
+	close(conn.allowWrite)
+
+	for _, want := range []string{"in-flight", "approval", "terminal-snapshot", "GameEnd", "close"} {
+		select {
+		case event := <-conn.events:
+			if event != want {
+				t.Fatalf("expected terminal event %q, got %q", want, event)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected terminal event %q", want)
+		}
+	}
+	select {
+	case event := <-conn.events:
+		t.Fatalf("expected no deferred normal payload after terminal close, got %q", event)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestClientOutboxSkillApprovalOverflowClosesAndReleasesCurrentSession(t *testing.T) {
+	conn := newFakeClientConn(true)
+	var released atomic.Int32
+	var session *clientSession
+	session = newClientSession(conn, func(expected *clientSession) {
+		if expected != session {
+			t.Errorf("expected release callback for current session")
+		}
+		released.Add(1)
+	})
+
+	session.enqueueSnapshot([]byte("in-flight"))
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected writer to take the in-flight normal snapshot")
+	}
+	for index := 0; index < 8; index++ {
+		if !session.enqueueControl([]byte{byte(index)}) {
+			t.Fatalf("expected control payload %d to fit size-8 queue", index)
+		}
+	}
+	session.enqueueSnapshot([]byte("stale-normal"))
+	if session.enqueueSkillApprovalSnapshot([]byte("overflow-approval")) {
+		t.Fatal("expected skill approval snapshot to overflow full reliable queue")
+	}
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected approval overflow to close connection once, got %d", got)
+	}
+	if got := released.Load(); got != 1 {
+		t.Fatalf("expected approval overflow to release session once, got %d", got)
+	}
+
+	session.close(websocket.StatusGoingAway, "second close")
+	if got := conn.closeCount.Load(); got != 1 {
+		t.Fatalf("expected repeated close to preserve one connection close, got %d", got)
+	}
+	if got := released.Load(); got != 1 {
+		t.Fatalf("expected repeated close to preserve one release, got %d", got)
 	}
 }
 
