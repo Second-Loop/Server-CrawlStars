@@ -2,6 +2,7 @@ package simulation
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -100,6 +101,24 @@ func TestLoadServerGameConfigIncludesCharacterNormalAttacks(t *testing.T) {
 	}
 }
 
+func TestLoadServerGameConfigIncludesCharacterSkillCooldowns(t *testing.T) {
+	config := loadServerGameConfig(t)
+	wants := map[CharacterType]int{
+		CharacterTypeShelly: 360,
+		CharacterTypeColt:   390,
+		CharacterTypeLily:   330,
+	}
+	for characterType, want := range wants {
+		playerType, ok := config.PlayerType(characterType)
+		if !ok {
+			t.Fatalf("missing character type %d", characterType)
+		}
+		if got := playerType.Skill.CooldownTicks; got != want {
+			t.Fatalf("character type %d cooldown=%d, want %d", characterType, got, want)
+		}
+	}
+}
+
 func TestClientAndServerConfigVersionsAreIndependent(t *testing.T) {
 	client := loadClientSharedGameConfig(t)
 	server := loadServerGameConfig(t)
@@ -159,8 +178,21 @@ func TestGameConfigPlayerTypeLookupIsIndependentOfCatalogOrder(t *testing.T) {
 func TestResolveGameConfigRejectsUnsupportedVersion(t *testing.T) {
 	config := StaticGameConfig()
 	config.Version = 1
-	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 3") {
+	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 4") {
 		t.Fatalf("ResolveGameConfig(version 1) error = %v, want exact-version rejection", err)
+	}
+}
+
+func TestResolveGameConfigRejectsInvalidSkillCooldown(t *testing.T) {
+	for _, cooldown := range []int{0, -1} {
+		t.Run(fmt.Sprintf("cooldown_%d", cooldown), func(t *testing.T) {
+			config := StaticGameConfig()
+			config.Player.Types[0].Skill.CooldownTicks = cooldown
+			_, err := ResolveGameConfig(config)
+			if err == nil || !strings.Contains(err.Error(), "skill.cooldownTicks must be positive") {
+				t.Fatalf("ResolveGameConfig() error=%v", err)
+			}
+		})
 	}
 }
 

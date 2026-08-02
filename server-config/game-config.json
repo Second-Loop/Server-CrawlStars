@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "tickRate": 30,
   "tile": {
     "size": 1.2
@@ -24,6 +24,9 @@
             "directionOffsetsDegrees": [-12, -6, 0, 6, 12],
             "intervalTicks": 0
           }
+        },
+        "skill": {
+          "cooldownTicks": 360
         }
       },
       {
@@ -44,6 +47,9 @@
             "directionOffsetsDegrees": [0],
             "intervalTicks": 6
           }
+        },
+        "skill": {
+          "cooldownTicks": 390
         }
       },
       {
@@ -58,6 +64,9 @@
           "rangeTiles": 2.2,
           "maxCharges": 2,
           "rechargeTicks": 30
+        },
+        "skill": {
+          "cooldownTicks": 330
         }
       }
     ]
