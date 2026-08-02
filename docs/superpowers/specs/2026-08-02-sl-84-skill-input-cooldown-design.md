@@ -57,11 +57,9 @@ Client는 `max(0, SkillReadyTick - Snapshot.Tick)`으로 남은 tick을 계산�
 
 ### 2.4 승인 snapshot 전달 경계
 
-일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해 느린 client를 격리해요. 단, 어느 player라도 `PressedSkill: true`인 non-terminal snapshot은 기존 size-8 reliable control FIFO로 승격하는 reliable approval exception이에요. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고, reliable approval write가 성공해 승인 pending이 모두 drain될 때까지 이후 일반 snapshot은 session별 deferred latest 하나만 교체 보관해요. multiple approval은 FIFO로 전달하며 모든 승인 write 성공 뒤 approval -> latest 순서로 최신 일반 snapshot 하나를 flush해요.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해요. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격해요. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환해요. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관해요. multiple approval은 FIFO로 전달해요. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush해요. flush는 approval -> latest 순서로 실행해요.
 
-accepted approval은 terminal보다 먼저 drain하고, 그 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 종료 시 버려요. reliable queue overflow/write failure는 silent loss가 아니라 해당 session close/release의 fail-closed이고, 무한히 느린 session을 유지한다고 보장하지 않아요. PressedAttack: true-only snapshot은 계속 latest-only예요. 새 wire field/event를 추가하지 않으며 AsyncAPI dialect 3.0.0/info 0.7.0, control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고, SL-85 effect는 이번 범위에서 제외하며, SL-99 client config v3/server config v4 경계를 유지해요.
-
-이 bounded delivery는 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요.
+accepted approval은 terminal보다 먼저 drain해요. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행해요. deferred normal snapshot은 종료 시 버려요. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요. PressedAttack: true-only snapshot은 계속 latest-only로 전달해요. 새 wire field/event를 추가하지 않아요. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요. SL-85 effect는 이번 범위에서 제외해요. SL-99 client config v3/server config v4 경계를 유지해요.
 
 ## 3. 상태와 config 소유권
 

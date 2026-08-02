@@ -144,50 +144,69 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"minimum: 0",
 		"A + C",
 		"360/390/330",
-		"capacity-1 latest-only",
-		"size-8 reliable control FIFO",
-		"older pending normal snapshot",
-		"deferred latest",
-		"approval -> latest",
-		"multiple approval",
-		"accepted approval",
-		"deferred normal snapshot",
-		"queue overflow/write failure",
-		"close/release",
-		"무한히 느린 session",
-		"PressedAttack: true-only snapshot",
-		"새 wire field/event를 추가하지 않",
+		"일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.",
+		"PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.",
+		"승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.",
+		"후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.",
+		"multiple approval은 FIFO로 전달합니다.",
+		"reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.",
+		"flush는 approval -> latest 순서로 실행합니다.",
+		"accepted approval은 terminal보다 먼저 drain합니다.",
+		"accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.",
+		"deferred normal snapshot은 종료 시 버립니다.",
+		"queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
+		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
+		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
+		"새 wire field/event를 추가하지 않습니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
+		"SL-85 effect는 이번 범위에서 제외합니다.",
+		"SL-99 client config v3/server config v4 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
 	}
 	docsUI := request(handler, http.MethodGet, "/asyncapi")
 	assertStatus(t, docsUI, http.StatusOK)
 	coalescingArticle := extractYAMLBlock(t, docsUI.Body.String(), "<h3>Snapshot coalescing</h3>", "</article>")
+	assertStringExcludesAll(t, coalescingArticle, []string{
+		"일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing하지 않습니다.",
+		"PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달하지 않습니다.",
+		"승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리지 않고 reliable approval로 전환합니다.",
+		"후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관하지 않습니다.",
+		"multiple approval은 FIFO로 전달하지 않습니다.",
+		"reliable approval write가 성공하지 않아도 pending이 모두 drain되기 전에 최신 일반 snapshot 하나를 flush합니다.",
+		"flush는 <code>approval -&gt; latest</code> 순서로 실행하지 않습니다.",
+		"accepted approval은 terminal보다 먼저 drain하지 않습니다.",
+		"accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행하지 않습니다.",
+		"deferred normal snapshot은 종료 시 버리지 않습니다.",
+		"queue overflow/write failure는 해당 session close/release의 fail-closed로 처리하지 않습니다.",
+		"무한히 느린 session 유지와 application-level ACK/replay를 보장합니다.",
+		"PressedAttack: true-only snapshot은 계속 latest-only로 전달하지 않습니다.",
+		"새 wire field/event를 추가합니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
+		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하지 않고 gameplay entity를 넣습니다.",
+		"SL-85 effect는 이번 범위에서 제외하지 않습니다.",
+		"SL-99 client config v3/server config v4 경계를 유지하지 않습니다.",
+	})
 	for _, marker := range []string{
-		"capacity-1 latest-only",
-		"reliable approval exception",
-		"size-8 reliable control FIFO",
-		"older pending normal snapshot",
-		"deferred normal snapshot",
-		"deferred latest",
-		"승인 write가 성공",
-		"approval -&gt; latest",
-		"multiple approval",
-		"accepted approval",
-		"terminal snapshot -&gt; GameEnd -&gt; close",
-		"종료 시 deferred normal snapshot은 버립니다",
-		"queue overflow/write failure",
-		"close/release",
-		"fail-closed",
-		"무한히 느린 session",
-		"application-level ACK/replay",
-		"PressedAttack: true-only snapshot",
-		"새 wire field/event를 추가하지 않",
-		"AsyncAPI dialect 3.0.0",
-		"info 0.7.0",
-		"Players: null</code>과 <code>Projectiles: null</code>을 유지",
-		"SL-85 effect는 이번 범위에서 제외",
-		"SL-99 client config v3/server config v4",
+		"일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.",
+		"PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.",
+		"승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.",
+		"후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.",
+		"multiple approval은 FIFO로 전달합니다.",
+		"reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.",
+		"flush는 <code>approval -&gt; latest</code> 순서로 실행합니다.",
+		"accepted approval은 terminal보다 먼저 drain합니다.",
+		"accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다.",
+		"deferred normal snapshot은 종료 시 버립니다.",
+		"queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
+		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
+		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
+		"새 wire field/event를 추가하지 않습니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
+		"SL-85 effect는 이번 범위에서 제외합니다.",
+		"SL-99 client config v3/server config v4 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)
 	}
@@ -552,6 +571,20 @@ func assertStringNotContains(t *testing.T, body string, unwanted string) {
 
 	if strings.Contains(body, unwanted) {
 		t.Fatalf("expected body not to contain %q, got %s", unwanted, body)
+	}
+}
+
+func assertStringExcludesAll(t *testing.T, body string, unwanted []string) {
+	t.Helper()
+
+	found := make([]string, 0, len(unwanted))
+	for _, marker := range unwanted {
+		if strings.Contains(body, marker) {
+			found = append(found, marker)
+		}
+	}
+	if len(found) > 0 {
+		t.Fatalf("expected body not to contain opposite delivery meanings: %q", found)
 	}
 }
 

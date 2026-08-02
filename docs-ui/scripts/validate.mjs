@@ -21,28 +21,28 @@ const serverGameConfigText = await readFile(new URL("../../server-config/game-co
 const serverGameConfig = JSON.parse(serverGameConfigText);
 
 const reliableSkillDeliveryMarkerGroups = [
-  ["normal snapshot latest-only", ["capacity-1 latest-only"]],
-  ["reliable approval exception", ["reliable approval exception"]],
-  ["reliable FIFO capacity", ["size-8 reliable control FIFO"]],
-  ["older pending normal drain", ["older pending normal snapshot과 기존 deferred normal snapshot을 버리고", "older pending normal snapshot과 deferred normal snapshot을 버리고"]],
-  ["deferred latest", ["deferred latest 하나만"]],
-  ["successful approval write", ["reliable approval write가 성공", "승인 write가 성공"]],
-  ["approval to latest flush", ["approval -> latest", "approval -&gt; latest"]],
-  ["multiple approval FIFO", ["multiple approval은 FIFO"]],
-  ["accepted approval before terminal", ["accepted approval은 terminal보다 먼저", "accepted approval을 먼저"]],
-  ["terminal order", ["terminal snapshot -> GameEnd -> close", "terminal snapshot -&gt; GameEnd -&gt; close"]],
-  ["terminal deferred normal discard", ["deferred normal snapshot은 종료 시 버", "종료 시 deferred normal snapshot은 버"]],
-  ["overflow or write failure", ["queue overflow/write failure"]],
-  ["session close and release", ["close/release"]],
-  ["fail-closed", ["fail-closed"]],
-  ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않"]],
-  ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only"]],
-  ["no new wire event", ["새 wire field/event를 추가하지 않"]],
-  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0"]],
-  ["AsyncAPI info version", ["info 0.7.0"]],
-  ["control players and projectiles remain null", ["Players: null`과 `Projectiles: null`을 유지하고", "Players: null</code>과 <code>Projectiles: null</code>을 유지하고", "Players: null과 Projectiles: null을 유지하고"]],
-  ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외"]],
-  ["SL-99 config boundary", ["SL-99 client config v3/server config v4"]],
+  ["normal snapshot latest-only", ["일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.", "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해요."]],
+  ["reliable approval exception", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
+  ["reliable FIFO capacity", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
+  ["older pending normal drain", ["승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.", "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환해요."]],
+  ["deferred latest", ["후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.", "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관해요."]],
+  ["successful approval write", ["reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.", "reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush해요."]],
+  ["approval to latest flush", ["flush는 approval -> latest 순서로 실행합니다.", "flush는 <code>approval -&gt; latest</code> 순서로 실행합니다.", "flush는 approval -> latest 순서로 실행해요."]],
+  ["multiple approval FIFO", ["multiple approval은 FIFO로 전달합니다.", "multiple approval은 FIFO로 전달해요."]],
+  ["accepted approval before terminal", ["accepted approval은 terminal보다 먼저 drain합니다.", "accepted approval은 terminal보다 먼저 drain해요."]],
+  ["terminal order", ["accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.", "accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다.", "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행해요."]],
+  ["terminal deferred normal discard", ["deferred normal snapshot은 종료 시 버립니다.", "deferred normal snapshot은 종료 시 버려요."]],
+  ["overflow or write failure", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["session close and release", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["fail-closed", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.", "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요."]],
+  ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.", "PressedAttack: true-only snapshot은 계속 latest-only로 전달해요."]],
+  ["no new wire event", ["새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
+  ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
+  ["SL-99 config boundary", ["SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]],
 ];
 
 const requiredRESTPaths = [
@@ -1037,15 +1037,25 @@ function validateCharacterSkillCooldownContract() {
 
 function validateReliableSkillDeliveryValidatorSelfTests() {
   const movedMarkerFixture = `## Current delivery
-일반 non-terminal gameplay snapshot은 capacity-1 latest-only이고 PressedSkill approval은 size-8 reliable control FIFO인 reliable approval exception입니다.
-후속 normal은 deferred latest 하나만 보관합니다.
-multiple approval은 FIFO이고 reliable approval write가 성공한 뒤 approval -> latest로 flush합니다.
-accepted approval 뒤 terminal snapshot -> GameEnd -> close를 실행하며 deferred normal snapshot은 버립니다.
-queue overflow/write failure는 close/release fail-closed이며 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
-PressedAttack: true-only snapshot은 계속 latest-only이고 새 wire field/event를 추가하지 않습니다.
-AsyncAPI dialect 3.0.0과 info 0.7.0, control Players: null과 Projectiles: null, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
+PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
+후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO로 전달합니다.
+reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.
+flush는 approval -> latest 순서로 실행합니다.
+accepted approval은 terminal보다 먼저 drain합니다.
+accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.
+deferred normal snapshot은 종료 시 버립니다.
+queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.
+무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
+새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
+Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
+SL-85 effect는 이번 범위에서 제외합니다.
+SL-99 client config v3/server config v4 경계를 유지합니다.
 ## Historical note
-older pending normal snapshot과 deferred normal snapshot을 버리고 다음 단계로 간다는 설명은 여기에서만 언급합니다.
+승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
 ## End`;
 
   let rejectedMovedMarker = false;
@@ -1064,55 +1074,169 @@ older pending normal snapshot과 deferred normal snapshot을 버리고 다음 �
     "scoped reliable skill delivery validator must reject a required marker moved outside the current block",
   );
 
-  const validCurrentBlockFixture = `## Current delivery
-일반 non-terminal gameplay snapshot은 capacity-1 latest-only이고 PressedSkill approval은 size-8 reliable control FIFO인 reliable approval exception입니다.
-older pending normal snapshot과 deferred normal snapshot을 버리고 후속 normal은 deferred latest 하나만 보관합니다.
-multiple approval은 FIFO이고 reliable approval write가 성공한 뒤 approval -> latest로 flush합니다.
-accepted approval은 terminal보다 먼저 drain하고 terminal snapshot -> GameEnd -> close를 실행한 뒤 deferred normal snapshot은 종료 시 버립니다.
-queue overflow/write failure는 close/release fail-closed이며 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
-PressedAttack: true-only snapshot은 계속 latest-only이고 새 wire field/event를 추가하지 않습니다.
-AsyncAPI dialect 3.0.0과 info 0.7.0, control Players: null과 Projectiles: null을 유지하고, SL-85 effect는 이번 범위에서 제외하며, SL-99 client config v3/server config v4 경계를 유지합니다.
+const validCurrentBlockFixture = `## Current delivery
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
+PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
+승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
+후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO로 전달합니다.
+reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.
+flush는 approval -> latest 순서로 실행합니다.
+accepted approval은 terminal보다 먼저 drain합니다.
+accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.
+deferred normal snapshot은 종료 시 버립니다.
+queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.
+무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
+새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
+Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
+SL-85 effect는 이번 범위에서 제외합니다.
+SL-99 client config v3/server config v4 경계를 유지합니다.
 ## Historical note
 ## End`;
-  for (const [name, oppositeMeaningFixture, rejectedMeaning] of [
+  assertScopedReliableSkillDeliveryContract(
+    validCurrentBlockFixture,
+    "synthetic valid current delivery contract",
+    "## Current delivery",
+    "## Historical note",
+  );
+  const oppositeMeaningMutations = [
+    [
+      "normal latest-only delivery",
+      "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.",
+      "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing하지 않습니다.",
+      "normal snapshot latest-only",
+    ],
+    [
+      "reliable approval FIFO delivery",
+      "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.",
+      "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달하지 않습니다.",
+      "reliable approval exception",
+    ],
+    [
+      "older pending normal drain",
+      "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.",
+      "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리지 않고 reliable approval로 전환합니다.",
+      "older pending normal drain",
+    ],
+    [
+      "deferred latest retention",
+      "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.",
+      "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관하지 않습니다.",
+      "deferred latest",
+    ],
+    [
+      "successful approval write",
+      "reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.",
+      "reliable approval write가 성공하지 않아도 pending이 모두 drain되기 전에 최신 일반 snapshot 하나를 flush합니다.",
+      "successful approval write",
+    ],
+    [
+      "approval-to-latest flush",
+      "flush는 approval -> latest 순서로 실행합니다.",
+      "flush는 approval -> latest 순서로 실행하지 않습니다.",
+      "approval to latest flush",
+    ],
+    [
+      "multiple approval FIFO",
+      "multiple approval은 FIFO로 전달합니다.",
+      "multiple approval은 FIFO로 전달하지 않습니다.",
+      "multiple approval FIFO",
+    ],
+    [
+      "accepted approval before terminal",
+      "accepted approval은 terminal보다 먼저 drain합니다.",
+      "accepted approval은 terminal보다 먼저 drain하지 않습니다.",
+      "accepted approval before terminal",
+    ],
+    [
+      "terminal order",
+      "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.",
+      "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행하지 않습니다.",
+      "terminal order",
+    ],
+    [
+      "terminal deferred normal discard",
+      "deferred normal snapshot은 종료 시 버립니다.",
+      "deferred normal snapshot은 종료 시 버리지 않습니다.",
+      "terminal deferred normal discard",
+    ],
+    [
+      "overflow fail-closed",
+      "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
+      "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리하지 않습니다.",
+      "overflow or write failure",
+    ],
+    [
+      "bounded delivery without acknowledgement",
+      "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
+      "무한히 느린 session 유지와 application-level ACK/replay를 보장합니다.",
+      "bounded delivery without application acknowledgement",
+    ],
+    [
+      "PressedAttack latest-only delivery",
+      "PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
+      "PressedAttack: true-only snapshot은 계속 latest-only로 전달하지 않습니다.",
+      "PressedAttack-only latest-only",
+    ],
     [
       "new-wire meaning",
-      validCurrentBlockFixture.replace("새 wire field/event를 추가하지 않습니다", "새 wire field/event를 추가합니다"),
+      "새 wire field/event를 추가하지 않습니다.",
+      "새 wire field/event를 추가합니다.",
       "no new wire event",
     ],
     [
+      "AsyncAPI dialect and info retention",
+      "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+      "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
+      "AsyncAPI dialect",
+    ],
+    [
       "control null preservation",
-      validCurrentBlockFixture.replace(
-        "Players: null과 Projectiles: null을 유지하고",
-        "Players: null과 Projectiles: null을 유지하지 않고",
-      ),
+      "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.",
+      "Control snapshot의 Players: null과 Projectiles: null을 유지하지 않고 gameplay entity를 넣습니다.",
       "control players and projectiles remain null",
     ],
     [
       "SL-85 effect exclusion",
-      validCurrentBlockFixture.replace(
-        "SL-85 effect는 이번 범위에서 제외하며",
-        "SL-85 effect를 이번 범위에 포함하며",
-      ),
+      "SL-85 effect는 이번 범위에서 제외합니다.",
+      "SL-85 effect는 이번 범위에서 제외하지 않습니다.",
       "SL-85 effect boundary",
     ],
-  ]) {
+    [
+      "SL-99 config boundary retention",
+      "SL-99 client config v3/server config v4 경계를 유지합니다.",
+      "SL-99 client config v3/server config v4 경계를 유지하지 않습니다.",
+      "SL-99 config boundary",
+    ],
+  ];
+  const allowedOppositeMeanings = [];
+  for (const [name, positiveMeaning, oppositeMeaning, rejectedMeaning] of oppositeMeaningMutations) {
+    assert(
+      countOccurrences(validCurrentBlockFixture, positiveMeaning) === 1,
+      `synthetic opposite-${name} fixture must contain the positive meaning exactly once`,
+    );
+    const oppositeMeaningFixture = validCurrentBlockFixture.replace(positiveMeaning, oppositeMeaning);
     let rejectedOppositeMeaning = false;
     try {
       assertScopedReliableSkillDeliveryContract(
         oppositeMeaningFixture,
-        `synthetic opposite-${name} delivery contract`,
+        "synthetic opposite-meaning delivery contract",
         "## Current delivery",
         "## Historical note",
       );
     } catch (error) {
       rejectedOppositeMeaning = error instanceof Error && error.message.includes(rejectedMeaning);
     }
-    assert(
-      rejectedOppositeMeaning,
-      `scoped reliable skill delivery validator must reject opposite ${name} in the current block`,
-    );
+    if (!rejectedOppositeMeaning) {
+      allowedOppositeMeanings.push(name);
+    }
   }
+  assert(
+    allowedOppositeMeanings.length === 0,
+    `scoped reliable skill delivery validator must reject opposite meanings in the current block: ${allowedOppositeMeanings.join(", ")}`,
+  );
 }
 
 function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
