@@ -74,14 +74,17 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-`client-config/game-config.json`은 Unity client가 build 때 sparse checkout해서 runtime asset 경로로 복사하는 공유 config입니다.
+`client-config/game-config.json`은 Unity client가 build 때 sparse checkout해서 runtime asset 경로로 복사하는 client config v3 공유 artifact입니다. 필수 field와 exact version을 build와 runtime parse에서 검증합니다.
 
 - `tileSize`
 - `playerRadius`
-- `playerTypes`
-- `characters` (v2 `0/1/2 = shelly/colt/lily`; legacy `playerTypes: ["default"]` mirror는 compatibility용)
+- `characters[].type` (`0=Shelly`, `1=Colt`, `2=Lily`)
+- `characters[].normalAttackDistance`, `characters[].skillAttackDistance` (Unity world unit)
+- `characters[].skillAttackCoolDown` (초), `characters[].maxBullets` (client charge 개수)
+- `normalAttackCoolDown` (초)
 - `projectileRadius`
-- `projectileTypes`
+
+`normalAttackDistance`, `skillAttackCoolDown`, `maxBullets` 같은 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다. 실제 hit/range/charge/skill 승인 결과는 server config와 snapshot이 소유하는 server-authoritative gameplay truth이며 client artifact 값으로 판정을 다시 만들지 않습니다.
 
 `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다.
 

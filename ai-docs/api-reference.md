@@ -591,10 +591,10 @@ Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking
 
 Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 공유 config입니다. legacy `playerTypes: ["default"]` mirror와 함께 v2 `characters` catalog (`0/1/2 = shelly/colt/lily`)를 포함합니다. radius `0.5`, speed `2`, HP `4000/3100/4100`의 canonical runtime mapping은 server config가 소유합니다.
+- `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 client config v3입니다. `characters[].type`은 `0=Shelly`, `1=Colt`, `2=Lily`이고 `normalAttackDistance`·`skillAttackDistance`는 Unity world unit, `normalAttackCoolDown`·`skillAttackCoolDown`은 초, `maxBullets`는 client charge 표현값입니다. 필수 field와 exact version은 build/runtime parser가 검증합니다.
 - `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v3 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`입니다.
 
-Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map과 attack charge 진행도는 server-only config/state나 Ready/snapshot message의 책임입니다.
+Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client의 `normalAttackDistance`, `skillAttackCoolDown`, `maxBullets`는 cooldown UI와 로컬 bot 입력 판단용이며 `HP`, speed, damage, 실제 range/charge/skill 승인 결과는 server-only config/state나 Ready/snapshot message가 소유하는 server-authoritative truth입니다.
 
 ## 기본 duel 2인 수동 검증 시나리오
 
@@ -619,7 +619,7 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. `HP`, 
 
 `POST /matchmaking/join`의 optional lower-camel `characterType`은 stable ID `0=Shelly`, `1=Colt`, `2=Lily`를 받습니다. 새 client는 값을 명시하고, SL-82에서는 legacy field 생략만 Shelly `0`으로 보정하며 structured warning을 한 번 기록합니다. explicit `null`, non-integer, string/bool/object/array, 지원하지 않는 정수는 400 `invalid_character_type`이고 SL-98에서 request field를 required로 전환합니다.
 
-REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot/debug participant는 Shelly `0`입니다. Config v2는 identity/render catalog를 유지하고 server config v3의 현재 stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge입니다.
+REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot/debug participant는 Shelly `0`입니다. Client config v3는 같은 stable numeric type과 client 표시·입력 보조값을 제공하고, server config v3의 현재 authoritative stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge입니다.
 
 ## 제약
 
