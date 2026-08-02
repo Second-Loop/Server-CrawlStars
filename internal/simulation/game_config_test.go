@@ -2,6 +2,7 @@ package simulation
 
 import (
 	"encoding/json"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -9,13 +10,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	clientconfig "github.com/Second-Loop/Server-CrawlStars/client-config"
 )
 
-func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T) {
+func TestClientGameConfigSharedCollisionValuesMatchSimulation(t *testing.T) {
 	config := loadClientSharedGameConfig(t)
 
-	if config.Version != ClientGameConfigVersion {
-		t.Fatalf("expected client config version %d, got %d", ClientGameConfigVersion, config.Version)
+	if config.Version != clientconfig.Version {
+		t.Fatalf("expected client config version %d, got %d", clientconfig.Version, config.Version)
 	}
 	if config.TileSize != TileSize {
 		t.Fatalf("expected tile size %f, got %f", TileSize, config.TileSize)
@@ -23,17 +26,8 @@ func TestClientGameConfigArtifactOnlyIncludesSharedClientConstants(t *testing.T)
 	if config.PlayerRadius != DefaultPlayerRadius {
 		t.Fatalf("expected player radius %f, got %f", DefaultPlayerRadius, config.PlayerRadius)
 	}
-	if len(config.PlayerTypes) != 1 || config.PlayerTypes[0] != "default" {
-		t.Fatalf("expected default player type list, got %+v", config.PlayerTypes)
-	}
 	if config.ProjectileRadius != DefaultProjectileRadius {
 		t.Fatalf("expected projectile radius %f, got %f", DefaultProjectileRadius, config.ProjectileRadius)
-	}
-	if len(config.ProjectileTypes) != 1 || config.ProjectileTypes[0] != "default" {
-		t.Fatalf("expected default projectile type list, got %+v", config.ProjectileTypes)
-	}
-	if config.ContainsServerMode {
-		t.Fatal("client config must not include server-only mode rules")
 	}
 }
 
@@ -109,29 +103,29 @@ func TestLoadServerGameConfigIncludesCharacterNormalAttacks(t *testing.T) {
 func TestClientAndServerConfigVersionsAreIndependent(t *testing.T) {
 	client := loadClientSharedGameConfig(t)
 	server := loadServerGameConfig(t)
-	if client.Version != ClientGameConfigVersion || server.Version != ServerGameConfigVersion {
-		t.Fatalf("versions = client %d server %d, want %d/%d", client.Version, server.Version, ClientGameConfigVersion, ServerGameConfigVersion)
+	if client.Version != clientconfig.Version || server.Version != ServerGameConfigVersion {
+		t.Fatalf("versions = client %d server %d, want %d/%d", client.Version, server.Version, clientconfig.Version, ServerGameConfigVersion)
 	}
 }
 
 func TestClientAndServerCharacterCatalogMappingsMatch(t *testing.T) {
 	client := loadClientSharedGameConfig(t)
 	server := loadServerGameConfig(t)
-	want := map[CharacterType]string{
-		CharacterTypeShelly: "shelly",
-		CharacterTypeColt:   "colt",
-		CharacterTypeLily:   "lily",
+	want := map[CharacterType]bool{
+		CharacterTypeShelly: true,
+		CharacterTypeColt:   true,
+		CharacterTypeLily:   true,
 	}
-	if client.Version != ClientGameConfigVersion || server.Version != ServerGameConfigVersion {
-		t.Fatalf("client/server version = %d/%d, want %d/%d", client.Version, server.Version, ClientGameConfigVersion, ServerGameConfigVersion)
+	if client.Version != clientconfig.Version || server.Version != ServerGameConfigVersion {
+		t.Fatalf("client/server version = %d/%d, want %d/%d", client.Version, server.Version, clientconfig.Version, ServerGameConfigVersion)
 	}
-	clientMapping := make(map[CharacterType]string, len(client.Characters))
+	clientMapping := make(map[CharacterType]bool, len(client.Characters))
 	for _, character := range client.Characters {
-		clientMapping[character.CharacterType] = character.ID
+		clientMapping[CharacterType(character.Type)] = true
 	}
-	serverMapping := make(map[CharacterType]string, len(server.Player.Types))
+	serverMapping := make(map[CharacterType]bool, len(server.Player.Types))
 	for _, playerType := range server.Player.Types {
-		serverMapping[playerType.CharacterType] = playerType.ID
+		serverMapping[playerType.CharacterType] = true
 	}
 	if len(client.Characters) != len(want) || len(clientMapping) != len(client.Characters) {
 		t.Fatalf("client character catalog is not exact/unique: entries=%d mapping=%v", len(client.Characters), clientMapping)
@@ -141,9 +135,6 @@ func TestClientAndServerCharacterCatalogMappingsMatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(clientMapping, want) || !reflect.DeepEqual(serverMapping, want) {
 		t.Fatalf("character mapping drift: client=%v server=%v want=%v", clientMapping, serverMapping, want)
-	}
-	if !reflect.DeepEqual(client.PlayerTypes, []string{"default"}) || client.PlayerRadius != 0.5 {
-		t.Fatalf("legacy client mirror changed: playerTypes=%v playerRadius=%v", client.PlayerTypes, client.PlayerRadius)
 	}
 }
 
@@ -604,60 +595,17 @@ func TestGameConfigAssignsConfiguredMatchTeams(t *testing.T) {
 	}
 }
 
-type clientCharacterConfig struct {
-	CharacterType CharacterType `json:"characterType"`
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Role          string        `json:"role"`
-}
-
-type clientSharedGameConfig struct {
-	Version            int                     `json:"version"`
-	TileSize           float64                 `json:"tileSize"`
-	PlayerRadius       float64                 `json:"playerRadius"`
-	PlayerTypes        []string                `json:"playerTypes"`
-	Characters         []clientCharacterConfig `json:"characters"`
-	ProjectileRadius   float64                 `json:"projectileRadius"`
-	ProjectileTypes    []string                `json:"projectileTypes"`
-	ContainsServerMode bool                    `json:"mode"`
-}
-
-func loadClientSharedGameConfig(t *testing.T) clientSharedGameConfig {
+func loadClientSharedGameConfig(t *testing.T) clientconfig.Config {
 	t.Helper()
 
-	path := filepath.Join("..", "..", "client-config", "game-config.json")
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(clientconfig.Reader())
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("read embedded client config: %v", err)
 	}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("decode %s keys: %v", path, err)
-	}
-	wantKeys := map[string]bool{
-		"version":          true,
-		"tileSize":         true,
-		"playerRadius":     true,
-		"playerTypes":      true,
-		"characters":       true,
-		"projectileRadius": true,
-		"projectileTypes":  true,
-	}
-	for key := range raw {
-		if !wantKeys[key] {
-			t.Fatalf("client config must not include server-only key %q", key)
-		}
-	}
-	for key := range wantKeys {
-		if _, ok := raw[key]; !ok {
-			t.Fatalf("client config missing shared key %q", key)
-		}
-	}
-
-	var config clientSharedGameConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("decode %s: %v", path, err)
+	config, err := clientconfig.Parse(data)
+	if err != nil {
+		t.Fatalf("parse embedded client config: %v", err)
 	}
 	return config
 }

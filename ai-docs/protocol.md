@@ -74,14 +74,17 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.
 
-`client-config/game-config.json`은 Unity client가 build 때 sparse checkout해서 runtime asset 경로로 복사하는 공유 config입니다.
+`client-config/game-config.json`은 Unity client가 build 때 sparse checkout해서 runtime asset 경로로 복사하는 client config v3 공유 artifact입니다. Server의 Go parser가 canonical artifact를 검증하며 Client 소비 계약은 필수 field와 exact version을 build와 runtime parse에서 거부하도록 요구합니다.
 
 - `tileSize`
 - `playerRadius`
-- `playerTypes`
-- `characters` (v2 `0/1/2 = shelly/colt/lily`; legacy `playerTypes: ["default"]` mirror는 compatibility용)
+- `characters[].type` (`0=Shelly`, `1=Colt`, `2=Lily`)
+- `characters[].normalAttackDistance`, `characters[].skillAttackDistance` (Unity world unit)
+- `characters[].skillAttackCoolDown` (초), `characters[].maxBullets` (client charge 개수)
+- `normalAttackCoolDown` (초)
 - `projectileRadius`
-- `projectileTypes`
+
+`normalAttackDistance`, `skillAttackCoolDown`, `maxBullets` 같은 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다. 실제 hit/range/charge/skill 승인 결과는 server config와 snapshot이 소유하는 server-authoritative gameplay truth이며 client artifact 값으로 판정을 다시 만들지 않습니다.
 
 `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다.
 
@@ -102,7 +105,7 @@ Attack charge와 recharge 진행도도 server-only state이며 client config나 
 
 ### SL-83 캐릭터 일반 공격
 
-server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Client config v2는 캐릭터 identity와 렌더 metadata만 유지하며 raw bytes를 바꾸지 않습니다.
+server config v3 `normalAttack`이 일반 공격의 source of truth입니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 - Shelly는 activation tick에 5발을 동시에 만들고 조준 방향 기준 `-12,-6,0,6,12`도 spread를 적용합니다.
 - Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick에는 새 activation을 겹치지 않고 `A+31`부터 다음 공격을 승인합니다. Burst 방향은 activation 때 고정되며 owner가 사망하면 남은 emission을 취소합니다.

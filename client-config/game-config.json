@@ -1,13 +1,30 @@
 {
-  "version": 2,
+  "version": 3,
   "tileSize": 1.2,
   "playerRadius": 0.5,
-  "playerTypes": ["default"],
   "characters": [
-    {"characterType": 0, "id": "shelly", "name": "Shelly", "role": "damage_dealer"},
-    {"characterType": 1, "id": "colt", "name": "Colt", "role": "damage_dealer"},
-    {"characterType": 2, "id": "lily", "name": "Lily", "role": "assassin"}
+    {
+      "type": 0,
+      "normalAttackDistance": 5.0,
+      "skillAttackDistance": 1.0,
+      "skillAttackCoolDown": 10,
+      "maxBullets": 3
+    },
+    {
+      "type": 1,
+      "normalAttackDistance": 1.5,
+      "skillAttackDistance": 3.0,
+      "skillAttackCoolDown": 10,
+      "maxBullets": 3
+    },
+    {
+      "type": 2,
+      "normalAttackDistance": 6.0,
+      "skillAttackDistance": 7.0,
+      "skillAttackCoolDown": 10,
+      "maxBullets": 4
+    }
   ],
-  "projectileRadius": 0.3,
-  "projectileTypes": ["default"]
+  "normalAttackCoolDown": 1,
+  "projectileRadius": 0.3
 }

@@ -677,3 +677,26 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Character identity는 client v2, authoritative combat execution은 server v3라는 소유권이 분리됩니다.
 - Scheduled projectile와 melee가 같은 room tick/snapshot/GameEnd 파이프라인을 사용해 transport와 simulation 사이에 두 번째 combat truth가 생기지 않습니다.
 - 기존 WebSocket parser와 wire schema는 호환되고, client 쪽 실행 지원과 수치 조정은 별도 issue로 남습니다.
+
+후속 반영 (SL-99): client v2의 identity/render metadata는 ADR-0037의 client config v3 입력 보조 계약으로 교체됐습니다. Server-authoritative combat execution은 계속 server config v3와 simulation이 소유합니다.
+
+## ADR-0037: SL-99 Client Config v3는 Strict Parser와 분리된 Gameplay Ownership을 사용
+
+상태: 승인됨
+
+맥락: Unity `GameConfig` parser는 `characters[].type`, `normalAttackDistance`, `skillAttackDistance`, `skillAttackCoolDown`, `maxBullets`와 top-level `normalAttackCoolDown`을 소비하지만 기존 server client artifact v2는 `characterType/id/name/role` metadata를 제공했습니다. Newtonsoft의 value type 기본값 때문에 누락 field가 예외 대신 `0`으로 해석될 수 있었고, build preprocessor도 JSON syntax만 확인한 뒤 artifact를 덮어썼습니다.
+
+결정:
+
+- `client-config/game-config.json`을 breaking client config v3로 올리고 `characters[].type 0/1/2`, `normalAttackDistance 5/1.5/6`, `skillAttackDistance 1/3/7`, `skillAttackCoolDown 10/10/10`, `maxBullets 3/3/4`, `normalAttackCoolDown 1`을 제공합니다.
+- Distance는 Unity world unit, cooldown은 초, `maxBullets`는 client charge 표현 개수입니다. 이 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다.
+- Server의 실제 normal attack range `7.2/9/2.2 tile`, charge `3/3/2`, hit/damage와 skill 승인 결과는 server config와 simulation/snapshot이 소유하는 server-authoritative gameplay truth입니다. Client config로 gameplay를 재판정하지 않습니다.
+- Go validator는 exact version `3`, 필수 field, finite positive 값, 중복 없는 exact character type set `0/1/2`를 검증합니다. Unknown additive field는 허용합니다.
+- Client 소비 계약도 build/runtime에서 같은 검증 경계를 요구합니다. Unity parser와 build preprocessor 구현은 Client 저장소 소유자의 범위이며 이 Server PR은 Client 코드를 수정하지 않습니다.
+- 이 변경은 `InputCommand`, `PlayerData`, `ProjectileData`, `Snapshot`, REST/OpenAPI, WebSocket/AsyncAPI field를 바꾸지 않습니다.
+
+결과:
+
+- Server artifact가 Client 소비자에게 필요한 field, 값, 단위, version을 명시하고 Go 회귀 test가 drift를 막습니다.
+- Client 표시·입력 보조값과 server-authoritative gameplay 판정의 차이가 명시적으로 유지됩니다.
+- Server PR의 artifact, validator, 문서와 전체 CI가 확인된 뒤 SL-99를 완료합니다. Client 코드 기여는 Server PR 완료 조건이 아닙니다.
