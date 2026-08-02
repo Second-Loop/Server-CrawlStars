@@ -156,7 +156,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"close/release",
 		"무한히 느린 session",
 		"PressedAttack: true-only snapshot",
-		"새 wire field/event",
+		"새 wire field/event를 추가하지 않",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
 	}
@@ -182,12 +182,11 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"무한히 느린 session",
 		"application-level ACK/replay",
 		"PressedAttack: true-only snapshot",
-		"새 wire field/event",
+		"새 wire field/event를 추가하지 않",
 		"AsyncAPI dialect 3.0.0",
 		"info 0.7.0",
-		"Players: null",
-		"Projectiles: null",
-		"SL-85 effect",
+		"Players: null</code>과 <code>Projectiles: null</code>을 유지",
+		"SL-85 effect는 이번 범위에서 제외",
 		"SL-99 client config v3/server config v4",
 	} {
 		assertStringContains(t, coalescingArticle, marker)

@@ -110,7 +110,7 @@ function renderAsyncAPI(specText) {
             <h3>Snapshot coalescing</h3>
             <p>일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 합칩니다. 어느 player라도 <code>PressedSkill: true</code>이면 기존 size-8 reliable control FIFO로 승격합니다. 승격 전에 older pending normal snapshot과 deferred normal snapshot을 버리고, 승인 write가 성공해 pending이 모두 drain될 때까지 일반 snapshot은 session별 deferred latest 하나만 교체 보관합니다.</p>
             <p>multiple approval은 FIFO로 전달하고 승인 뒤 <code>approval -&gt; latest</code> 순서로 최신 일반 snapshot 하나를 flush합니다. accepted approval을 먼저 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code>를 실행하며 종료 시 deferred normal snapshot은 버립니다. queue overflow/write failure는 silent loss가 아니라 session close/release의 fail-closed이고 무한히 느린 session 유지를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only이며 새 wire field/event를 추가하지 않습니다.</p>
-            <p>이 승격은 reliable approval exception이며 bounded delivery라서 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0, control snapshot의 <code>Players: null</code>/<code>Projectiles: null</code>, SL-85 effect, SL-99 client config v3/server config v4 경계를 유지합니다.</p>
+            <p>이 승격은 reliable approval exception이며 bounded delivery라서 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0, control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고, SL-85 effect는 이번 범위에서 제외하며, SL-99 client config v3/server config v4 경계를 유지합니다.</p>
           </article>
           <article>
             <h3>Reliable control</h3>

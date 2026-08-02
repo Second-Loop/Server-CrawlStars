@@ -37,12 +37,11 @@ const reliableSkillDeliveryMarkerGroups = [
   ["fail-closed", ["fail-closed"]],
   ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않"]],
   ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only"]],
-  ["no new wire event", ["새 wire field/event"]],
+  ["no new wire event", ["새 wire field/event를 추가하지 않"]],
   ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0"]],
   ["AsyncAPI info version", ["info 0.7.0"]],
-  ["control players remain null", ["Players: null"]],
-  ["control projectiles remain null", ["Projectiles: null"]],
-  ["SL-85 effect boundary", ["SL-85 effect"]],
+  ["control players and projectiles remain null", ["Players: null`과 `Projectiles: null`을 유지하고", "Players: null</code>과 <code>Projectiles: null</code>을 유지하고", "Players: null과 Projectiles: null을 유지하고"]],
+  ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외"]],
   ["SL-99 config boundary", ["SL-99 client config v3/server config v4"]],
 ];
 
@@ -1064,6 +1063,56 @@ older pending normal snapshot과 deferred normal snapshot을 버리고 다음 �
     rejectedMovedMarker,
     "scoped reliable skill delivery validator must reject a required marker moved outside the current block",
   );
+
+  const validCurrentBlockFixture = `## Current delivery
+일반 non-terminal gameplay snapshot은 capacity-1 latest-only이고 PressedSkill approval은 size-8 reliable control FIFO인 reliable approval exception입니다.
+older pending normal snapshot과 deferred normal snapshot을 버리고 후속 normal은 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO이고 reliable approval write가 성공한 뒤 approval -> latest로 flush합니다.
+accepted approval은 terminal보다 먼저 drain하고 terminal snapshot -> GameEnd -> close를 실행한 뒤 deferred normal snapshot은 종료 시 버립니다.
+queue overflow/write failure는 close/release fail-closed이며 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only이고 새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0, control Players: null과 Projectiles: null을 유지하고, SL-85 effect는 이번 범위에서 제외하며, SL-99 client config v3/server config v4 경계를 유지합니다.
+## Historical note
+## End`;
+  for (const [name, oppositeMeaningFixture, rejectedMeaning] of [
+    [
+      "new-wire meaning",
+      validCurrentBlockFixture.replace("새 wire field/event를 추가하지 않습니다", "새 wire field/event를 추가합니다"),
+      "no new wire event",
+    ],
+    [
+      "control null preservation",
+      validCurrentBlockFixture.replace(
+        "Players: null과 Projectiles: null을 유지하고",
+        "Players: null과 Projectiles: null을 유지하지 않고",
+      ),
+      "control players and projectiles remain null",
+    ],
+    [
+      "SL-85 effect exclusion",
+      validCurrentBlockFixture.replace(
+        "SL-85 effect는 이번 범위에서 제외하며",
+        "SL-85 effect를 이번 범위에 포함하며",
+      ),
+      "SL-85 effect boundary",
+    ],
+  ]) {
+    let rejectedOppositeMeaning = false;
+    try {
+      assertScopedReliableSkillDeliveryContract(
+        oppositeMeaningFixture,
+        `synthetic opposite-${name} delivery contract`,
+        "## Current delivery",
+        "## Historical note",
+      );
+    } catch (error) {
+      rejectedOppositeMeaning = error instanceof Error && error.message.includes(rejectedMeaning);
+    }
+    assert(
+      rejectedOppositeMeaning,
+      `scoped reliable skill delivery validator must reject opposite ${name} in the current block`,
+    );
+  }
 }
 
 function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
