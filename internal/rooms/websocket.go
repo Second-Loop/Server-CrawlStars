@@ -829,6 +829,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 		MoveDir:       input.MoveDir,
 		AttackDir:     input.AttackDir,
 		PressedAttack: input.PressedAttack,
+		PressedSkill:  input.PressedSkill,
 	}
 	return inputStored
 }

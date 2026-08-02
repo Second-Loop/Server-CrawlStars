@@ -93,6 +93,37 @@ func TestInputMessageRejectsExplicitNullOrNonIntegerClientTick(t *testing.T) {
 	}
 }
 
+func TestInputMessageDecodesPressedSkillAndDefaultsMissingToFalse(t *testing.T) {
+	for name, payload := range map[string]string{
+		"missing": `{"PressedAttack":true}`,
+		"false":   `{"PressedSkill":false}`,
+		"true":    `{"PressedSkill":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var input inputMessage
+			if err := json.Unmarshal([]byte(payload), &input); err != nil {
+				t.Fatal(err)
+			}
+			if input.PressedSkill != (name == "true") {
+				t.Fatalf("PressedSkill=%t", input.PressedSkill)
+			}
+		})
+	}
+}
+
+func TestInputMessageRejectsNullOrNonBooleanPressedSkill(t *testing.T) {
+	for name, value := range map[string]string{
+		"null": "null", "number": "1", "string": `"true"`, "object": `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var input inputMessage
+			if err := json.Unmarshal([]byte(`{"PressedSkill":`+value+`}`), &input); err == nil {
+				t.Fatal("expected invalid PressedSkill")
+			}
+		})
+	}
+}
+
 func botProjectionFixture(config simulation.GameConfig) (
 	[]simulation.PlayerData,
 	[]readyEventPlayer,

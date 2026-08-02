@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
@@ -82,6 +83,7 @@ type inputMessage struct {
 	MoveDir       simulation.Vector2 `json:"MoveDir"`
 	AttackDir     simulation.Vector2 `json:"AttackDir"`
 	PressedAttack bool               `json:"PressedAttack"`
+	PressedSkill  bool               `json:"PressedSkill"`
 }
 
 func (m *inputMessage) UnmarshalJSON(data []byte) error {
@@ -90,6 +92,7 @@ func (m *inputMessage) UnmarshalJSON(data []byte) error {
 		MoveDir       simulation.Vector2 `json:"MoveDir"`
 		AttackDir     simulation.Vector2 `json:"AttackDir"`
 		PressedAttack bool               `json:"PressedAttack"`
+		PressedSkill  json.RawMessage    `json:"PressedSkill"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -100,13 +103,24 @@ func (m *inputMessage) UnmarshalJSON(data []byte) error {
 		AttackDir:     wire.AttackDir,
 		PressedAttack: wire.PressedAttack,
 	}
-	if len(wire.ClientTick) == 0 {
+	if len(wire.ClientTick) > 0 {
+		if bytes.Equal(bytes.TrimSpace(wire.ClientTick), []byte("null")) {
+			return errors.New("ClientTick must be an integer")
+		}
+		if err := json.Unmarshal(wire.ClientTick, &m.ClientTick); err != nil {
+			return err
+		}
+	}
+	if len(wire.PressedSkill) == 0 {
 		return nil
 	}
-	if bytes.Equal(bytes.TrimSpace(wire.ClientTick), []byte("null")) {
-		return errors.New("ClientTick must be an integer")
+	if bytes.Equal(bytes.TrimSpace(wire.PressedSkill), []byte("null")) {
+		return errors.New("PressedSkill must be a boolean")
 	}
-	return json.Unmarshal(wire.ClientTick, &m.ClientTick)
+	if err := json.Unmarshal(wire.PressedSkill, &m.PressedSkill); err != nil {
+		return fmt.Errorf("decode PressedSkill: %w", err)
+	}
+	return nil
 }
 
 type inputDisposition uint8
