@@ -40,6 +40,7 @@ type InputCommand struct {
 	MoveDir       Vector2  `json:"MoveDir"`
 	AttackDir     Vector2  `json:"AttackDir"`
 	PressedAttack bool     `json:"PressedAttack"`
+	PressedSkill  bool     `json:"PressedSkill"`
 }
 
 type PlayerData struct {
@@ -55,7 +56,9 @@ type PlayerData struct {
 	Radius                  float64       `json:"Radius"`
 	HP                      float64       `json:"HP"`
 	PressedAttack           bool          `json:"PressedAttack"`
+	PressedSkill            bool          `json:"PressedSkill"`
 	IsDead                  bool          `json:"IsDead"`
+	SkillReadyTick          Tick          `json:"SkillReadyTick"`
 	LastProcessedClientTick int64         `json:"LastProcessedClientTick"`
 }
 
@@ -148,6 +151,7 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 func (s *State) Step(inputs []InputCommand) Snapshot {
 	for i := range s.players {
 		s.players[i].PressedAttack = false
+		s.players[i].PressedSkill = false
 	}
 	s.rechargeAttackCharges()
 	s.moveProjectiles()
@@ -156,7 +160,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	meleeIntents := make([]meleeIntent, 0, len(inputs))
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
-		if intent, ok := s.applyInput(input); ok {
+		if intent, ok := s.applyInput(input, snapshotTick); ok {
 			if intent.attack.Kind == NormalAttackMelee {
 				if melee, approved := s.approveMeleeAttack(intent); approved {
 					meleeIntents = append(meleeIntents, melee)
@@ -266,7 +270,7 @@ func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []Playe
 	return cloned
 }
 
-func (s *State) applyInput(input InputCommand) (attackIntent, bool) {
+func (s *State) applyInput(input InputCommand, activationTick Tick) (attackIntent, bool) {
 	for i := range s.players {
 		if s.players[i].ID != input.PlayerID {
 			continue
@@ -302,6 +306,10 @@ func (s *State) applyInput(input InputCommand) (attackIntent, bool) {
 		nextY := Vector2{X: s.players[i].Pos.X, Y: s.players[i].Pos.Y + movement.Y}
 		if !s.collidesWithMap(nextY, s.players[i].Radius, tileBlocksPlayer) {
 			s.players[i].Pos = nextY
+		}
+		if input.PressedSkill && attackDir != (Vector2{}) &&
+			s.tryApproveSkill(i, activationTick) {
+			return attackIntent{}, false
 		}
 		if !input.PressedAttack || attackDir == (Vector2{}) {
 			return attackIntent{}, false
