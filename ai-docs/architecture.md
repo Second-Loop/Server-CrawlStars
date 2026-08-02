@@ -111,15 +111,23 @@ Server-owned bot도 별도 simulation을 만들지 않습니다. 한 room tick�
   -> LastProcessedClientTick을 포함한 authoritative snapshot 1개
 ```
 
-`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge와 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
+`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`과 `SkillReadyTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge, skill approval/cooldown과 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
 
 ### SL-83 일반 공격 소유권
 
-server config v3가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
+server config v4가 일반 공격 실행의 source of truth입니다. 각 player type의 `normalAttack`이 kind, hit당 damage, tile range, `3/3/2` max charge, 30 tick recharge와 projectile schedule을 소유하고, projectile type catalog는 radius/speed를 소유합니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 `internal/rooms`는 canonical `CharacterType`, room-local config, human/bot input을 production `State.Step`에 전달하고 authoritative snapshot으로 기존 GameEnd 계산기를 호출합니다. Room은 캐릭터별 피해나 test-only damage branch를 갖지 않습니다. 실제 room regression도 Ready/countdown/spawn 뒤 production input으로 Colt projectile death와 reciprocal 1100-HP Lily Draw를 검증합니다.
 
 `internal/simulation`은 activation을 승인하고 캐릭터별 실행기를 고릅니다. Shelly는 같은 activation tick에 5발 spread, Colt는 `A+[0,6,12,18,24,30]` burst와 `A+31` non-overlap, Lily는 wall/boundary로 자른 2.2 tile centerline의 same-tick batched damage를 수행합니다. 이 책임 분리는 기존 InputMessage, PlayerData, ProjectileData, Snapshot wire shape를 바꾸지 않습니다.
+
+### SL-84 Skill cooldown 소유권
+
+Server config v4의 player type별 `skill.cooldownTicks`가 Shelly/Colt/Lily `360/390/330`을 소유합니다. SL-84는 SL-99에서 도입한 Client config v3를 바꾸지 않습니다. `internal/rooms.InputMessage`는 optional `PressedSkill`을 strict boolean으로 decode해 missing은 false로 두고 present null/wrong type은 `invalid_input`으로 거부합니다. `AttackDir`은 같은 command에서 재사용하지만 그 자체가 skill을 trigger하지 않으며, cooldown-blocked attempt는 queue하지 않습니다. 유효한 양수 command라면 skill이 cooldown에 막혀도 processed ACK는 진행합니다.
+
+`internal/simulation.PlayerData.SkillReadyTick`이 persistent canonical absolute state이고 별도 cooldown map을 만들지 않습니다. `Snapshot.Tick >= SkillReadyTick`이면 ready이며 tick `A` 승인 시 cooldown `C`를 더해 `A + C`를 기록하고 exact `A + C` tick도 허용합니다. `PressedSkill`은 각 Step 시작에 false로 reset하고 승인 tick에만 true인 transient server approval pulse입니다. 초기 player state는 `false/0`입니다.
+
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Public AsyncAPI는 `0.7.0`으로 올리고 gameplay `PlayerData.PressedSkill`/`SkillReadyTick`을 required로 두지만, REST OpenAPI와 starting/started control의 `Players: null`, `Projectiles: null`은 유지합니다. 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 
 핵심 값:
 
@@ -262,8 +270,9 @@ WebSocket:
 - `duel_1v1`은 기존 Win/Lose와 동시 사망 Draw를 유지합니다.
 - Solo 중간 탈락은 해당 player의 Lose를 처음 결과로 확정하고 그 session만 닫아 survivor tick을 계속합니다. 마지막 생존자는 Win입니다. 이전 Lose는 유지되며 나중에 전원 사망하면 아직 결과가 없던 player만 Draw입니다.
 - Team 일부 사망은 계속합니다. 한 team 전멸은 3 Lose/3 Win이고 양 team 같은 tick 전멸은 6 Draw입니다.
-- 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다. 일반 gameplay snapshot은 크기 1 latest-only slot에서 coalescing해 느린 client가 room tick이나 다른 client를 막지 않습니다.
-- `Ready`, `starting`, `started`, `error`는 크기 8 reliable control queue에서 순서를 보존합니다. Terminal handoff는 이미 수락한 control을 비운 뒤 `terminal snapshot -> GameEnd -> close`를 실행합니다.
+- 각 client는 독립 writer를 가지며 payload마다 새 5초 write context를 사용합니다.
+- 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v4 경계를 유지합니다.
+- `Ready`, `starting`, `started`, `error`는 같은 size-8 reliable control FIFO에서 순서를 보존합니다.
 - 각 client는 writer와 독립적인 30초 heartbeat ticker를 가지며 Ping마다 90초 context를 사용합니다. Ping/read/write failure는 `clientSession.close`의 close-once 경로와 expected-session 비교를 통해 현재 connection만 해제합니다.
 - malformed JSON과 음수 `ClientTick`은 invalid input error만 보내고 연결은 유지합니다. Stale/duplicate 양수 tick은 error/control frame 없이 무시합니다.
 
@@ -305,8 +314,8 @@ Room store는 in-memory라 TTL이 중요합니다.
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - reconnect grace
 
-Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 client config v3 artifact입니다. Stable `type 0/1/2`, Unity world unit의 `normalAttackDistance`·`skillAttackDistance`, 초 단위 `normalAttackCoolDown`·`skillAttackCoolDown`, client charge 표현용 `maxBullets`를 담습니다. Server의 Go parser가 canonical artifact를 검증하고 Client 소비 계약은 필수 field와 version을 build/runtime 양쪽에서 거부하도록 요구합니다. `server-config/game-config.json` v3는 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 canonical runtime config이며 tick rate, speed `2`, radius `0.5`, HP `4000/3100/4100`, 캐릭터별 `normalAttack`, `mode.default`와 `mode.catalog`, map을 담습니다. 실제 hit/range/charge와 스킬 승인 결과는 server-authoritative state와 snapshot이 최종 truth이며 client 설정으로 gameplay를 재판정하지 않습니다. 이 client artifact 변경은 public WebSocket field를 추가하지 않습니다.
+Gameplay config는 client 공유용과 server runtime용을 분리합니다. `client-config/game-config.json`은 Client CI가 sparse checkout해 Unity runtime asset 경로로 복사하는 client config v3 artifact입니다. Stable `type 0/1/2`, Unity world unit의 `normalAttackDistance`·`skillAttackDistance`, 초 단위 `normalAttackCoolDown`·`skillAttackCoolDown`, client charge 표현용 `maxBullets`를 담습니다. Server의 Go parser가 canonical artifact를 검증하고 Client 소비 계약은 필수 field와 version을 build/runtime 양쪽에서 거부하도록 요구합니다. `server-config/game-config.json` v4는 server binary가 embed해서 room store와 simulation 기본값으로 사용하는 canonical runtime config이며 tick rate, speed `2`, radius `0.5`, HP `4000/3100/4100`, 캐릭터별 `normalAttack`과 `skill.cooldownTicks`, `mode.default`와 `mode.catalog`, map을 담습니다. 실제 hit/range/charge와 스킬 승인 결과는 server-authoritative state와 snapshot이 최종 truth이며 client 설정으로 gameplay를 재판정하지 않습니다. Skill cooldown의 public 경계는 gameplay `PlayerData.SkillReadyTick`이며, 이 client artifact 변경은 public WebSocket field를 추가하지 않습니다.
 
 ## SL-82 CharacterType ownership
 
-Client config v3의 `characters[].type`과 API 계약이 `0=Shelly`, `1=Colt`, `2=Lily` stable identity mapping을 공유합니다. Server config v3는 같은 ID에 대한 HP `4000/3100/4100`, `3/3/2` attack charge와 runtime combat stat을 소유합니다. `internal/rooms`는 join 선택을 canonical participant에 저장하고 REST/Ready/Snapshot transport casing으로 변환합니다. `internal/simulation`은 이미 저장된 type의 stat을 적용합니다. 따라서 join parsing, participant identity, simulation stat 적용을 서로 다른 owner가 다시 선택하지 않습니다.
+Client config v3의 `characters[].type`과 API 계약이 `0=Shelly`, `1=Colt`, `2=Lily` stable identity mapping을 공유합니다. Server config v4는 같은 ID에 대한 HP `4000/3100/4100`, `3/3/2` attack charge, runtime combat stat과 `skill.cooldownTicks`를 소유하고 simulation의 canonical `PlayerData.SkillReadyTick`으로 다음 사용 가능 시점을 공개합니다. `internal/rooms`는 join 선택을 canonical participant에 저장하고 REST/Ready/Snapshot transport casing으로 변환합니다. `internal/simulation`은 이미 저장된 type의 stat을 적용합니다. 따라서 join parsing, participant identity, simulation stat 적용을 서로 다른 owner가 다시 선택하지 않습니다.

@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-const ServerGameConfigVersion = 3
+const ServerGameConfigVersion = 4
 
 type CharacterType int
 
@@ -57,6 +57,11 @@ type PlayerTypeConfig struct {
 	HP            float64            `json:"hp"`
 	Speed         float64            `json:"speed"`
 	NormalAttack  NormalAttackConfig `json:"normalAttack"`
+	Skill         SkillConfig        `json:"skill"`
+}
+
+type SkillConfig struct {
+	CooldownTicks int `json:"cooldownTicks"`
 }
 
 type NormalAttackKind string
@@ -91,6 +96,7 @@ func (config *PlayerTypeConfig) UnmarshalJSON(data []byte) error {
 		HP            float64            `json:"hp"`
 		Speed         float64            `json:"speed"`
 		NormalAttack  NormalAttackConfig `json:"normalAttack"`
+		Skill         SkillConfig        `json:"skill"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -109,6 +115,7 @@ func (config *PlayerTypeConfig) UnmarshalJSON(data []byte) error {
 		HP:            wire.HP,
 		Speed:         wire.Speed,
 		NormalAttack:  wire.NormalAttack,
+		Skill:         wire.Skill,
 	}
 	return nil
 }
@@ -264,6 +271,12 @@ func validatePlayerTypeCatalog(config GameConfig) error {
 		}
 		if err := validateNormalAttackConfig(playerType.ID, playerType.NormalAttack, config); err != nil {
 			return err
+		}
+		if playerType.Skill.CooldownTicks <= 0 {
+			return fmt.Errorf(
+				"game config player type %q skill.cooldownTicks must be positive",
+				playerType.ID,
+			)
 		}
 	}
 
@@ -428,6 +441,7 @@ func StaticGameConfig() GameConfig {
 							DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12},
 						},
 					},
+					Skill: SkillConfig{CooldownTicks: 360},
 				},
 				{
 					CharacterType: CharacterTypeColt,
@@ -448,6 +462,7 @@ func StaticGameConfig() GameConfig {
 							IntervalTicks:           6,
 						},
 					},
+					Skill: SkillConfig{CooldownTicks: 390},
 				},
 				{
 					CharacterType: CharacterTypeLily,
@@ -462,6 +477,7 @@ func StaticGameConfig() GameConfig {
 						MaxCharges:    2,
 						RechargeTicks: 30,
 					},
+					Skill: SkillConfig{CooldownTicks: 330},
 				},
 			},
 		},

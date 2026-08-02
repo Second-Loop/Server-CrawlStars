@@ -9,12 +9,41 @@ const protocolText = await readFile(new URL("../../ai-docs/protocol.md", import.
 const architectureText = await readFile(new URL("../../ai-docs/architecture.md", import.meta.url), "utf8");
 const projectMapText = await readFile(new URL("../../ai-docs/project-map.md", import.meta.url), "utf8");
 const decisionsText = await readFile(new URL("../../ai-docs/decisions.md", import.meta.url), "utf8");
+const skillCooldownDesignText = await readFile(
+  new URL("../../docs/superpowers/specs/2026-08-02-sl-84-skill-input-cooldown-design.md", import.meta.url),
+  "utf8",
+);
 const docsBuildText = await readFile(new URL("./build.mjs", import.meta.url), "utf8");
 const clientGameConfigBytes = await readFile(new URL("../../client-config/game-config.json", import.meta.url));
 const clientGameConfigText = clientGameConfigBytes.toString("utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
 const serverGameConfig = JSON.parse(serverGameConfigText);
+
+const reliableSkillDeliveryMarkerGroups = [
+  ["normal snapshot latest-only", ["일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.", "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해요."]],
+  ["reliable approval exception", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
+  ["reliable FIFO capacity", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
+  ["older pending normal drain", ["승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.", "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환해요."]],
+  ["deferred latest", ["후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.", "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관해요."]],
+  ["successful approval write", ["reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.", "reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush해요."]],
+  ["approval to latest flush", ["flush는 approval -> latest 순서로 실행합니다.", "flush는 <code>approval -&gt; latest</code> 순서로 실행합니다.", "flush는 approval -> latest 순서로 실행해요."]],
+  ["multiple approval FIFO", ["multiple approval은 FIFO로 전달합니다.", "multiple approval은 FIFO로 전달해요."]],
+  ["accepted approval before terminal", ["accepted approval은 terminal보다 먼저 drain합니다.", "accepted approval은 terminal보다 먼저 drain해요."]],
+  ["terminal order", ["accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.", "accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다.", "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행해요."]],
+  ["terminal deferred normal discard", ["deferred normal snapshot은 종료 시 버립니다.", "deferred normal snapshot은 종료 시 버려요."]],
+  ["overflow or write failure", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["session close and release", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["fail-closed", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
+  ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.", "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요."]],
+  ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.", "PressedAttack: true-only snapshot은 계속 latest-only로 전달해요."]],
+  ["no new wire event", ["새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
+  ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
+  ["SL-99 config boundary", ["SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]],
+];
 
 const requiredRESTPaths = [
   "/health",
@@ -28,6 +57,8 @@ const requiredWebSocketFields = [
   "MoveDir",
   "AttackDir",
   "PressedAttack",
+  "PressedSkill",
+  "SkillReadyTick",
   "ReadyEventMessage",
   "ReadyAckMessage",
   "SpawnPosition",
@@ -351,7 +382,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.6.0"), "api/asyncapi.yaml must publish version 0.6.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.7.0"), "api/asyncapi.yaml must publish version 0.7.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -427,6 +458,8 @@ validateBotIdentitySchemas();
 validateClientTickACKContract();
 validateCharacterTypeContract();
 validateCharacterNormalAttackContract();
+validateCharacterSkillCooldownContract();
+validateReliableSkillDeliveryValidatorSelfTests();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
 assert(docsBuildText.includes("sessionToken"), "docs UI must explain the sessionToken response");
@@ -504,7 +537,7 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 3, "server config version must be 3");
+assert(serverGameConfig.version === 4, "server config version must be 4");
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "characters", "normalAttackCoolDown", "projectileRadius"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
 assert(clientGameConfig.playerRadius === 0.5, "client-config/game-config.json must expose playerRadius 0.5");
@@ -700,6 +733,22 @@ function extractDelimitedText(text, startMarker, endMarker, name) {
   return text.slice(start, end);
 }
 
+function extractMarkdownHeadingSection(text, heading, name) {
+  const headingLevel = /^(#{1,6})\s/.exec(heading)?.[1].length;
+  assert(headingLevel, `${name} heading must start with Markdown hashes`);
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === heading);
+  assert(start >= 0, `${name} is missing heading ${heading}`);
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const nextHeading = /^(#{1,6})\s/.exec(lines[end]);
+    if (nextHeading && nextHeading[1].length <= headingLevel) break;
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
 function assertEveryJSONPlayerHasIsBot(players, name) {
   assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
   for (const [index, player] of players.entries()) {
@@ -750,12 +799,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -799,7 +848,7 @@ function validateCharacterTypeContract() {
   const playerSchema = extractYAMLSchema(openAPIText, "Player");
   assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
 
-  assert(hasLine(asyncAPIText, "  version: 0.6.0"), "AsyncAPI version must be 0.6.0");
+  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
   for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     const schema = extractYAMLSchema(asyncAPIText, schemaName);
     assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
@@ -822,7 +871,7 @@ function validateCharacterTypeContract() {
 function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
-  for (const marker of ["server config v3", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  for (const marker of ["server config v4", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -868,15 +917,415 @@ function validateCharacterNormalAttackContract() {
 
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v3가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [architectureText, "architecture", ["server config v4가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
     [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
-    [apiReferenceText, "api reference", ["server config v3의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [apiReferenceText, "api reference", ["server config v4의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
   ]) {
     for (const marker of markers) {
       assert(text.includes(marker), `${name} must document normal attack marker ${marker}`);
     }
   }
+}
+
+function validateCharacterSkillCooldownContract() {
+  const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
+  const inputSkill = extractSchemaProperty(inputSchema, "PressedSkill");
+  assert(inputSkill.includes("type: boolean"), "InputMessage.PressedSkill must be boolean");
+  assert(!topLevelRequiredFields(inputSchema).includes("PressedSkill"), "InputMessage.PressedSkill must be optional");
+
+  const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
+  for (const field of ["PressedSkill", "SkillReadyTick"]) {
+    assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
+      `PlayerData must require ${field} exactly once`);
+  }
+  const snapshotPressedSkill = extractSchemaProperty(playerSchema, "PressedSkill");
+  assert(snapshotPressedSkill.includes("type: boolean"),
+    "PlayerData.PressedSkill must be boolean");
+  for (const marker of ["reliable approval exception", "size-8 reliable control FIFO", "fail-closed"]) {
+    assert(snapshotPressedSkill.includes(marker), `PlayerData.PressedSkill must document ${marker}`);
+  }
+  const readyTick = extractSchemaProperty(playerSchema, "SkillReadyTick");
+  for (const marker of ["type: integer", "minimum: 0", "A + C"]) {
+    assert(readyTick.includes(marker), `PlayerData.SkillReadyTick must document ${marker}`);
+  }
+
+  assert(serverGameConfig.version === 4, "server config must be version 4");
+  const cooldowns = new Map([[0, 360], [1, 390], [2, 330]]);
+  for (const playerType of serverGameConfig.player.types) {
+    assert(playerType.skill?.cooldownTicks === cooldowns.get(playerType.characterType),
+      `character ${playerType.characterType} skill cooldown drift`);
+  }
+  assert(!openAPIText.includes("PressedSkill") && !openAPIText.includes("SkillReadyTick"),
+    "OpenAPI must not expose gameplay skill fields");
+
+  const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
+  const snapshotMessage = extractYAMLNamedBlock(messages, "    SnapshotMessage:");
+  const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
+  const gameplayPlayers = extractYAMLSequenceObjects(snapshotMessage, "Players");
+  assertEveryGameplayPlayerHasSkillCooldownState(gameplayPlayers, "AsyncAPI gameplay examples");
+  assertYAMLSkillApprovalExample(gameplay, "AsyncAPI gameplay example");
+  assert(
+    gameplayPlayers.some((player) => player.includes("PressedSkill: false") && player.includes("SkillReadyTick: 0")),
+    "AsyncAPI gameplay examples must show initial skill state",
+  );
+
+  const docsGameplayPlayers = extractDocsJSONExample("Gameplay").Snapshot.Players;
+  assertEveryJSONGameplayPlayerHasSkillCooldownState(docsGameplayPlayers, "docs UI Gameplay example");
+  assertJSONSkillApprovalExample(extractDocsJSONExample("Gameplay"), "docs UI Gameplay example");
+  assert(
+    docsGameplayPlayers.some((player) => player.PressedSkill === false && player.SkillReadyTick === 0),
+    "docs UI Gameplay example must show initial skill state",
+  );
+
+  for (const [example, name] of [
+    [extractMarkdownJSONExample(apiReferenceText, "Server snapshot:", "api reference Server snapshot"), "api reference Server snapshot"],
+    [extractMarkdownJSONExample(apiDocsText, "Server message wrapper:", "api docs Server message wrapper"), "api docs Server message wrapper"],
+    [extractMarkdownJSONExample(protocolText, "Server snapshot:", "protocol Server snapshot"), "protocol Server snapshot"],
+  ]) {
+    assertJSONSkillApprovalExample(example, name);
+  }
+
+  const architectureConfigSummary = extractDelimitedText(
+    architectureText,
+    "Gameplay config는 client 공유용과 server runtime용을 분리합니다.",
+    "\n\n## SL-82 CharacterType ownership",
+    "architecture current config summary",
+  );
+  for (const marker of ["server-config/game-config.json` v4", "skill.cooldownTicks", "SkillReadyTick"]) {
+    assert(architectureConfigSummary.includes(marker), `architecture current config summary must document ${marker}`);
+  }
+
+  const apiReferenceConfigSummary = extractDelimitedText(
+    apiReferenceText,
+    "Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.",
+    "\n\n## 기본 duel 2인 수동 검증 시나리오",
+    "api reference current config summary",
+  );
+  for (const marker of ["server-only v4 config", "skill.cooldownTicks", "SkillReadyTick"]) {
+    assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
+  }
+
+  const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
+  assertScopedReliableSkillDeliveryContract(asyncAPIInfo, "AsyncAPI info current delivery", "일반 non-terminal gameplay snapshot은", "\n    duel_1v1은");
+
+  const docsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
+  assertReliableSkillDeliveryContract(docsUICoalescingArticle, "docs UI Snapshot coalescing article");
+
+  for (const [text, name, startMarker, endMarker] of [
+    [apiReferenceText, "api reference current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
+    [apiDocsText, "api docs current delivery", "일반 non-terminal gameplay snapshot은", "\n\nInput field는"],
+    [protocolText, "protocol current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
+    [architectureText, "architecture current WebSocket delivery", "- 각 client는 독립 writer를 가지며", "\n- 각 client는 writer와 독립적인 30초 heartbeat"],
+    [projectMapText, "project map current tick delivery", "8. `{\"Type\":\"snapshot\",\"Snapshot\":...}`", "\n9. Solo 중간 탈락이면"],
+  ]) {
+    assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker);
+  }
+
+  const skillCooldownDesignDelivery = extractMarkdownHeadingSection(skillCooldownDesignText, "### 2.4 승인 snapshot 전달 경계", "skill cooldown design current delivery");
+  assertReliableSkillDeliveryContract(skillCooldownDesignDelivery, "skill cooldown design current delivery");
+
+  const adr0024 = extractMarkdownHeadingSection(decisionsText, "## ADR-0024: SL-81 Room/Session 동시성과 WebSocket 전달 경계", "ADR-0024");
+  const adr0024FollowUp = extractDelimitedText(adr0024, "후속 상태:", "\n\n맥락:", "ADR-0024 follow-up");
+  for (const marker of ["ADR-0038", "`PressedSkill: true`", "기존 reliable control queue", "좁은 예외"]) {
+    assert(adr0024FollowUp.includes(marker), `ADR-0024 follow-up must document ${marker}`);
+  }
+
+  const adr0038 = extractMarkdownHeadingSection(decisionsText, "## ADR-0038: SL-84 Skill cooldown은 canonical PlayerData와 Server Config v4가 소유", "ADR-0038");
+  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 current delivery");
+}
+
+function validateReliableSkillDeliveryValidatorSelfTests() {
+  const movedMarkerFixture = `## Current delivery
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
+PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
+후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO로 전달합니다.
+reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.
+flush는 approval -> latest 순서로 실행합니다.
+accepted approval은 terminal보다 먼저 drain합니다.
+accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.
+deferred normal snapshot은 종료 시 버립니다.
+queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.
+무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
+새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
+Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
+SL-85 effect는 이번 범위에서 제외합니다.
+SL-99 client config v3/server config v4 경계를 유지합니다.
+## Historical note
+승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
+## End`;
+
+  let rejectedMovedMarker = false;
+  try {
+    assertScopedReliableSkillDeliveryContract(
+      movedMarkerFixture,
+      "synthetic moved-marker delivery contract",
+      "## Current delivery",
+      "## Historical note",
+    );
+  } catch (error) {
+    rejectedMovedMarker = error instanceof Error && error.message.includes("older pending normal drain");
+  }
+  assert(
+    rejectedMovedMarker,
+    "scoped reliable skill delivery validator must reject a required marker moved outside the current block",
+  );
+
+const validCurrentBlockFixture = `## Current delivery
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
+PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
+승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
+후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.
+multiple approval은 FIFO로 전달합니다.
+reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.
+flush는 approval -> latest 순서로 실행합니다.
+accepted approval은 terminal보다 먼저 drain합니다.
+accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.
+deferred normal snapshot은 종료 시 버립니다.
+queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.
+무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.
+PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
+새 wire field/event를 추가하지 않습니다.
+AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
+Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
+SL-85 effect는 이번 범위에서 제외합니다.
+SL-99 client config v3/server config v4 경계를 유지합니다.
+## Historical note
+## End`;
+  assertScopedReliableSkillDeliveryContract(
+    validCurrentBlockFixture,
+    "synthetic valid current delivery contract",
+    "## Current delivery",
+    "## Historical note",
+  );
+  const oppositeMeaningMutations = [
+    [
+      "normal latest-only delivery",
+      "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.",
+      "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing하지 않습니다.",
+      "normal snapshot latest-only",
+    ],
+    [
+      "reliable approval FIFO delivery",
+      "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.",
+      "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달하지 않습니다.",
+      "reliable approval exception",
+    ],
+    [
+      "older pending normal drain",
+      "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.",
+      "승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리지 않고 reliable approval로 전환합니다.",
+      "older pending normal drain",
+    ],
+    [
+      "deferred latest retention",
+      "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.",
+      "후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관하지 않습니다.",
+      "deferred latest",
+    ],
+    [
+      "successful approval write",
+      "reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다.",
+      "reliable approval write가 성공하지 않아도 pending이 모두 drain되기 전에 최신 일반 snapshot 하나를 flush합니다.",
+      "successful approval write",
+    ],
+    [
+      "approval-to-latest flush",
+      "flush는 approval -> latest 순서로 실행합니다.",
+      "flush는 approval -> latest 순서로 실행하지 않습니다.",
+      "approval to latest flush",
+    ],
+    [
+      "multiple approval FIFO",
+      "multiple approval은 FIFO로 전달합니다.",
+      "multiple approval은 FIFO로 전달하지 않습니다.",
+      "multiple approval FIFO",
+    ],
+    [
+      "accepted approval before terminal",
+      "accepted approval은 terminal보다 먼저 drain합니다.",
+      "accepted approval은 terminal보다 먼저 drain하지 않습니다.",
+      "accepted approval before terminal",
+    ],
+    [
+      "terminal order",
+      "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다.",
+      "accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행하지 않습니다.",
+      "terminal order",
+    ],
+    [
+      "terminal deferred normal discard",
+      "deferred normal snapshot은 종료 시 버립니다.",
+      "deferred normal snapshot은 종료 시 버리지 않습니다.",
+      "terminal deferred normal discard",
+    ],
+    [
+      "overflow fail-closed",
+      "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
+      "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리하지 않습니다.",
+      "overflow or write failure",
+    ],
+    [
+      "bounded delivery without acknowledgement",
+      "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
+      "무한히 느린 session 유지와 application-level ACK/replay를 보장합니다.",
+      "bounded delivery without application acknowledgement",
+    ],
+    [
+      "PressedAttack latest-only delivery",
+      "PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
+      "PressedAttack: true-only snapshot은 계속 latest-only로 전달하지 않습니다.",
+      "PressedAttack-only latest-only",
+    ],
+    [
+      "new-wire meaning",
+      "새 wire field/event를 추가하지 않습니다.",
+      "새 wire field/event를 추가합니다.",
+      "no new wire event",
+    ],
+    [
+      "AsyncAPI dialect and info retention",
+      "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+      "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
+      "AsyncAPI dialect",
+    ],
+    [
+      "control null preservation",
+      "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.",
+      "Control snapshot의 Players: null과 Projectiles: null을 유지하지 않고 gameplay entity를 넣습니다.",
+      "control players and projectiles remain null",
+    ],
+    [
+      "SL-85 effect exclusion",
+      "SL-85 effect는 이번 범위에서 제외합니다.",
+      "SL-85 effect는 이번 범위에서 제외하지 않습니다.",
+      "SL-85 effect boundary",
+    ],
+    [
+      "SL-99 config boundary retention",
+      "SL-99 client config v3/server config v4 경계를 유지합니다.",
+      "SL-99 client config v3/server config v4 경계를 유지하지 않습니다.",
+      "SL-99 config boundary",
+    ],
+  ];
+  const allowedOppositeMeanings = [];
+  for (const [name, positiveMeaning, oppositeMeaning, rejectedMeaning] of oppositeMeaningMutations) {
+    assert(
+      countOccurrences(validCurrentBlockFixture, positiveMeaning) === 1,
+      `synthetic opposite-${name} fixture must contain the positive meaning exactly once`,
+    );
+    const oppositeMeaningFixture = validCurrentBlockFixture.replace(positiveMeaning, oppositeMeaning);
+    let rejectedOppositeMeaning = false;
+    try {
+      assertScopedReliableSkillDeliveryContract(
+        oppositeMeaningFixture,
+        "synthetic opposite-meaning delivery contract",
+        "## Current delivery",
+        "## Historical note",
+      );
+    } catch (error) {
+      rejectedOppositeMeaning = error instanceof Error && error.message.includes(rejectedMeaning);
+    }
+    if (!rejectedOppositeMeaning) {
+      allowedOppositeMeanings.push(name);
+    }
+  }
+  assert(
+    allowedOppositeMeanings.length === 0,
+    `scoped reliable skill delivery validator must reject opposite meanings in the current block: ${allowedOppositeMeanings.join(", ")}`,
+  );
+}
+
+function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
+  const block = extractDelimitedText(text, startMarker, endMarker, name);
+  assertReliableSkillDeliveryContract(block, name);
+  return block;
+}
+
+function assertReliableSkillDeliveryContract(block, name) {
+  const positions = new Map();
+  for (const [meaning, allowedMarkers] of reliableSkillDeliveryMarkerGroups) {
+    let position = -1;
+    for (const marker of allowedMarkers) {
+      const candidate = block.indexOf(marker);
+      if (candidate >= 0 && (position < 0 || candidate < position)) position = candidate;
+    }
+    assert(position >= 0, `${name} must document ${meaning}; allowed markers: ${allowedMarkers.join(" | ")}`);
+    positions.set(meaning, position);
+  }
+
+  for (const [before, after] of [
+    ["older pending normal drain", "successful approval write"],
+    ["successful approval write", "approval to latest flush"],
+    ["deferred latest", "approval to latest flush"],
+    ["multiple approval FIFO", "approval to latest flush"],
+    ["accepted approval before terminal", "terminal order"],
+    ["terminal order", "terminal deferred normal discard"],
+  ]) {
+    assert(
+      positions.get(before) < positions.get(after),
+      `${name} must order ${before} before ${after}`,
+    );
+  }
+}
+
+function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
+  assert(objects.length > 0, `${name} must include player objects`);
+  for (const [index, object] of objects.entries()) {
+    const pressedSkillFields = object.match(/^\s+PressedSkill:\s+(true|false)$/gm) ?? [];
+    const readyTickFields = object.match(/^\s+SkillReadyTick:\s+(\d+)$/gm) ?? [];
+    assert(pressedSkillFields.length === 1, `${name} player ${index} must contain exactly one PressedSkill`);
+    assert(readyTickFields.length === 1, `${name} player ${index} must contain exactly one SkillReadyTick`);
+  }
+}
+
+function assertEveryJSONGameplayPlayerHasSkillCooldownState(players, name) {
+  assert(Array.isArray(players) && players.length > 0, `${name} must include players`);
+  for (const [index, player] of players.entries()) {
+    assert(Object.keys(player).filter((field) => field === "PressedSkill").length === 1,
+      `${name} player ${index} must contain exactly one PressedSkill`);
+    assert(typeof player.PressedSkill === "boolean", `${name} player ${index} must contain boolean PressedSkill`);
+    assert(Object.keys(player).filter((field) => field === "SkillReadyTick").length === 1,
+      `${name} player ${index} must contain exactly one SkillReadyTick`);
+    assert(Number.isSafeInteger(player.SkillReadyTick) && player.SkillReadyTick >= 0,
+      `${name} player ${index} must contain non-negative integer SkillReadyTick`);
+  }
+}
+
+function assertYAMLSkillApprovalExample(gameplay, name) {
+  assert(extractYAMLScalar(gameplay, "Tick", name) === "1", `${name} must use Tick 1`);
+  const approvals = extractYAMLSequenceObjects(gameplay, "Players").filter(
+    (player) =>
+      extractYAMLScalar(player, "CharacterType", `${name} player`) === "0" &&
+      extractYAMLScalar(player, "PressedSkill", `${name} player`) === "true" &&
+      extractYAMLScalar(player, "SkillReadyTick", `${name} player`) === "361",
+  );
+  assert(approvals.length === 1, `${name} must contain exactly one Tick 1 Shelly skill approval at ready tick 361`);
+  const attackDirection = extractYAMLVector(approvals[0], "AttackDir", `${name} approved Shelly`);
+  assert(Math.hypot(attackDirection.x, attackDirection.y) > 0, `${name} approved Shelly AttackDir must be non-zero`);
+}
+
+function assertJSONSkillApprovalExample(message, name) {
+  const snapshot = message.Snapshot ?? message;
+  assert(snapshot?.Tick === 1, `${name} must use Tick 1`);
+  assert(Array.isArray(snapshot.Players), `${name} must contain Snapshot.Players`);
+  const approvals = snapshot.Players.filter(
+    (player) =>
+      player.CharacterType === 0 &&
+      player.PressedSkill === true &&
+      player.SkillReadyTick === 361,
+  );
+  assert(approvals.length === 1, `${name} must contain exactly one Tick 1 Shelly skill approval at ready tick 361`);
+  const attackDirection = approvals[0].AttackDir;
+  assert(
+    Number.isFinite(attackDirection?.x) &&
+      Number.isFinite(attackDirection?.y) &&
+      Math.hypot(attackDirection.x, attackDirection.y) > 0,
+    `${name} approved Shelly AttackDir must be non-zero`,
+  );
 }
 
 function validateClientTickACKContract() {

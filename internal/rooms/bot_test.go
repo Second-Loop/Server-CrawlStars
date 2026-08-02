@@ -40,6 +40,9 @@ func TestMergedTickInputsUsesMapKeyAsAuthoritativePlayerID(t *testing.T) {
 	if bot.PlayerID != "player-b" || bot.MoveDir == (simulation.Vector2{X: -99}) || !bot.PressedAttack {
 		t.Fatalf("bot pending command must be replaced by controller input: %+v", bot)
 	}
+	if bot.PressedSkill {
+		t.Fatalf("server-owned bot must not request skill: %+v", bot)
+	}
 }
 
 func TestMergedTickInputsPreservesHumanClientTickAndKeepsBotTickZero(t *testing.T) {
@@ -60,6 +63,9 @@ func TestMergedTickInputsPreservesHumanClientTickAndKeepsBotTickZero(t *testing.
 	bot := playerInputByID(t, got, "bot")
 	if bot.ClientTick != 0 {
 		t.Fatalf("server-owned bot ClientTick=%d, want 0", bot.ClientTick)
+	}
+	if bot.PressedSkill {
+		t.Fatalf("server-owned bot must not request skill: %+v", bot)
 	}
 	if bot.MoveDir == (simulation.Vector2{X: -99}) || !bot.PressedAttack {
 		t.Fatalf("bot command must come from controller: %+v", bot)
