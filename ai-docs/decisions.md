@@ -714,7 +714,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - `PlayerData.PressedSkill`은 승인 tick에만 true인 transient server approval pulse이고, `PlayerData.SkillReadyTick`은 persistent canonical absolute state입니다. 초기값은 `false/0`이며 control snapshot은 계속 `Players: null`, `Projectiles: null`입니다.
 - Ready predicate는 `Snapshot.Tick >= SkillReadyTick`입니다. Tick `A`에서 승인하고 cooldown이 `C`이면 `A + C`를 기록하며 exact `A + C` tick도 다시 승인할 수 있습니다.
 - Skill-ready와 non-zero direction이면 normal attack보다 우선하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Cooldown에 막힌 유효한 양수 command도 `LastProcessedClientTick` ACK는 진행합니다.
-- Server config v4의 Shelly/Colt/Lily `skill.cooldownTicks`는 `360/390/330`입니다. SL-84는 SL-99에서 도입한 Client config v3를 변경하지 않습니다.
+- Server config v4의 Shelly/Colt/Lily `skill.cooldownTicks`는 `360/390/330`입니다. SL-84는 SL-99에서 도입한 Client config v3 artifact를 변경하지 않으며, 그 값은 UI와 로컬 bot 입력 보조용입니다.
 - AsyncAPI dialect는 `3.0.0`을 유지하고 `info.version`을 `0.7.0`으로 올립니다. Gameplay `PlayerData.PressedSkill`과 `SkillReadyTick`은 required이고, REST OpenAPI에는 gameplay skill field를 추가하지 않습니다.
 - 실제 skill effect와 bot skill use는 SL-85 범위입니다.
 

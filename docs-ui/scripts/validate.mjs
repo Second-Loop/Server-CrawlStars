@@ -911,12 +911,10 @@ function validateCharacterSkillCooldownContract() {
 
   const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const snapshotMessage = extractYAMLNamedBlock(messages, "    SnapshotMessage:");
+  const gameplay = extractYAMLNamedBlock(snapshotMessage, "        - name: gameplay");
   const gameplayPlayers = extractYAMLSequenceObjects(snapshotMessage, "Players");
   assertEveryGameplayPlayerHasSkillCooldownState(gameplayPlayers, "AsyncAPI gameplay examples");
-  assert(
-    gameplayPlayers.some((player) => player.includes("PressedSkill: true")),
-    "AsyncAPI gameplay examples must show a skill approval",
-  );
+  assertYAMLSkillApprovalExample(gameplay, "AsyncAPI gameplay example");
   assert(
     gameplayPlayers.some((player) => player.includes("PressedSkill: false") && player.includes("SkillReadyTick: 0")),
     "AsyncAPI gameplay examples must show initial skill state",
@@ -924,14 +922,39 @@ function validateCharacterSkillCooldownContract() {
 
   const docsGameplayPlayers = extractDocsJSONExample("Gameplay").Snapshot.Players;
   assertEveryJSONGameplayPlayerHasSkillCooldownState(docsGameplayPlayers, "docs UI Gameplay example");
-  assert(
-    docsGameplayPlayers.some((player) => player.PressedSkill === true),
-    "docs UI Gameplay example must show a skill approval",
-  );
+  assertJSONSkillApprovalExample(extractDocsJSONExample("Gameplay"), "docs UI Gameplay example");
   assert(
     docsGameplayPlayers.some((player) => player.PressedSkill === false && player.SkillReadyTick === 0),
     "docs UI Gameplay example must show initial skill state",
   );
+
+  for (const [example, name] of [
+    [extractMarkdownJSONExample(apiReferenceText, "Server snapshot:", "api reference Server snapshot"), "api reference Server snapshot"],
+    [extractMarkdownJSONExample(apiDocsText, "Server message wrapper:", "api docs Server message wrapper"), "api docs Server message wrapper"],
+    [extractMarkdownJSONExample(protocolText, "Server snapshot:", "protocol Server snapshot"), "protocol Server snapshot"],
+  ]) {
+    assertJSONSkillApprovalExample(example, name);
+  }
+
+  const architectureConfigSummary = extractDelimitedText(
+    architectureText,
+    "Gameplay config는 client 공유용과 server runtime용을 분리합니다.",
+    "\n\n## SL-82 CharacterType ownership",
+    "architecture current config summary",
+  );
+  for (const marker of ["server-config/game-config.json` v4", "skill.cooldownTicks", "SkillReadyTick"]) {
+    assert(architectureConfigSummary.includes(marker), `architecture current config summary must document ${marker}`);
+  }
+
+  const apiReferenceConfigSummary = extractDelimitedText(
+    apiReferenceText,
+    "Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.",
+    "\n\n## 기본 duel 2인 수동 검증 시나리오",
+    "api reference current config summary",
+  );
+  for (const marker of ["server-only v4 config", "skill.cooldownTicks", "SkillReadyTick"]) {
+    assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
+  }
 }
 
 function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
@@ -955,6 +978,39 @@ function assertEveryJSONGameplayPlayerHasSkillCooldownState(players, name) {
     assert(Number.isSafeInteger(player.SkillReadyTick) && player.SkillReadyTick >= 0,
       `${name} player ${index} must contain non-negative integer SkillReadyTick`);
   }
+}
+
+function assertYAMLSkillApprovalExample(gameplay, name) {
+  assert(extractYAMLScalar(gameplay, "Tick", name) === "1", `${name} must use Tick 1`);
+  const approvals = extractYAMLSequenceObjects(gameplay, "Players").filter(
+    (player) =>
+      extractYAMLScalar(player, "CharacterType", `${name} player`) === "0" &&
+      extractYAMLScalar(player, "PressedSkill", `${name} player`) === "true" &&
+      extractYAMLScalar(player, "SkillReadyTick", `${name} player`) === "361",
+  );
+  assert(approvals.length === 1, `${name} must contain exactly one Tick 1 Shelly skill approval at ready tick 361`);
+  const attackDirection = extractYAMLVector(approvals[0], "AttackDir", `${name} approved Shelly`);
+  assert(Math.hypot(attackDirection.x, attackDirection.y) > 0, `${name} approved Shelly AttackDir must be non-zero`);
+}
+
+function assertJSONSkillApprovalExample(message, name) {
+  const snapshot = message.Snapshot ?? message;
+  assert(snapshot?.Tick === 1, `${name} must use Tick 1`);
+  assert(Array.isArray(snapshot.Players), `${name} must contain Snapshot.Players`);
+  const approvals = snapshot.Players.filter(
+    (player) =>
+      player.CharacterType === 0 &&
+      player.PressedSkill === true &&
+      player.SkillReadyTick === 361,
+  );
+  assert(approvals.length === 1, `${name} must contain exactly one Tick 1 Shelly skill approval at ready tick 361`);
+  const attackDirection = approvals[0].AttackDir;
+  assert(
+    Number.isFinite(attackDirection?.x) &&
+      Number.isFinite(attackDirection?.y) &&
+      Math.hypot(attackDirection.x, attackDirection.y) > 0,
+    `${name} approved Shelly AttackDir must be non-zero`,
+  );
 }
 
 function validateClientTickACKContract() {

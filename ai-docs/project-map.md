@@ -8,7 +8,7 @@
 
 ## 현재 상태
 
-SL-82 client config v2 catalog는 stable `characterType` `0=Shelly`, `1=Colt`, `2=Lily`이고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel field는 migration 동안 optional이며, canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다. SL-83 일반 공격과 SL-84 skill approval/cooldown은 server config v4와 production `State.Step`이 소유합니다. SL-84의 AsyncAPI는 `0.7.0`이고 REST OpenAPI와 client config는 변경하지 않았습니다.
+SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`와 UI/로컬 bot 입력 보조값을 제공하고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel field는 migration 동안 optional이며, canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다. SL-83 일반 공격과 SL-84 skill approval/cooldown은 server config v4와 production `State.Step`이 소유합니다. SL-84의 AsyncAPI는 `0.7.0`이고 REST OpenAPI와 SL-99 client config v3 artifact는 변경하지 않았습니다.
 
 되는 것:
 

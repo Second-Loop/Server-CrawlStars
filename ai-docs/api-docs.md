@@ -122,7 +122,7 @@ Server message wrapper:
         "CharacterType": 0,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
-        "AttackDir": { "x": 0, "y": 0 },
+        "AttackDir": { "x": 0, "y": 1 },
         "Speed": 2,
         "Radius": 0.5,
         "HP": 4000,
@@ -327,4 +327,4 @@ rtk mise exec -- env GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/go-m
 
 OpenAPI는 `CharacterType` shared schema의 stable IDs `0/1/2`를 제공하고, join request에는 optional lower-camel `characterType`만 둡니다. request property에는 default, nullable, deprecated를 두지 않으며 legacy 생략만 Shelly `0` warning compatibility입니다. REST `Player`는 required `characterType`입니다.
 
-AsyncAPI `info.version`은 `0.7.0`이며 ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가집니다. Gameplay PlayerData는 required `PressedSkill`과 `SkillReadyTick`을 정확히 한 번 가지며 starting/started control의 `Players: null`은 유지합니다. Source validator는 OpenAPI/AsyncAPI/UI example의 모든 participant가 valid ID를 정확히 한 번 갖고 bot이 Shelly `0`인지, client config v2 mapping `0/1/2`와 server config v4 HP `4000/3100/4100`, cooldown `360/390/330`이 drift하지 않는지 검사합니다.
+AsyncAPI `info.version`은 `0.7.0`이며 ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가집니다. Gameplay PlayerData는 required `PressedSkill`과 `SkillReadyTick`을 정확히 한 번 가지며 starting/started control의 `Players: null`은 유지합니다. Source validator는 OpenAPI/AsyncAPI/UI example의 모든 participant가 valid ID를 정확히 한 번 갖고 bot이 Shelly `0`인지, client config v3 mapping `0/1/2`와 server config v4 HP `4000/3100/4100`, cooldown `360/390/330`이 drift하지 않는지 검사합니다.

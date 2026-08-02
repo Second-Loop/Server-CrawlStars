@@ -182,7 +182,7 @@ Server snapshot:
         "CharacterType": 0,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
-        "AttackDir": { "x": 0, "y": 0 },
+        "AttackDir": { "x": 0, "y": 1 },
         "Speed": 2,
         "Radius": 0.5,
         "HP": 4000,

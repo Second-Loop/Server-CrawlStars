@@ -337,7 +337,7 @@ Input `PressedAttack`은 server config v4의 캐릭터별 일반 공격 activati
 
 Input `PressedSkill`은 optional boolean이며 누락하면 `false`입니다. Present `null`이나 boolean이 아닌 값은 `invalid_input`이고 기존 pending command를 보존합니다. `PressedSkill: true`는 command마다 독립적인 시도이며 같은 command의 `AttackDir`을 재사용하지만, `AttackDir` 자체가 skill을 trigger하지 않습니다. Cooldown에 막힌 시도는 queue하지 않고 유효한 양수 command의 `LastProcessedClientTick` ACK는 진행합니다.
 
-Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Snapshot `PlayerData.PressedSkill`은 해당 tick의 transient server approval pulse이고, `SkillReadyTick`은 persistent canonical absolute ready tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A` 승인에 cooldown `C`를 적용하면 `A + C`를 기록해 exact `A + C` tick도 허용합니다. Server config v4 cooldown은 Shelly/Colt/Lily 순서로 `360/390/330` tick입니다. Client config 변경, 실제 skill effect, bot skill use는 SL-84 범위 밖이며 SL-85로 남습니다. AsyncAPI는 `0.7.0`이고 REST OpenAPI는 변경하지 않습니다.
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Snapshot `PlayerData.PressedSkill`은 해당 tick의 transient server approval pulse이고, `SkillReadyTick`은 persistent canonical absolute ready tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A` 승인에 cooldown `C`를 적용하면 `A + C`를 기록해 exact `A + C` tick도 허용합니다. Server config v4 cooldown은 Shelly/Colt/Lily 순서로 `360/390/330` tick입니다. SL-99 client config v3 artifact 변경, 실제 skill effect, bot skill use는 SL-84 범위 밖이며 SL-85로 남습니다. AsyncAPI는 `0.7.0`이고 REST OpenAPI는 변경하지 않습니다.
 
 같은 gameplay `State.Step`의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이 순서는 room의 pending input map 순회 순서와 무관한 input 결정성 기준이며 projectile hit target의 순서와는 별개입니다.
 
@@ -400,7 +400,7 @@ Server snapshot:
         "CharacterType": 0,
         "Pos": { "x": -1.2, "y": 1.2 },
         "MoveDir": { "x": 0, "y": 0 },
-        "AttackDir": { "x": 0, "y": 0 },
+        "AttackDir": { "x": 0, "y": 1 },
         "Speed": 2,
         "Radius": 0.5,
         "HP": 4000,
@@ -603,9 +603,9 @@ Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking
 Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
 - `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 client config v3입니다. `characters[].type`은 `0=Shelly`, `1=Colt`, `2=Lily`이고 `normalAttackDistance`·`skillAttackDistance`는 Unity world unit, `normalAttackCoolDown`·`skillAttackCoolDown`은 초, `maxBullets`는 client charge 표현값입니다. Server의 Go parser가 artifact를 검증하며 Client 소비 계약은 필수 field와 exact version을 build/runtime parser에서 거부하도록 요구합니다.
-- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v3 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`입니다.
+- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v4 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`과 `skill.cooldownTicks`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`이고 skill cooldown은 `360/390/330`입니다.
 
-Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client의 `normalAttackDistance`, `skillAttackCoolDown`, `maxBullets`는 cooldown UI와 로컬 bot 입력 판단용이며 `HP`, speed, damage, 실제 range/charge/skill 승인 결과는 server-only config/state나 Ready/snapshot message가 소유하는 server-authoritative truth입니다.
+Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client의 `normalAttackDistance`, `skillAttackCoolDown`, `maxBullets`는 cooldown UI와 로컬 bot 입력 판단용이며 `HP`, speed, damage, 실제 range/charge/skill 승인 결과는 server-only config/state나 Ready/snapshot message가 소유하는 server-authoritative truth입니다. Skill cooldown의 public canonical state는 gameplay `PlayerData.SkillReadyTick`입니다.
 
 ## 기본 duel 2인 수동 검증 시나리오
 
