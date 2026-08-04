@@ -626,6 +626,19 @@ func (ticker *countingStopTicker) StopCalls() int {
 	return ticker.stopCalls
 }
 
+func waitForCountingStopTicker(t *testing.T, ticker *countingStopTicker, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got := ticker.StopCalls(); got == want {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("ticker Stop calls=%d want=%d", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (clock *countingStopClock) TickTicker(duration time.Duration, ordinal int) {
 	clock.mu.Lock()
 	var selected *countingStopTicker

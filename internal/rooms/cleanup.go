@@ -64,7 +64,7 @@ func (s *Store) runShutdown(ctx context.Context, ownerDone <-chan struct{}) {
 			s.setShutdownResult(ctx.Err())
 			detachRooms()
 			for _, session := range s.activeSessionSnapshot() {
-				session.forceClose(websocket.StatusNormalClosure, shutdownWebSocketCloseReason)
+				session.forceCloseWithCause(websocket.StatusNormalClosure, shutdownWebSocketCloseReason, websocketCloseCauseShutdown)
 			}
 		case <-watchStop:
 		}
@@ -77,7 +77,7 @@ func (s *Store) runShutdown(ctx context.Context, ownerDone <-chan struct{}) {
 	resources.stop()
 
 	allSessions := uniqueClientSessions(activeSessions, resources.sessions)
-	closeClientSessionsInParallel(allSessions, websocket.StatusNormalClosure, shutdownWebSocketCloseReason)
+	closeClientSessionsInParallelWithCause(allSessions, websocket.StatusNormalClosure, shutdownWebSocketCloseReason, websocketCloseCauseShutdown)
 	s.workerWG.Wait()
 	waitClientSessions(allSessions)
 	for _, lifecycleDone := range activeSessionDone {
@@ -98,7 +98,7 @@ func (s *Store) detachRoomsForShutdown() roomResources {
 	for _, room := range rooms {
 		clientStart := len(resources.clientObservations)
 		room.mu.Lock()
-		playerIDs, removed := resources.removeRoomLocked(room)
+		playerIDs, removed := resources.removeRoomLockedWithCause(room, websocketCloseCauseShutdown)
 		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
 		for _, transition := range clientTransitions {
@@ -200,12 +200,16 @@ func uniqueClientSessions(groups ...[]*clientSession) []*clientSession {
 }
 
 func closeClientSessionsInParallel(sessions []*clientSession, code websocket.StatusCode, reason string) {
+	closeClientSessionsInParallelWithCause(sessions, code, reason, websocketCloseCausePeerClose)
+}
+
+func closeClientSessionsInParallelWithCause(sessions []*clientSession, code websocket.StatusCode, reason string, cause websocketCloseCause) {
 	var wait sync.WaitGroup
 	for _, session := range uniqueClientSessions(sessions) {
 		wait.Add(1)
 		go func(session *clientSession) {
 			defer wait.Done()
-			session.close(code, reason)
+			session.closeWithCause(code, reason, cause, "", "")
 		}(session)
 	}
 	wait.Wait()
@@ -241,7 +245,7 @@ func (s *Store) startJanitor() {
 
 func (s *Store) cleanupExpired(now time.Time) int {
 	var resources roomResources
-	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
+	defer func() { resources.closeWithCause(defaultRoomWebSocketCloseMsg, websocketCloseCauseExpiry) }()
 	return s.detachExpiredRooms(now, &resources)
 }
 
@@ -258,7 +262,7 @@ func (s *Store) detachExpiredRooms(now time.Time, resources *roomResources) int 
 			room.mu.Unlock()
 			continue
 		}
-		playerIDs, removed := resources.removeRoomLocked(room)
+		playerIDs, removed := resources.removeRoomLockedWithCause(room, websocketCloseCauseExpiry)
 		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
 		s.publishDisconnectedClients(clientTransitions)
@@ -373,7 +377,7 @@ func (s *Store) finishGameEnd(room *room) {
 	}
 	clientStart := len(resources.clientObservations)
 	var removed bool
-	playerIDs, removed = resources.removeRoomLocked(room)
+	playerIDs, removed = resources.removeRoomLockedWithCause(room, websocketCloseCauseGameEnd)
 	if !removed {
 		room.mu.Unlock()
 		s.mu.Unlock()
@@ -389,7 +393,7 @@ func (s *Store) finishGameEnd(room *room) {
 	s.observation.publish(activeTransition)
 	s.releasePlayerIDs(playerIDs)
 	s.logRoomEvent("room_ended", room.ID)
-	resources.close(defaultGameEndCloseMsg)
+	resources.closeWithCause(defaultGameEndCloseMsg, websocketCloseCauseGameEnd)
 	room.signalGameEndCleanupDone()
 }
 
@@ -403,6 +407,10 @@ type clientObservation struct {
 // The caller must hold room.mu. If Store.mu is also needed, it must already be
 // held before room.mu; callers must never acquire Store.mu while holding room.mu.
 func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
+	return r.removeRoomLockedWithCause(room, websocketCloseCausePeerClose)
+}
+
+func (r *roomResources) removeRoomLockedWithCause(room *room, cause websocketCloseCause) ([]string, bool) {
 	if room.removed {
 		return nil, false
 	}
@@ -430,6 +438,8 @@ func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 	}
 	for playerID, session := range room.clients {
 		if session != nil {
+			session.claimCloseCause(cause)
+			session.setMatchPhase(matchPhaseForRoom(room))
 			r.sessions = append(r.sessions, session)
 			r.clientObservations = append(r.clientObservations, clientObservation{
 				roomID:   room.ID,
@@ -444,9 +454,13 @@ func (r *roomResources) removeRoomLocked(room *room) ([]string, bool) {
 }
 
 func (r roomResources) close(reason string) {
+	r.closeWithCause(reason, websocketCloseCausePeerClose)
+}
+
+func (r roomResources) closeWithCause(reason string, cause websocketCloseCause) {
 	r.stop()
 	for _, session := range r.sessions {
-		session.close(websocket.StatusNormalClosure, reason)
+		session.closeWithCause(websocket.StatusNormalClosure, reason, cause, "", "")
 	}
 }
 

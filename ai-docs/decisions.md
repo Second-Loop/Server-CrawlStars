@@ -725,3 +725,24 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Cooldown truth가 gameplay snapshot의 canonical player state 하나로 고정되어 reconnect와 다음 tick에서도 같은 absolute readiness를 사용합니다.
 - Client는 approval pulse와 persistent ready tick을 구분해 렌더할 수 있고 blocked attempt를 로컬 queue로 오해하지 않습니다.
 - SL-84는 input/approval/cooldown 계약까지만 닫고 skill별 실제 효과는 SL-85에서 독립적으로 구현할 수 있습니다.
+
+## ADR-0039: SL-106 WebSocket 종료 관측은 최초 bounded cause와 connection generation을 소유
+
+상태: 승인됨
+
+맥락: 기존 `websocket_disconnected` event와 connected-client gauge만으로는 peer 종료, heartbeat timeout, write failure, lifecycle cleanup을 구분할 수 없었습니다. Reconnect 전 generation의 늦은 close가 새 connection 상태로 보이거나 raw error/reason을 label로 쓰면 원인 분석이 왜곡되고 secret·고카디널리티 위험도 생깁니다.
+
+결정:
+
+- 각 `clientSession`은 close-once가 수락한 최초 cause만 보존합니다. Cause는 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`, `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`의 고정 집합입니다.
+- Attach할 때 room/player별 connection generation을 단조 증가시키고, session이 attach 당시 generation을 계속 소유합니다. 이전 session의 늦은 close는 새 session을 제거하거나 새 generation으로 기록하지 않습니다.
+- `websocket_disconnected` JSON log는 `close_cause`, `connection_generation`, 종료 시 `match_phase`, `session_duration_ms`, `last_sent_tick`을 기록합니다. Raw token/query, close reason, transport error는 포함하지 않습니다.
+- Private metrics listener의 `crawlstars_websocket_closes_total` counter는 bounded `cause` 하나만 label로 사용합니다. Room/player ID, generation, phase, duration, tick은 metric label에 넣지 않습니다.
+- Lifecycle publication은 transport close/release의 기존 close-once와 expected-session 경계를 재사용해 log와 counter를 session generation마다 정확히 한 번 반영합니다.
+- 실제 WebSocket integration test는 responsive idle client가 Ping/Pong 동안 유지되고 control frame을 읽지 않는 client가 `ping_timeout`으로 종료되는 경계를 검증합니다.
+- REST/WebSocket payload schema는 바뀌지 않습니다. OpenAPI와 AsyncAPI는 변경하지 않고 운영 문서만 갱신합니다.
+
+결과:
+
+- 종료 원인과 reconnect generation을 낮은 카디널리티로 상관 분석할 수 있습니다.
+- 기존 lifecycle·wire 동작을 바꾸지 않으면서 비밀값과 raw transport 오류를 관측 표면에서 제외합니다.

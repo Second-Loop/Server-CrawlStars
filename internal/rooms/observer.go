@@ -11,6 +11,10 @@ type Observer interface {
 	ObserveTick(time.Duration)
 }
 
+type webSocketCloseObserver interface {
+	ObserveWebSocketClose(string)
+}
+
 type noopObserver struct{}
 
 func (noopObserver) SetActiveRooms(int) {}
@@ -148,6 +152,14 @@ func (s *observationState) publish(transition observationTransition) {
 		}
 		close(publication.done)
 	}
+}
+
+func (s *observationState) observeWebSocketClose(cause string) {
+	observer, ok := s.observer.(webSocketCloseObserver)
+	if !ok {
+		return
+	}
+	observer.ObserveWebSocketClose(cause)
 }
 
 // captureCallbackPanic lets a single drainer finish its ready queue before it
