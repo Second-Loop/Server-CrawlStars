@@ -13,8 +13,8 @@ const canonicalV3Fixture = `{
   "playerRadius": 0.5,
   "characters": [
     {"type": 0, "normalAttackDistance": 5.0, "skillAttackDistance": 1.0, "skillAttackCoolDown": 10, "maxBullets": 3},
-    {"type": 1, "normalAttackDistance": 1.5, "skillAttackDistance": 3.0, "skillAttackCoolDown": 10, "maxBullets": 3},
-    {"type": 2, "normalAttackDistance": 6.0, "skillAttackDistance": 7.0, "skillAttackCoolDown": 10, "maxBullets": 4}
+    {"type": 1, "normalAttackDistance": 6.0, "skillAttackDistance": 7.0, "skillAttackCoolDown": 10, "maxBullets": 4},
+    {"type": 2, "normalAttackDistance": 1.5, "skillAttackDistance": 3.0, "skillAttackCoolDown": 10, "maxBullets": 3}
   ],
   "normalAttackCoolDown": 1,
   "projectileRadius": 0.3
@@ -43,12 +43,12 @@ func TestParseEmbeddedGameConfigV3(t *testing.T) {
 		SkillAttackCoolDown: 10, MaxBullets: 3,
 	})
 	assertCharacter(t, config, CharacterConfig{
-		Type: 1, NormalAttackDistance: 1.5, SkillAttackDistance: 3,
-		SkillAttackCoolDown: 10, MaxBullets: 3,
+		Type: 1, NormalAttackDistance: 6, SkillAttackDistance: 7,
+		SkillAttackCoolDown: 10, MaxBullets: 4,
 	})
 	assertCharacter(t, config, CharacterConfig{
-		Type: 2, NormalAttackDistance: 6, SkillAttackDistance: 7,
-		SkillAttackCoolDown: 10, MaxBullets: 4,
+		Type: 2, NormalAttackDistance: 1.5, SkillAttackDistance: 3,
+		SkillAttackCoolDown: 10, MaxBullets: 3,
 	})
 }
 

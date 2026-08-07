@@ -12,17 +12,17 @@
     },
     {
       "type": 1,
-      "normalAttackDistance": 1.5,
-      "skillAttackDistance": 3.0,
-      "skillAttackCoolDown": 10,
-      "maxBullets": 3
-    },
-    {
-      "type": 2,
       "normalAttackDistance": 6.0,
       "skillAttackDistance": 7.0,
       "skillAttackCoolDown": 10,
       "maxBullets": 4
+    },
+    {
+      "type": 2,
+      "normalAttackDistance": 1.5,
+      "skillAttackDistance": 3.0,
+      "skillAttackCoolDown": 10,
+      "maxBullets": 3
     }
   ],
   "normalAttackCoolDown": 1,
