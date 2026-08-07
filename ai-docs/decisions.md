@@ -809,3 +809,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 응답만 받고 WebSocket을 붙이지 않은 client가 full room capacity를 무기한 점유하지 않습니다.
 - Exact-boundary attach와 timer callback 지연이 같은 strict 30초 정책으로 수렴합니다.
 - Partial participant replacement 없이 room identity를 원자적으로 회수해 다음 join의 ownership을 단순하게 유지합니다.
+
+## ADR-0043: SL-111 승인 Map_0를 Production Runtime에 동기화
+
+상태: 승인됨
+
+맥락: Client에 merge된 Map_0은 20x20에서 40x40으로 확장됐지만 server binary가 embed한 production map과 작은 `StaticMapFixture()`·legacy fixture는 서로 다른 역할을 가집니다. Runtime을 Client와 맞추면서 기존 test/dev fixture, tile collision semantics, invalid production config fail-fast 정책을 바꾸지 않아야 합니다.
+
+결정:
+
+- `server-config/game-config.json`만 production embedded artifact로 `width=40`, `height=40`, `index=0`, `maxPlayers=6`과 승인된 전체 tile grid로 갱신합니다. `TileSpawnPoint(2)`는 정확히 6개입니다.
+- 승인 source는 `Second-Loop/Client-CrawlStars` PR #28 merge (`d3e7811d60b0cc1c7084f1672ce1b360fe255923`)가 반영한 `CrawlStars/Assets/StreamingAssets/Maps/Map_0.json`입니다. Current `main`은 `50f10c27a575c2bc8f53c7e7b3385de69876184c`, last-changing commit은 `4f3292603e6809e918f609e5be8dd03d3ded8988`, blob SHA는 `89228cead52df257a0489101d045b3d288634e27`, raw SHA-256은 `babb748ff60827499992d7020ec296bc72afa32928ecf5642b3c4e82d943cf00`, `jq -S -c` canonical semantic SHA-256은 `b1729488ec19efb433d19df112b88f1fd1b33a1f39f15fb1cb4df0f93d9f8e60`입니다.
+- Linear SL-100 본문의 승인 40x40 JSON과 Client source를 함께 기준으로 삼습니다. Go parser/config exact-grid regression은 metadata, full row-major grid, spawn capacity와 semantic SHA를 확인합니다. REST room response와 Ready projection regression은 같은 production grid를 JSON number array로 보존하는지 확인합니다.
+- 6인·30Hz smoke/benchmark는 SL-104 후보 tile traversal 위에서 실행합니다. 결과는 성능 baseline으로 기록하고 correctness threshold로 해석하지 않습니다.
+- Production config decode/validation/trailing input 오류는 기존 SL-102 정책대로 listener 전에 fail-fast합니다. `StaticGameConfig()`의 5x5 map과 `internal/simulation/fixtures/default-map.json`은 명시적 test/dev·legacy fixture로 유지합니다.
+
+결과:
+
+- Client/Linear/server의 40x40 map contract가 source evidence와 semantic hash로 추적됩니다.
+- REST/Ready가 full grid와 `index/maxPlayers/spawn` metadata를 동일하게 전달합니다.
+- map artifact synchronization은 collision algorithm, gameplay loop, protocol shape, fixture ownership을 확장하지 않습니다.

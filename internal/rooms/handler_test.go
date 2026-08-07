@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,8 +17,67 @@ import (
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+	serverconfig "github.com/Second-Loop/Server-CrawlStars/server-config"
 	"nhooyr.io/websocket"
 )
+
+func TestProductionMapPreservesExactGridThroughRoomAndReadyProjection(t *testing.T) {
+	config, err := simulation.LoadGameConfig(serverconfig.Reader())
+	if err != nil {
+		t.Fatalf("load embedded production game config: %v", err)
+	}
+	store := NewStoreWithConfig(5, StoreConfig{GameConfig: config})
+	handler := debugHandler(t, store)
+
+	joined := joinMatchmaking(t, handler)
+	roomResponseRecorder := request(handler, http.MethodGet, "/rooms/"+joined.Room.ID)
+	if roomResponseRecorder.Code != http.StatusOK {
+		t.Fatalf("room detail status=%d body=%s", roomResponseRecorder.Code, roomResponseRecorder.Body.String())
+	}
+	var room roomResponse
+	decodeResponse(t, roomResponseRecorder, &room)
+	wantMap := mapResponseFromSimulation(config.Map)
+	if !reflect.DeepEqual(room.Map, wantMap) {
+		t.Fatalf("REST room map drifted from embedded production Map_0: got=%+v want=%+v", room.Map, wantMap)
+	}
+
+	storedRoom := store.lookupRoom(joined.Room.ID)
+	if storedRoom == nil {
+		t.Fatalf("room %q not found after production map join", joined.Room.ID)
+	}
+	storedRoom.mu.Lock()
+	ready := readyEventMessage{
+		Type:    "Ready",
+		Map:     mapResponseFromSimulation(storedRoom.gameConfig.Map),
+		Players: readyEventPlayers(storedRoom.Players, storedRoom.gameConfig),
+	}
+	storedRoom.mu.Unlock()
+	payload, err := json.Marshal(ready)
+	if err != nil {
+		t.Fatalf("marshal production Ready event: %v", err)
+	}
+	var decodedReady readyEventMessage
+	if err := json.Unmarshal(payload, &decodedReady); err != nil {
+		t.Fatalf("decode production Ready event: %v", err)
+	}
+	if !reflect.DeepEqual(decodedReady.Map, wantMap) {
+		t.Fatalf("Ready map drifted from embedded production Map_0: got=%+v want=%+v", decodedReady.Map, wantMap)
+	}
+	if decodedReady.Map.Width != 40 || decodedReady.Map.Height != 40 || decodedReady.Map.Index != 0 || decodedReady.Map.MaxPlayers != 6 {
+		t.Fatalf("Ready map metadata=%+v, want 40x40 index=0 maxPlayers=6", decodedReady.Map)
+	}
+	spawnTiles := 0
+	for _, row := range decodedReady.Map.Map {
+		for _, tile := range row {
+			if tile == int(simulation.TileSpawnPoint) {
+				spawnTiles++
+			}
+		}
+	}
+	if spawnTiles != 6 {
+		t.Fatalf("expected Ready to expose exactly six spawn tiles, got %d", spawnTiles)
+	}
+}
 
 func TestStoreCreatesOpaqueIDsAndSessionSecrets(t *testing.T) {
 	random := bytes.NewReader(bytes.Join([][]byte{

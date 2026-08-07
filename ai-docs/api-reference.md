@@ -229,7 +229,7 @@ Room response:
 | Water | 4 | 충돌 | 통과 |
 | Map boundary | - | 충돌 | 충돌 |
 
-기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 현재 기본 map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid이며 exact-grid Go regression으로 drift를 막습니다. 이 문서의 예시는 간결함을 위해 명시적 test/dev용 5x5 `StaticGameConfig()`를 사용합니다. Production은 config 로드나 검증에 실패하면 listener를 열기 전에 startup을 실패시키며 5x5 map으로 fallback하지 않습니다. `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 남아 있습니다.
+기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 현재 기본 map은 Client PR #28에서 merge된 `Map_0`과 값이 같은 40x40 grid이며 `index=0`, `maxPlayers=6`, spawn tile 2개가 아니라 정확히 6개입니다. Client `main` `50f10c27a575c2bc8f53c7e7b3385de69876184c`, last-changing commit `4f3292603e6809e918f609e5be8dd03d3ded8988`, blob `89228cead52df257a0489101d045b3d288634e27`, canonical semantic SHA-256 `b1729488ec19efb433d19df112b88f1fd1b33a1f39f15fb1cb4df0f93d9f8e60`을 exact-grid Go regression에 고정합니다. 이 문서의 예시는 간결함을 위해 명시적 test/dev용 5x5 `StaticGameConfig()`를 사용합니다. Production은 config 로드나 검증에 실패하면 listener를 열기 전에 startup을 실패시키며 5x5 map으로 fallback하지 않습니다. `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 남아 있습니다.
 
 Map config는 `map.maxPlayers`명 모두에게 서로 다른 spawn을 줄 수 있어야 합니다. 명시적 SpawnPoint와 Wall/Water를 제외한 fallback 좌표의 합집합이 `map.maxPlayers`보다 작거나 canonical assignment 원형이 max supported character radius에서 겹치면 config를 거부합니다. Gameplay movement는 live player 후보를 X/Y축별로 함께 판정하고 충돌 pair의 해당 축 이동을 모두 취소합니다. 기존 overlap에서는 separation을 엄격히 늘리는 이동만 허용합니다.
 

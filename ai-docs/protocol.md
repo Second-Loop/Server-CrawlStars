@@ -102,7 +102,7 @@ Server runtime의 character stats는 speed `2`, radius `0.5`, HP `4000/3100/4100
 - projectile type별 `id/radius/speed`
 - `mode.default`
 - `mode.catalog[].id`, `mode.catalog[].playersPerMatch`, `mode.catalog[].teams`, `mode.catalog[].rules`
-- `map`: client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 exact grid
+- `map`: Client SL-79/PR #28에서 merge된 `Map_0`과 값이 같은 40x40 exact grid (`index=0`, `maxPlayers=6`, `TileSpawnPoint(2)` 정확히 6개)
 
 Client는 여전히 최종 gameplay state를 서버 snapshot에서 받습니다. `HP`, speed, damage, tick rate, map은 server snapshot이나 Ready event로 받거나 서버만 판단하므로 client 공유 config에 넣지 않습니다.
 Mode/team rule도 server-only입니다. REST join response와 Room은 선택된 mode ID만 `gameMode`로 노출하고 `friendlyFire`, `teamBehavior`, 전체 catalog는 노출하지 않습니다. Projectile hit은 room-local selected mode rules를 사용합니다. Solo는 owner가 아닌 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 이 동작은 WebSocket message shape를 바꾸지 않습니다.
@@ -267,7 +267,7 @@ Ready event:
 }
 ```
 
-예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload의 `Players`는 bot을 포함한 full participant list입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
+예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload의 `Players`는 bot을 포함한 full participant list입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 40x40 Map_0입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
 
 Ready ACK:
 

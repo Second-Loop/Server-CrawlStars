@@ -583,8 +583,8 @@ assert(hasTypeValue(serverGameConfig.projectile?.types, "default", "speed", 13),
 for (const projectileType of serverGameConfig.projectile?.types ?? []) {
   assert(!Object.hasOwn(projectileType, "damage"), `server projectile type must not expose damage for ${projectileType.id}`);
 }
-assert(serverGameConfig.map?.width === 20, "server-config/game-config.json must expose the runtime map width");
-assert(serverGameConfig.map?.height === 20, "server-config/game-config.json must expose the runtime map height");
+assert(serverGameConfig.map?.width === 40, "server-config/game-config.json must expose the runtime map width");
+assert(serverGameConfig.map?.height === 40, "server-config/game-config.json must expose the runtime map height");
 assert(serverGameConfig.map?.maxPlayers === 6, "server-config/game-config.json must expose map maxPlayers 6");
 const serverMapTiles = serverGameConfig.map?.map?.flat() ?? [];
 assert(serverMapTiles.includes(3), "server-config/game-config.json must include TileBush value 3");
