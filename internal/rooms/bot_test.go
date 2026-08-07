@@ -145,7 +145,7 @@ func TestMergedTickInputsIsDeterministicSortedAndUnique(t *testing.T) {
 	}
 }
 
-func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
+func TestBotBasicAttackCadenceLeavesSimulationChargeAuthoritative(t *testing.T) {
 	config, err := simulation.StaticGameConfig().SelectMode(simulation.GameModeDuel1v1)
 	if err != nil {
 		t.Fatalf("select duel mode: %v", err)
@@ -159,19 +159,132 @@ func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
 		{ID: "human", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 1}},
 	}
 	state := simulation.NewStateWithConfig(view, simulation.Config{Game: config})
+	nextAttackTicks := make(map[simulation.PlayerID]simulation.Tick)
 	accepted := make([]bool, 0, 5)
-	for range 5 {
-		inputs := mergedTickInputs(nil, view)
-		if len(inputs) != 1 || inputs[0].PlayerID != "bot" || !inputs[0].PressedAttack {
-			t.Fatalf("bot must request one attack each tick: %+v", inputs)
+	for tick := simulation.Tick(1); tick <= 5; tick++ {
+		inputs := mergedTickInputsAtTick(nil, view, tick, nextAttackTicks)
+		if len(inputs) != 1 || inputs[0].PlayerID != "bot" {
+			t.Fatalf("bot input missing or replaced: %+v", inputs)
+		}
+		if tick == 1 && !inputs[0].PressedAttack {
+			t.Fatalf("bot must request its first attack immediately: %+v", inputs)
+		}
+		if tick > 1 && inputs[0].PressedAttack {
+			t.Fatalf("bot must not request attack during cooldown: %+v", inputs)
 		}
 		snapshot := state.Step(inputs)
-		accepted = append(accepted, playerByID(t, snapshot.Players, "bot").PressedAttack)
+		bot := playerByID(t, snapshot.Players, "bot")
+		accepted = append(accepted, bot.PressedAttack)
+		if bot.PressedAttack {
+			nextAttackTicks[bot.ID] = snapshot.Tick + simulation.Tick(playerConfig.NormalAttack.RechargeTicks)
+		}
 		view = append([]simulation.PlayerData(nil), snapshot.Players...)
 	}
-	want := []bool{true, true, true, false, false}
+	want := []bool{true, false, false, false, false}
 	if !reflect.DeepEqual(accepted, want) {
 		t.Fatalf("shared simulation accepted=%v, want %v", accepted, want)
+	}
+}
+
+func TestBotInputForAtTickPreservesMovementAndAimDuringAttackCooldown(t *testing.T) {
+	bot := simulation.PlayerData{ID: "bot", Team: simulation.TeamRed, Pos: simulation.Vector2{X: 1, Y: 1}, IsBot: true}
+	enemy := simulation.PlayerData{ID: "enemy", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 4, Y: 5}}
+	nextAttackTicks := map[simulation.PlayerID]simulation.Tick{bot.ID: 4}
+
+	cooldown, ok := botInputForAtTick(bot, []simulation.PlayerData{bot, enemy}, 3, nextAttackTicks)
+	if !ok || cooldown.PressedAttack {
+		t.Fatalf("cooldown bot input=%+v ok=%t, want movement/aim without attack", cooldown, ok)
+	}
+	wantDirection := simulation.Vector2{X: 0.6, Y: 0.8}
+	if cooldown.MoveDir != wantDirection || cooldown.AttackDir != wantDirection {
+		t.Fatalf("cooldown bot direction move=%+v attack=%+v, want %+v", cooldown.MoveDir, cooldown.AttackDir, wantDirection)
+	}
+
+	ready, ok := botInputForAtTick(bot, []simulation.PlayerData{bot, enemy}, 4, nextAttackTicks)
+	if !ok || !ready.PressedAttack {
+		t.Fatalf("ready bot input=%+v ok=%t, want attack at exact ready tick", ready, ok)
+	}
+}
+
+func TestRoomBotAttackCadenceUsesServerRechargeTicks(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("select duel mode: %v", err)
+	}
+	config.Player.Types[0].NormalAttack.RechargeTicks = 3
+	config.Player.Types[0].NormalAttack.DamagePerHit = 1
+	players := []simulation.PlayerData{
+		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: -10}, IsBot: true},
+		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: 10}},
+	}
+	room := store.newRoomLocked("room-bot-attack-cadence", config)
+	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.Players = []playerResponse{
+		{ID: "bot", Team: string(simulation.TeamRed), IsBot: true, CharacterType: simulation.CharacterTypeShelly},
+		{ID: "human", Team: string(simulation.TeamBlue), CharacterType: simulation.CharacterTypeShelly},
+	}
+	room.lastPlayers = append([]simulation.PlayerData(nil), players...)
+	room.state = simulation.NewStateWithConfig(players, simulation.Config{Game: config})
+
+	accepted := make([]bool, 0, 5)
+	for range 5 {
+		store.tickRoomState(room)
+		bot := playerByID(t, room.lastPlayers, "bot")
+		accepted = append(accepted, bot.PressedAttack)
+		if bot.MoveDir == (simulation.Vector2{}) || bot.AttackDir == (simulation.Vector2{}) {
+			t.Fatalf("bot movement/aim stopped during attack cooldown: %+v", bot)
+		}
+	}
+	want := []bool{true, false, false, true, false}
+	if !reflect.DeepEqual(accepted, want) {
+		t.Fatalf("bot attack approvals=%v, want %v", accepted, want)
+	}
+}
+
+func TestRoomColtBotRetriesAfterFinalBurstEmission(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("select duel mode: %v", err)
+	}
+	colt, ok := config.PlayerType(simulation.CharacterTypeColt)
+	if !ok {
+		t.Fatal("missing Colt config")
+	}
+	for index := range config.Player.Types {
+		if config.Player.Types[index].CharacterType == simulation.CharacterTypeColt {
+			config.Player.Types[index].NormalAttack.DamagePerHit = 1
+		}
+	}
+	players := []simulation.PlayerData{
+		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeColt, Pos: simulation.Vector2{X: -10}, IsBot: true},
+		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: 10}},
+	}
+	room := store.newRoomLocked("room-colt-bot-attack-cadence", config)
+	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.Players = []playerResponse{
+		{ID: "bot", Team: string(simulation.TeamRed), IsBot: true, CharacterType: simulation.CharacterTypeColt},
+		{ID: "human", Team: string(simulation.TeamBlue), CharacterType: simulation.CharacterTypeShelly},
+	}
+	room.lastPlayers = append([]simulation.PlayerData(nil), players...)
+	room.state = simulation.NewStateWithConfig(players, simulation.Config{Game: config})
+
+	approvedTicks := make([]simulation.Tick, 0, 2)
+	lastBurstTick := simulation.Tick(1 + colt.NormalAttack.RechargeTicks)
+	for tick := simulation.Tick(1); tick <= lastBurstTick+1; tick++ {
+		store.tickRoomState(room)
+		if playerByID(t, room.lastPlayers, "bot").PressedAttack {
+			approvedTicks = append(approvedTicks, tick)
+		}
+	}
+	want := []simulation.Tick{1, lastBurstTick + 1}
+	if !reflect.DeepEqual(approvedTicks, want) {
+		t.Fatalf("Colt bot approved ticks=%v, want %v", approvedTicks, want)
 	}
 }
 

@@ -11,6 +11,15 @@ func mergedTickInputs(
 	pending map[string]simulation.InputCommand,
 	players []simulation.PlayerData,
 ) []simulation.InputCommand {
+	return mergedTickInputsAtTick(pending, players, 1, nil)
+}
+
+func mergedTickInputsAtTick(
+	pending map[string]simulation.InputCommand,
+	players []simulation.PlayerData,
+	currentTick simulation.Tick,
+	nextAttackTicks map[simulation.PlayerID]simulation.Tick,
+) []simulation.InputCommand {
 	botIDs := make(map[simulation.PlayerID]struct{})
 	for _, player := range players {
 		if player.IsBot {
@@ -35,7 +44,7 @@ func mergedTickInputs(
 			continue
 		}
 		delete(byPlayer, player.ID)
-		if input, ok := botInputFor(player, players); ok {
+		if input, ok := botInputForAtTick(player, players, currentTick, nextAttackTicks); ok {
 			byPlayer[player.ID] = input
 		}
 	}
@@ -78,6 +87,15 @@ func botInputFor(
 	bot simulation.PlayerData,
 	players []simulation.PlayerData,
 ) (simulation.InputCommand, bool) {
+	return botInputForAtTick(bot, players, 1, nil)
+}
+
+func botInputForAtTick(
+	bot simulation.PlayerData,
+	players []simulation.PlayerData,
+	currentTick simulation.Tick,
+	nextAttackTicks map[simulation.PlayerID]simulation.Tick,
+) (simulation.InputCommand, bool) {
 	if !bot.IsBot || bot.IsDead {
 		return simulation.InputCommand{}, false
 	}
@@ -86,11 +104,15 @@ func botInputFor(
 		return simulation.InputCommand{}, false
 	}
 	direction := unitDirection(bot.Pos, target.Pos)
+	pressedAttack := true
+	if nextAttackTick, ok := nextAttackTicks[bot.ID]; ok && currentTick < nextAttackTick {
+		pressedAttack = false
+	}
 	return simulation.InputCommand{
 		PlayerID:      bot.ID,
 		MoveDir:       direction,
 		AttackDir:     direction,
-		PressedAttack: true,
+		PressedAttack: pressedAttack,
 	}, true
 }
 

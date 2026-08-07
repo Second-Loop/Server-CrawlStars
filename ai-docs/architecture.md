@@ -112,7 +112,7 @@ Server-owned bot도 별도 simulation을 만들지 않습니다. 한 room tick�
   -> LastProcessedClientTick을 포함한 authoritative snapshot 1개
 ```
 
-`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`과 `SkillReadyTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge, skill approval/cooldown과 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
+`internal/rooms/bot.go`는 직전 snapshot에서 가장 가까운 live enemy를 고르고 공통 `InputCommand`만 만듭니다. 같은 거리는 `PlayerID` 오름차순, 같은 좌표의 방향은 `+X`로 고정합니다. Room은 bot별 마지막 승인 tick에서 room-local next-attack tick을 계산해 첫 gameplay activation은 즉시 허용하고 이후에는 해당 room config의 `normalAttack.rechargeTicks` 경계 전까지 `PressedAttack`만 억제합니다. Cooldown 중에도 MoveDir/AttackDir은 계속 생성하며 실제 charge 소비·승인과 Colt scheduled burst는 `internal/simulation.State.Step`에 남깁니다. Pending map의 key가 human command의 authoritative `PlayerID`이며, bot key로 들어온 외부 command는 `ClientTick: 0`인 pure controller 결과로 대체합니다. Room은 stale/duplicate 양수 input을 Step 전에 줄이는 admission guard이고, `internal/simulation.State`가 player별 `LastProcessedClientTick`과 `SkillReadyTick`의 최종 소유자입니다. Movement, projectile, hit, HP/death, attack charge, skill approval/cooldown과 processed input ACK는 계속 `internal/simulation.State.Step`만 변경합니다.
 
 ### SL-83 일반 공격 소유권
 

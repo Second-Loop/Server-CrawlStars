@@ -850,3 +850,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 300 tick 반복 발사에서 canonical/snapshot projectile 수와 ID uniqueness를 확인합니다.
 - 실제 room snapshot payload를 느린 writer의 latest-only slot에 공급해 최종 `D+30` snapshot이 expired tombstone을 보관하지 않는지 확인합니다.
 - REST/OpenAPI와 AsyncAPI schema shape는 변경하지 않고 human docs에 retention boundary와 absent-ID 경계를 기록합니다.
+
+## ADR-0045: SL-108 Bot 일반 공격은 Server Config Recharge Cadence로 시도한다
+
+상태: 승인됨
+
+맥락: 기존 server-owned bot controller는 매 gameplay tick `PressedAttack: true`를 생성했습니다. `State.Step`이 charge를 권위적으로 거부하더라도 초기 charge를 연속으로 소비하고, 캐릭터별 `normalAttack.rechargeTicks`가 bot 시도 cadence에 반영되지 않았습니다. 동시에 bot의 movement/aim과 human input merge, Colt scheduled burst, simulation charge ownership은 유지해야 합니다.
+
+결정:
+
+- 첫 gameplay activation은 즉시 시도할 수 있습니다. Room은 bot별 마지막 승인 snapshot tick `A`와 room이 소유한 `CharacterType` config의 `normalAttack.rechargeTicks`를 사용해 next-attack tick `A + rechargeTicks`를 계산합니다. 정확히 그 tick부터 다시 `PressedAttack` 시도를 생성합니다.
+- Next-attack tick 전에는 bot command의 `MoveDir`과 `AttackDir`을 기존 deterministic targeting 결과로 계속 채우고 `PressedAttack`만 `false`로 둡니다. Self/ally/dead 제외, nearest enemy, equal-distance `PlayerID` tie-break, coincident `+X` 방향은 변경하지 않습니다.
+- 실제 charge 소비, attack activation 승인, `PressedAttack` snapshot pulse, Colt의 `A+[0,6,12,18,24,30]` 6발 burst와 `A+31` non-overlap은 계속 `internal/simulation.State.Step`이 소유합니다. Room controller는 charge를 직접 읽거나 소비하지 않습니다.
+- Human pending input, authoritative map-key `PlayerID`, `ClientTick`, bot `ClientTick: 0`, 한 room tick의 단일 `State.Step` 호출, bot skill 미지원 범위는 변경하지 않습니다. Wire field와 REST/OpenAPI/AsyncAPI schema도 추가하지 않습니다.
+- Room state는 bot별 next-attack tick을 `room.mu` 아래 보유합니다. Schedule은 snapshot에서 `PressedAttack: true`인 실제 승인 이후에만 갱신되므로 charge가 없거나 Colt burst가 active인 거절된 시도는 cadence 기준을 앞당기지 않습니다.
+
+결과:
+
+- Bot은 initial charge를 매 tick 소진하지 않고 server config와 같은 tick 경계로 일반 공격을 요청합니다.
+- Movement/aim과 human input은 cooldown 중에도 계속 simulation에 전달되고, authoritative combat truth가 controller와 중복되지 않습니다.
+- Controller unit test와 production room integration test가 첫 activation, exact recharge boundary, cooldown 중 방향 유지, custom server recharge config를 고정합니다.

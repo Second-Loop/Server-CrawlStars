@@ -1341,11 +1341,25 @@ func (s *Store) tickRoomState(room *room) {
 			room.lastPlayers[index].IsDead = true
 		}
 	}
-	inputs := mergedTickInputs(room.pendingInputs, room.lastPlayers)
+	currentTick := simulation.Tick(room.latestSnapshot.Tick + 1)
+	if room.nextBotAttackTicks == nil {
+		room.nextBotAttackTicks = make(map[simulation.PlayerID]simulation.Tick)
+	}
+	inputs := mergedTickInputsAtTick(room.pendingInputs, room.lastPlayers, currentTick, room.nextBotAttackTicks)
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	stepStarted := s.wallNow()
 	snapshot := room.state.Step(inputs)
 	stepDuration := s.wallNow().Sub(stepStarted)
+	for _, player := range snapshot.Players {
+		if !player.IsBot || !player.PressedAttack {
+			continue
+		}
+		playerType, ok := room.gameConfig.PlayerType(player.CharacterType)
+		if !ok {
+			continue
+		}
+		room.nextBotAttackTicks[player.ID] = snapshot.Tick + simulation.Tick(playerType.NormalAttack.RechargeTicks)
+	}
 	room.lastPlayers = append([]simulation.PlayerData(nil), snapshot.Players...)
 	room.latestSnapshot = snapshotSummaryFromSnapshot(snapshot)
 	message := roomSnapshotMessage{Type: "snapshot", Snapshot: roomSnapshotFromSimulation(snapshot, MatchStatusStarted)}
