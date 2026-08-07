@@ -39,6 +39,32 @@ func TestStepReturnsSnapshotWithoutTransport(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("blue-1"), TeamBlue, 0, Vector2{X: 1, Y: 0})
 }
 
+func TestStateEliminatePlayersBatchesAuthoritativeDeaths(t *testing.T) {
+	state := NewState([]PlayerData{
+		{ID: PlayerID("red-1"), Team: TeamRed, HP: 100},
+		{ID: PlayerID("blue-1"), Team: TeamBlue, HP: 100},
+		{ID: PlayerID("already-dead"), Team: TeamRed, HP: 0, IsDead: true},
+	})
+
+	state.EliminatePlayers([]PlayerID{"red-1", "unknown", "blue-1", "already-dead"})
+	snapshot := state.Step(nil)
+
+	if snapshot.Tick != Tick(1) {
+		t.Fatalf("elimination must not advance tick before Step, got %d", snapshot.Tick)
+	}
+	for _, playerID := range []PlayerID{"red-1", "blue-1", "already-dead"} {
+		player := playerByID(t, snapshot, playerID)
+		if player.HP != 0 || !player.IsDead {
+			t.Fatalf("player %q = %+v, want HP=0 and IsDead=true", playerID, player)
+		}
+	}
+	for _, player := range snapshot.Players {
+		if player.ID == PlayerID("unknown") {
+			t.Fatal("unknown player must not be added to the snapshot")
+		}
+	}
+}
+
 func TestStatePreservesBotIdentity(t *testing.T) {
 	state := NewState([]PlayerData{
 		{ID: PlayerID("human"), Team: TeamRed, IsBot: false},

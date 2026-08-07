@@ -768,3 +768,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 같은 tick 결과가 input map 순회와 PlayerID ordering에 흔들리지 않고, live player가 서로 통과하거나 기존 overlap을 유지하는 이동을 할 수 없습니다.
 - 잘못된 production config는 운영 중 조용한 fallback 대신 배포/startup 단계에서 드러납니다.
 - Spawn validation과 gameplay collision이 같은 최대-radius 안전 경계를 공유하되 test/dev fixture 사용은 유지됩니다.
+
+## ADR-0041: SL-103 Started Match Reconnect Grace는 Room Gameplay Tick에서 Batch Forfeit한다
+
+상태: 승인됨
+
+맥락: Started match의 transport disconnect를 즉시 사망 처리하면 짧은 네트워크 단절이 gameplay 결과를 바꿉니다. 반대로 player별 timer/goroutine을 만들면 동일 tick의 여러 만료 순서가 Duel/Solo/Team 결과와 terminal delivery를 흔들 수 있습니다. Close-cause와 connection generation은 ADR-0039에서 이미 bounded lifecycle 관측으로 고정되어 있으므로, 그 경계를 authoritative gameplay expiry에도 재사용해야 합니다.
+
+결정:
+
+- Started match에서 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`는 player별 10초 reconnect grace를 예약합니다. Grace 동안 player는 같은 simulation state/tick에 남아 피격될 수 있고, reconnect하면 같은 identity/state/tick을 이어가며 pending expiry를 취소합니다.
+- `now >= deadline`인 pending grace는 per-player timer/goroutine 없이 room의 기존 gameplay ticker에서 한 번에 소비합니다. Expiry identity 모두를 `State.EliminatePlayers`에 전달해 HP `0`/`IsDead: true`를 설정한 뒤 `State.Step`을 정확히 한 번 실행합니다. Room의 `lastPlayers`도 같은 tick 전에 갱신해 bot controller와 evaluator가 동일한 authoritative death를 봅니다.
+- Expiry snapshot은 기존 `calculateGameEndResults`와 Duel/Solo/Team evaluator를 재사용합니다. 같은 gameplay tick의 Duel/Solo/Team simultaneous removal은 기존 Draw/Win/Lose 정책을 따르고, player별 첫 result ledger는 immutable합니다. Result가 확정된 player의 reconnect는 거부합니다.
+- `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional lifecycle close라서 grace/forfeit를 예약하지 않습니다. Current-session identity와 generation을 먼저 확인하므로 stale old-session close는 새 connection에 영향을 주지 않습니다.
+- Wire shape와 REST OpenAPI는 추가하지 않습니다. Connected session의 terminal delivery 순서는 기존 snapshot -> `GameEnd` -> close를 유지하고, disconnected expired player는 result ledger만 남깁니다. AsyncAPI와 human-readable protocol/API reference에는 이 lifecycle을 기록합니다.
+
+결과:
+
+- 짧은 started-match 네트워크 단절은 10초 동안 authoritative simulation을 유지하며, grace 안의 reconnect는 state/tick continuity를 보장합니다.
+- 동일 tick의 다중 expiry가 goroutine scheduling이나 map iteration 순서에 의존하지 않고 기존 mode evaluator의 simultaneous result로 수렴합니다.
+- Intentional teardown, stale generation, finalized result 경계가 player forfeit와 분리되어 room cleanup/close barrier 정책을 바꾸지 않습니다.

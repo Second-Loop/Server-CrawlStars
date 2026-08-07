@@ -92,6 +92,7 @@ type room struct {
 	pendingInputs            map[string]simulation.InputCommand
 	clients                  map[string]*clientSession
 	connectionGenerations    map[string]uint64
+	reconnectGraces          map[string]reconnectGrace
 	closeBarrierSessions     map[*clientSession]struct{}
 	reservations             map[string]*clientReservation
 	finalizedGameEndResults  map[string]gameEndResult
@@ -113,7 +114,13 @@ type room struct {
 }
 
 type simulationStepper interface {
+	EliminatePlayers([]simulation.PlayerID)
 	Step([]simulation.InputCommand) simulation.Snapshot
+}
+
+type reconnectGrace struct {
+	generation uint64
+	expiresAt  time.Time
 }
 
 func NewStore(maxActiveRooms int) *Store {
@@ -1029,6 +1036,7 @@ func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *
 		pendingInputs:            make(map[string]simulation.InputCommand),
 		clients:                  make(map[string]*clientSession),
 		connectionGenerations:    make(map[string]uint64),
+		reconnectGraces:          make(map[string]reconnectGrace),
 		closeBarrierSessions:     make(map[*clientSession]struct{}),
 		reservations:             make(map[string]*clientReservation),
 		finalizedGameEndResults:  make(map[string]gameEndResult),

@@ -171,7 +171,7 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - 첫 human matchmaking join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
 - deadline을 먼저 획득하면 selected mode의 남은 slot을 bot으로 원자적으로 채웁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 `room_cap_reached` 409를 반환합니다.
 - Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
-- Ready timeout, reconnect grace, participant replacement는 없습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
+- Ready timeout과 participant replacement는 없습니다. Started match의 비의도적 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 사용하고, grace 중 simulation은 계속됩니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
 - 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 
 ### Room debug API
@@ -311,9 +311,9 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 연결 전에 room/player/session이 REST로 발급되어 있어야 합니다. 정상적인 다른 query key는 허용하지만 어느 query pair든 malformed하면 전체 query를 fail-closed 401로 처리합니다. 검증 순서는 room 404 → player 404 → token 401 → live connection 또는 in-flight reservation 409입니다. Wrong token은 reservation 충돌보다 먼저 401입니다.
 
-Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking의 matched/loading/starting 단계에서 실제 연결이 끊기면 pre-start cancel로 room이 삭제되어 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. 같은 match의 started room에 reconnect하면 authoritative simulation state에 남은 `LastProcessedClientTick`부터 이어서 다음 양수 tick을 보내고, 새 match의 ACK는 `0`에서 시작합니다. HTTP-to-WebSocket upgrade 자체가 실패하면 reservation만 rollback하고 room을 취소하지 않으므로 같은 발급 path로 재시도할 수 있습니다.
+Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking의 matched/loading/starting 단계에서 실제 연결이 끊기면 pre-start cancel로 room이 삭제되어 reconnect할 수 없습니다. Started match의 비의도적 transport disconnect는 10초 grace 동안 authoritative player/state/tick을 유지하고, grace 안의 reconnect는 pending expiry를 취소합니다. Deadline 이상이 된 player는 다음 gameplay tick에서 HP `0`/`IsDead`로 batch 처리되고 기존 mode evaluator의 Win/Lose/Draw를 사용합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않으며 finalized player는 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. 같은 match의 started room에 reconnect하면 authoritative simulation state에 남은 `LastProcessedClientTick`부터 이어서 다음 양수 tick을 보내고, 새 match의 ACK는 `0`에서 시작합니다. HTTP-to-WebSocket upgrade 자체가 실패하면 reservation만 rollback하고 room을 취소하지 않으므로 같은 발급 path로 재시도할 수 있습니다.
 
-Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 기존 cancel 정책을 적용하며, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement나 별도 reconnect grace는 없습니다.
+Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Reconnect grace expiry는 per-player timer/goroutine 없이 room gameplay tick에서 처리하며, 같은 tick에 만료된 player는 한 번에 기존 evaluator로 판정합니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 기존 cancel 정책을 적용하며, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement는 없습니다.
 
 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v4 경계를 유지합니다.
 
@@ -576,7 +576,7 @@ GameEnd wire field와 enum은 그대로이고 판정만 room-local mode를 따�
 | `solo` | Solo 중간 탈락 player는 Lose와 close를 받고 나머지는 계속합니다. 마지막 생존자는 Win입니다. 전원 사망은 새로 결과가 확정되는 player에게 Draw입니다. |
 | `team` | Team 일부 사망은 계속합니다. 한 team 전멸은 패배 team 3명은 Lose, 상대 team 3명은 Win입니다. 양 team이 같은 tick에 전멸하면 6명 모두 Draw입니다. |
 
-Player별 첫 결과는 바뀌지 않습니다. 예를 들어 Solo 이전 Lose는 유지되고, 뒤의 전원 사망 tick에서는 아직 결과가 없던 player만 Draw를 받습니다. 중간 탈락 connection에는 `terminal snapshot -> GameEnd -> close`를 보내지만 room ticker는 계속 실행합니다.
+Player별 첫 결과는 바뀌지 않습니다. 예를 들어 Solo 이전 Lose는 유지되고, 뒤의 전원 사망 tick에서는 아직 결과가 없던 player만 Draw를 받습니다. 중간 탈락 또는 grace expiry로 결과가 확정된 connection에는 `terminal snapshot -> GameEnd -> close`를 보내지만 room ticker는 계속 실행합니다. 이미 끊긴 player는 snapshot/GameEnd를 받을 session이 없고, finalized ledger 때문에 같은 player의 reconnect는 거부합니다.
 
 Bot도 mode별 GameEnd result ledger 계산에는 포함됩니다. 다만 bot에는 WebSocket session이 없으므로 terminal snapshot, `GameEnd`, transport close는 human session에만 전달합니다.
 
@@ -634,4 +634,4 @@ REST `Player.characterType`은 required이며 top-level `player`와 nested `room
 
 ## 제약
 
-이 API는 development surface입니다. Player session 인증, debug Bearer guard, matchmaking rate limit, WebSocket heartbeat는 구현되어 있습니다. Account auth, production matchmaking, persistence, bot replacement, reconnect grace, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.
+이 API는 development surface입니다. Player session 인증, debug Bearer guard, matchmaking rate limit, WebSocket heartbeat, started-match reconnect grace는 구현되어 있습니다. Account auth, production matchmaking, persistence, bot replacement, respawn, score, dashboard, scheduler, Kubernetes는 없습니다.

@@ -46,6 +46,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 - room별 lock, client별 async writer, latest-only snapshot coalescing
 - reliable Ready/lifecycle/error와 terminal snapshot → GameEnd → close 전달
 - 30초 WebSocket heartbeat와 Ping별 90초 deadline
+- started match의 비의도적 disconnect 10초 reconnect grace, same-state reconnect, gameplay-tick batch expiry
 - Store당 30초 janitor와 cap-pressure 단일 cleanup/retry
 - bounded close cause/context를 포함한 JSON room/WebSocket lifecycle log와 process-local Prometheus metrics
 - application HTTP와 private metrics의 coordinated graceful shutdown
@@ -53,7 +54,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 아직 안 되는 것:
 
 - SL-85 실제 skill effect와 bot skill use
-- bot replacement와 별도 reconnect grace
+- bot replacement
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
 - production matchmaking queue, rating, account auth, persistence
@@ -127,7 +128,7 @@ Join quota는 store보다 먼저 실행하므로 429가 room cap 409와 `interna
 
 Participant capacity를 채워도 REST `room.status`는 `waiting`입니다. 그 뒤 room 내 human participant의 WebSocket session이 모두 연결되면 human connection에만 같은 `Ready` event를 보내며, payload에는 bot을 포함한 full participant list를 넣습니다. Human participant의 ready ACK가 모두 모이면 `starting/countdown: 5`를 한 번 broadcast합니다. Duplicate ACK는 player identity별 quorum을 늘리지 않고 bot은 session이나 ACK가 없습니다. Human participant가 0명이면 quorum은 성립하지 않습니다. 5초 뒤 `started`를 한 번 보내고 room-local gameplay ticker 하나를 시작합니다.
 
-SL-91 timer는 10초 deadline에 selected mode의 남은 capacity를 bot으로 원자적으로 채웁니다. Bot ID 발급이 하나라도 실패하면 participant와 ID registry를 이전 상태로 돌리고 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Public REST endpoint나 bot credential은 없습니다. Unmatched disconnect는 credential과 timer를 유지하고, matched/loading/starting 실제 disconnect는 기존 match cancel로 room과 timer resource를 정리합니다. Ready timeout, reconnect grace, participant replacement는 없습니다.
+SL-91 timer는 10초 deadline에 selected mode의 남은 capacity를 bot으로 원자적으로 채웁니다. Bot ID 발급이 하나라도 실패하면 participant와 ID registry를 이전 상태로 돌리고 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Public REST endpoint나 bot credential은 없습니다. Unmatched disconnect는 credential과 timer를 유지하고, matched/loading/starting 실제 disconnect는 기존 match cancel로 room과 timer resource를 정리합니다. Ready timeout과 participant replacement는 없습니다. Started match의 peer/read/write/ping/control-overflow disconnect는 10초 reconnect grace를 사용하며, grace 중 simulation은 계속되고 다음 gameplay tick에서 due player를 batch expiry합니다.
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
@@ -143,7 +144,7 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 
 서버는 upgrade 전에 room 존재 여부, player 소속 여부, 정확히 한 개의 non-empty token, live connection/in-flight reservation을 순서대로 확인합니다. 실패 status는 404, 404, 401, 409입니다. 정상 extra query key는 허용하지만 malformed query pair는 401입니다. Waiting room도 연결과 input 수신은 허용하지만, started 전 gameplay tick은 돌리지 않습니다.
 
-Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 TTL/hard lifetime을 따릅니다. 같은 started match에 reconnect하면 snapshot의 processed input ACK 다음 양수 tick부터 이어 보내고 새 match는 `0`에서 시작합니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
+Token은 room/player session이 존재하는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Started room은 TTL/hard lifetime을 따릅니다. Started match의 비의도적 transport disconnect는 10초 grace 동안 player와 authoritative state/tick을 유지하며, grace 안에 reconnect하면 pending expiry를 취소합니다. Deadline 이상이면 다음 gameplay tick에서 HP `0`/`IsDead`로 batch 처리하고 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. Intentional close와 finalized player는 forfeit/reconnect 대상이 아닙니다. 같은 started match에 reconnect하면 snapshot의 processed input ACK 다음 양수 tick부터 이어 보내고 새 match는 `0`에서 시작합니다. Failed upgrade는 room을 취소하지 않아 같은 발급 path로 retry할 수 있습니다. `sessionToken`, tokenized `webSocketPath`, inbound query를 log에 남기지 않습니다.
 
 Matchmaking room WebSocket 상태:
 
@@ -254,9 +255,9 @@ Room store는 in-memory입니다.
 - hard room lifetime: 1시간
 - connected client가 있으면 idle/all-disconnected cleanup을 막습니다.
 
-현재 WebSocket close는 client connection과 pending input을 제거합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 match cancel로 room을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다.
+현재 WebSocket close는 client connection과 pending input을 제거합니다. Started match의 reconnectable cause는 room-owned 10초 grace record를 남기고 simulation을 유지합니다. Grace expiry는 per-player timer 없이 room gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 match cancel로 room을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다.
 
-각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 첫 종료 원인만 bounded cause로 보존하고 종료 log에는 generation, phase, duration, last sent tick을 남기며 `crawlstars_websocket_closes_total`은 cause 하나만 label로 사용합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 종료 관측을 정확히 한 번 publish하고 barrier에서 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
+각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 첫 종료 원인만 bounded cause로 보존하고 종료 log에는 generation, phase, duration, last sent tick을 남기며 `crawlstars_websocket_closes_total`은 cause 하나만 label로 사용합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 종료 관측을 정확히 한 번 publish하고 barrier에서 제거합니다. Intentional `game_end`/`prestart_cancel`/`expiry`/`shutdown`/`debug_delete`는 grace를 만들지 않고, stale old-session close는 current generation을 건드리지 않습니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
 외부 mutation의 lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `matchmakingMu`는 같은 mode의 동시 첫 join이 여러 room을 만들지 않도록 find-or-create 전체를 직렬화합니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
 
