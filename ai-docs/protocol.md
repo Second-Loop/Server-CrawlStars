@@ -83,10 +83,11 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 - `characters[].type` (`0=Shelly`, `1=Colt`, `2=Lily`)
 - `characters[].normalAttackDistance`, `characters[].skillAttackDistance` (Unity world unit)
 - `characters[].skillAttackCoolDown` (초), `characters[].maxBullets` (client charge 개수)
+- Client PR #29 병합 계약에서 Colt(type 1)는 거리 `6.0/7.0`, charge `4`이고 Lily(type 2)는 거리 `1.5/3.0`, charge `3`입니다. 순서는 `normalAttackDistance/skillAttackDistance/maxBullets`입니다.
 - `normalAttackCoolDown` (초)
 - `projectileRadius`
 
-`normalAttackDistance`, `skillAttackCoolDown`, `maxBullets` 같은 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다. 실제 hit/range/charge/skill 승인 결과는 server config와 snapshot이 소유하는 server-authoritative gameplay truth이며 client artifact 값으로 판정을 다시 만들지 않습니다.
+`normalAttackDistance`, `skillAttackCoolDown`, `maxBullets` 같은 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다. 실제 hit/range/charge/skill 승인 결과는 server config와 snapshot이 소유하는 server-authoritative gameplay truth이며 client artifact 값으로 판정을 다시 만들지 않습니다. 따라서 SL-113의 Colt/Lily client artifact 정정은 `server-config/game-config.json`의 전투 판정 수치를 바꾸지 않습니다.
 
 `server-config/game-config.json`은 server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only config입니다.
 

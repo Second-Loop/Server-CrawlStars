@@ -688,7 +688,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 결정:
 
-- `client-config/game-config.json`을 breaking client config v3로 올리고 `characters[].type 0/1/2`, `normalAttackDistance 5/1.5/6`, `skillAttackDistance 1/3/7`, `skillAttackCoolDown 10/10/10`, `maxBullets 3/3/4`, `normalAttackCoolDown 1`을 제공합니다.
+- `client-config/game-config.json`을 breaking client config v3로 올리고 `characters[].type 0/1/2`, `normalAttackDistance 5/6/1.5`, `skillAttackDistance 1/7/3`, `skillAttackCoolDown 10/10/10`, `maxBullets 3/4/3`, `normalAttackCoolDown 1`을 제공합니다. 숫자 배열은 Shelly/Colt/Lily 순서이며, Colt/Lily 값은 Client PR #29 병합 계약을 반영한 SL-113에서 바로잡았습니다.
 - Distance는 Unity world unit, cooldown은 초, `maxBullets`는 client charge 표현 개수입니다. 이 값은 Client cooldown UI와 로컬 bot 입력 판단용입니다.
 - Server의 실제 normal attack range `7.2/9/2.2 tile`, charge `3/3/2`, hit/damage와 skill 승인 결과는 server config와 simulation/snapshot이 소유하는 server-authoritative gameplay truth입니다. Client config로 gameplay를 재판정하지 않습니다.
 - Go validator는 exact version `3`, 필수 field, finite positive 값, 중복 없는 exact character type set `0/1/2`를 검증합니다. Unknown additive field는 허용합니다.
