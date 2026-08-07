@@ -254,7 +254,7 @@ Ready event:
 }
 ```
 
-Ready 예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload에는 full participant list가 들어갑니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며 client SL-79에서 merge된 `Map_0`과 exact grid가 같습니다. Spawn은 `TileSpawnPoint(2)`를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용합니다.
+Ready 예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload에는 full participant list가 들어갑니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 40x40 map이며 Client PR #28에서 merge된 `Map_0`과 exact grid가 같습니다(`index=0`, `maxPlayers=6`, spawn tile 2 정확히 6개). Spawn은 `TileSpawnPoint(2)`를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용합니다.
 
 Match ready ACK:
 

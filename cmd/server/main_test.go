@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -149,15 +150,26 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	if joined.WebSocketPath != wantWebSocketPath {
 		t.Fatal("expected websocket path to match the issued room, player, and session")
 	}
-	fixture, err := simulation.LoadDefaultMapFixture()
+	productionConfig, err := loadGameConfig()
 	if err != nil {
-		t.Fatalf("load default map fixture: %v", err)
+		t.Fatalf("load embedded production game config: %v", err)
 	}
-	if joined.Room.MaxPlayers != fixture.MaxPlayers {
-		t.Fatalf("expected default fixture max players %d, got %d", fixture.MaxPlayers, joined.Room.MaxPlayers)
+	if joined.Room.MaxPlayers != 6 || joined.Room.Map.Width != 40 || joined.Room.Map.Height != 40 || joined.Room.Map.Index != 0 {
+		t.Fatalf("expected REST to expose production Map_0 metadata 40x40/index=0/maxPlayers=6, got maxPlayers=%d map=%+v", joined.Room.MaxPlayers, joined.Room.Map)
 	}
-	if joined.Room.Map.Width != fixture.Width || joined.Room.Map.Height != fixture.Height {
-		t.Fatalf("expected default fixture map size %dx%d, got %dx%d", fixture.Width, fixture.Height, joined.Room.Map.Width, joined.Room.Map.Height)
+	if !reflect.DeepEqual(joined.Room.Map, productionConfig.Map) {
+		t.Fatalf("REST map drifted from embedded production map: got=%+v want=%+v", joined.Room.Map, productionConfig.Map)
+	}
+	spawnTiles := 0
+	for _, row := range joined.Room.Map.Map {
+		for _, tile := range row {
+			if tile == simulation.TileSpawnPoint {
+				spawnTiles++
+			}
+		}
+	}
+	if spawnTiles != 6 {
+		t.Fatalf("expected REST to expose exactly six spawn tiles, got %d", spawnTiles)
 	}
 }
 

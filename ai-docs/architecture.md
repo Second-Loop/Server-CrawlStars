@@ -137,7 +137,7 @@ Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 
 - character catalog/HP = `0=Shelly/4000`, `1=Colt/3100`, `2=Lily/4100`; speed/radius = `2`, `0.5`
 - player normal attack charge/recharge = Shelly `3/30`, Colt `3/30`, Lily `2/30`
 - projectile speed/radius = `13`, `0.3`; damage/type은 공격 owner의 `normalAttack`에서 projectile snapshot으로 복사
-- default map source = server binary가 embed한 `server-config/game-config.json`의 client SL-79 `Map_0` exact 20x20 grid
+- default map source = server binary가 embed한 `server-config/game-config.json`의 Client PR #28 `Map_0` exact 40x40 grid (`index=0`, `maxPlayers=6`, spawn tile 2 정확히 6개)
 - map drift guard = client `Map_0` 값을 고정한 exact-grid Go regression
 - production config load/validation failure = listener를 열기 전에 process startup 실패. `StaticGameConfig()`의 5x5 map은 명시적 test/dev helper에서만 사용
 - `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 사용
@@ -181,6 +181,21 @@ Map collision의 결과 계약은 바꾸지 않고, tile 순회 범위만 query�
   ```
 
   Exhaustive benchmark는 변경 전 순회 비용의 proxy이고, 큰 map의 `State.Step` benchmark는 실제 room tick 경로의 성능 경계를 확인합니다. Benchmark 수치는 CPU와 Go version에 따라 달라지므로 correctness 판정은 차분 테스트, 성능 판단은 같은 command의 optimized/exhaustive 쌍으로 합니다.
+
+### SL-111 production Map_0 동기화와 6인 30Hz 경계
+
+- Production embedded source는 `server-config/game-config.json`이며 `width=40`, `height=40`, `index=0`, `maxPlayers=6`, spawn tile `2` 정확히 6개를 제공합니다. `StaticMapFixture()`와 `internal/simulation/fixtures/default-map.json`은 작은 test/dev·legacy fixture로 유지합니다.
+- 승인된 Client source는 `Second-Loop/Client-CrawlStars`의 `CrawlStars/Assets/StreamingAssets/Maps/Map_0.json`입니다. Current `main` SHA는 `50f10c27a575c2bc8f53c7e7b3385de69876184c`, Map_0 last-changing commit은 `4f3292603e6809e918f609e5be8dd03d3ded8988`, Git blob SHA는 `89228cead52df257a0489101d045b3d288634e27`, raw SHA-256은 `babb748ff60827499992d7020ec296bc72afa32928ecf5642b3c4e82d943cf00`, `jq -S -c` canonical semantic SHA-256은 `b1729488ec19efb433d19df112b88f1fd1b33a1f39f15fb1cb4df0f93d9f8e60`입니다. 40x40 grid는 Linear SL-100 본문의 승인 JSON과 exact 비교합니다.
+- `internal/simulation`의 `TestProductionMapSixPlayersAt30HzSmoke`는 production map에서 6명의 solo assignment를 만들고 30 tick(30Hz 기준 1초)을 이동시켜 player 수·생존 상태를 확인합니다. `BenchmarkProductionMapSixPlayersAt30Hz`는 같은 setup을 30 tick 단위로 측정합니다.
+
+재현 command:
+
+```sh
+go test ./internal/simulation -run TestProductionMapSixPlayersAt30HzSmoke -count=1
+go test ./internal/simulation -run '^$' -bench '^BenchmarkProductionMapSixPlayersAt30Hz$' -benchmem -count=3
+```
+
+2026-08-07 Apple M5 Pro/arm64, Go 1.26.4의 3회 측정은 `47,268–48,641 ns/op` per 30-tick batch, `616,766–634,674 ticks/s`, `94,800 B/op`, `300 allocs/op`였습니다. 같은 실행의 SL-104 micro comparison은 circle optimized `21.18–21.44 ns/op` 대 exhaustive `24,120–24,647 ns/op`, Lily segment optimized `521.2–526.9 ns/op` 대 exhaustive `7,536–7,583 ns/op`, 4-player large-map `State.Step` `1,088–1,091 ns/op`였습니다. 이 수치는 correctness threshold가 아니라 재현 가능한 macro/micro baseline입니다. 최적화 전 exhaustive oracle과의 결과 동일성은 exact-grid·collision differential test가 판단하며, 40x40 map 변경은 map source/assignment contract만 바꾸고 collision policy·SL-102 fail-fast startup policy는 유지합니다.
 
 Attack/projectile:
 
