@@ -316,6 +316,61 @@ func TestGameEndCleanupSignalRequiresSuccessfulCallbacks(t *testing.T) {
 	}
 }
 
+func TestGameEndCallbackPanicStillCleansDetachedRoomResources(t *testing.T) {
+	observer := &oneShotPanickingActiveRoomObserver{}
+	harness := newModeTickHarness(t, simulation.GameModeSolo, observer, nil, 0)
+	var gameplay roomResources
+	harness.room.mu.Lock()
+	harness.room.ending = true
+	gameplay.detachGameplayLocked(harness.room)
+	harness.room.mu.Unlock()
+	gameplay.stop()
+
+	var lifecycleDone <-chan struct{}
+	harness.store.mu.RLock()
+	lifecycleDone = harness.store.activeSessions[harness.sessions[0]]
+	harness.store.mu.RUnlock()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		harness.store.finishGameEnd(harness.room)
+	}()
+	harness.store.observation.observer = noopObserver{}
+
+	if recovered == nil {
+		t.Fatal("expected active-room observer panic to propagate from finishGameEnd")
+	}
+	if harness.store.lookupRoom(harness.room.ID) != nil {
+		t.Fatal("GameEnd room remained registered after callback panic")
+	}
+	harness.store.mu.RLock()
+	remainingPlayerIDs := len(harness.store.playerIDs)
+	harness.store.mu.RUnlock()
+	if remainingPlayerIDs != 0 {
+		t.Fatalf("GameEnd callback panic leaked player IDs: %d", remainingPlayerIDs)
+	}
+	for channel, name := range map[<-chan struct{}]string{
+		harness.sessions[0].done:          "GameEnd session done",
+		harness.sessions[0].writerDone:    "GameEnd session writerDone",
+		harness.sessions[0].heartbeatDone: "GameEnd session heartbeatDone",
+		lifecycleDone:                     "GameEnd session lifecycleDone",
+	} {
+		waitShutdownCondition(t, name, func() bool {
+			select {
+			case <-channel:
+				return true
+			default:
+				return false
+			}
+		})
+	}
+	select {
+	case <-harness.room.gameEndCleanupDone:
+		t.Fatal("GameEnd cleanup success signal closed after callback panic")
+	default:
+	}
+}
+
 func TestConnectedClientGaugeCoversAttachFailureReconnectDetachAndStoreClose(t *testing.T) {
 	t.Run("auth and attach failure", func(t *testing.T) {
 		observer := &recordingObserver{}

@@ -1076,6 +1076,14 @@ func (s *Store) monitorClientSession(room *room, session *clientSession, lifecyc
 func (s *Store) releaseClient(reservation *clientReservation, expectedSession *clientSession) {
 	var resources roomResources
 	shouldClose := false
+	var playerIDs []string
+	defer func() {
+		if !shouldClose {
+			return
+		}
+		s.releasePlayerIDs(playerIDs)
+		resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
+	}()
 
 	if reservation == nil || reservation.room == nil {
 		return
@@ -1113,7 +1121,6 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 		playerID: playerID,
 		session:  currentSession,
 	}}, -1)
-	var playerIDs []string
 	if room.hasPreStartMatch() {
 		clientStart := len(resources.clientObservations)
 		playerIDs, shouldClose = resources.removeRoomLockedWithCause(room, websocketCloseCausePrestartCancel)
@@ -1124,15 +1131,13 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 		room.disconnectedAt = s.clock.Now()
 	}
 	room.mu.Unlock()
-	s.publishDisconnectedClients(clientTransitions)
 
 	if shouldClose {
 		if s.deleteRoomIfSame(room.ID, room) {
-			s.releasePlayerIDs(playerIDs)
 			s.logMatchmakingTransition(room.ID, "cancelled", "prestart_disconnect")
 		}
-		resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
 	}
+	s.publishDisconnectedClients(clientTransitions)
 }
 
 func (s *Store) setInput(roomID string, playerID string, input inputMessage, expectedSession *clientSession) inputDisposition {

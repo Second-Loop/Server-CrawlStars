@@ -8,7 +8,154 @@ import (
 	"time"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
+	"nhooyr.io/websocket"
 )
+
+func TestMatchedAttachDeadlineCancelsWhenFirstTickerTickIsAtExactBoundary(t *testing.T) {
+	baseClock := newFakeClock()
+	clock := &deadlineBaseClock{base: baseClock}
+	store := NewStoreWithClock(5, clock)
+	t.Cleanup(store.Close)
+	if !waitForFakeTickerCount(baseClock, janitorInterval, 1, time.Second) {
+		t.Fatal("store janitor ticker was not initialized")
+	}
+	clock.advanceOnDeadlineTicker = true
+
+	first, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("join first human: %v", err)
+	}
+	matchTime := baseClock.Now()
+	if _, err := store.joinMatchmaking(simulation.GameModeDuel1v1); err != nil {
+		t.Fatalf("join second human: %v", err)
+	}
+
+	room := store.lookupRoom(first.Room.ID)
+	room.mu.Lock()
+	deadlineTicker := room.matchAttachTicker.(*fakeTicker)
+	deadlineAt := room.matchAttachDeadlineAt
+	room.mu.Unlock()
+	baseClock.Advance(matchedAttachDeadline - time.Nanosecond)
+	deadlineTicker.tick()
+	waitForRoomDeleted(t, store, first.Room.ID)
+
+	if deadlineAt != matchTime.Add(matchedAttachDeadline) {
+		t.Fatalf("deadline base=%v want=%v", deadlineAt, matchTime.Add(matchedAttachDeadline))
+	}
+}
+
+func TestPrestartDisconnectCallbackPanicStillCleansDetachedRoomResources(t *testing.T) {
+	panicValue := "prestart disconnect callback panic"
+	observer := &panicOnConnectedClientsObserver{panicValue: panicValue}
+	clock := newFakeClock()
+	store := newStore(5, clock, StoreConfig{Observer: observer})
+	t.Cleanup(func() {
+		observer.enabled = false
+		store.Close()
+	})
+
+	joined := make([]matchmakingJoinResponse, 0, 6)
+	for range 6 {
+		response, err := store.joinMatchmaking(simulation.GameModeSolo)
+		if err != nil {
+			t.Fatalf("join solo human: %v", err)
+		}
+		joined = append(joined, response)
+	}
+	room := store.lookupRoom(joined[0].Room.ID)
+	room.mu.Lock()
+	deadlineTicker := room.matchAttachTicker.(*fakeTicker)
+	room.mu.Unlock()
+
+	sessions := make([]*clientSession, 2)
+	for index := range sessions {
+		reservation, err := store.reserveClient(joined[index].Room.ID, joined[index].Player.ID, []string{joined[index].SessionToken})
+		if err != nil {
+			t.Fatalf("reserve human %d: %v", index, err)
+		}
+		session, attached := store.attachClientSession(reservation, newFakeClientConn(false))
+		if !attached {
+			t.Fatalf("attach human %d", index)
+		}
+		sessions[index] = session
+	}
+	observer.enabled = true
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		sessions[0].close(websocket.StatusNormalClosure, "test close")
+	}()
+	observer.enabled = false
+	if recovered != panicValue {
+		t.Fatalf("recovered=%v want=%v", recovered, panicValue)
+	}
+	if store.lookupRoom(room.ID) != nil {
+		t.Fatal("pre-start room remained registered after callback panic")
+	}
+	store.mu.RLock()
+	remainingPlayerIDs := len(store.playerIDs)
+	store.mu.RUnlock()
+	if remainingPlayerIDs != 0 {
+		t.Fatalf("callback panic leaked player IDs: %d", remainingPlayerIDs)
+	}
+	if got := deadlineTicker.StopCount(); got != 1 {
+		t.Fatalf("callback panic stopped deadline ticker %d times, want 1", got)
+	}
+	for index, session := range sessions {
+		for channel, name := range map[<-chan struct{}]string{
+			session.done:          "pre-start session done",
+			session.writerDone:    "pre-start session writerDone",
+			session.heartbeatDone: "pre-start session heartbeatDone",
+		} {
+			waitShutdownCondition(t, name, func() bool {
+				select {
+				case <-channel:
+					return true
+				default:
+					return false
+				}
+			})
+		}
+		if index == 0 {
+			continue
+		}
+		if session.isDone() == false {
+			t.Fatalf("remaining session %d was not closed", index)
+		}
+	}
+}
+
+type deadlineBaseClock struct {
+	base                    *fakeClock
+	advanceOnDeadlineTicker bool
+}
+
+func (c *deadlineBaseClock) Now() time.Time {
+	return c.base.Now()
+}
+
+func (c *deadlineBaseClock) NewTicker(duration time.Duration) ticker {
+	if c.advanceOnDeadlineTicker && duration == matchedAttachDeadline {
+		c.base.Advance(time.Nanosecond)
+	}
+	return c.base.NewTicker(duration)
+}
+
+type panicOnConnectedClientsObserver struct {
+	enabled    bool
+	panicValue any
+}
+
+func (o *panicOnConnectedClientsObserver) SetActiveRooms(int) {}
+
+func (o *panicOnConnectedClientsObserver) SetConnectedClients(count int) {
+	if o.enabled && count == 0 {
+		panic(o.panicValue)
+	}
+}
+
+func (o *panicOnConnectedClientsObserver) ObserveTick(time.Duration) {}
 
 func TestMatchedRoomAttachDeadlineCancelsWholeRoom(t *testing.T) {
 	clock := newFakeClock()

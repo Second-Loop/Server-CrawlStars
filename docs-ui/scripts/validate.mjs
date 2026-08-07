@@ -517,6 +517,14 @@ assert(docsBuildText.includes("persistAuthorization: false"), "Swagger UI must n
 for (const marker of ["pre-start", "failed upgrade", "in-flight reservation", "malformed", "secret-bearing surface", "30초 heartbeat", "90초 deadline", "latest-only", "Reliable control", "Terminal order"]) {
   assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
 }
+for (const marker of [
+  "strict 30초 matched human attach deadline",
+  "pre-start room 전체를 취소",
+  "fresh room/player/session identity",
+  "Idempotency-Key replay는 제공하지 않습니다",
+]) {
+  assert(docsBuildText.includes(marker), `docs UI must document ${marker}`);
+}
 for (const [text, name, allowedTokens] of [
   [openAPIText, "api/openapi.yaml", [redactedSessionTokenSentinel]],
   [asyncAPIText, "api/asyncapi.yaml", []],
