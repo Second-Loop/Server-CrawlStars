@@ -207,7 +207,8 @@ Attack/projectile:
 - 새 projectile은 이동 후 player 위치에서 생성됩니다.
 - 기존 projectile은 tick마다 `Dir * Speed * TickDuration`으로 이동합니다.
 - Wall 또는 boundary에 닿으면 `IsDestroyed = true`가 되고 Bush와 Water는 통과합니다.
-- destroyed projectile은 snapshot에 남지만 더 움직이지 않습니다.
+- destroyed projectile은 더 움직이지 않으며, destroyed가 된 snapshot tick을 `D`라고 할 때 `D..D+29`의 30개 gameplay snapshot에만 기존 `IsDestroyed = true` tombstone으로 남습니다. `D+30` snapshot 전에 Server canonical state와 snapshot에서 제거합니다.
+- `ProjectileData` wire field/event/ACK는 추가하지 않습니다. 느린 writer의 capacity-1 latest-only coalescing은 특정 tombstone snapshot을 건너뛸 수 있으므로, Client absent-ID reconciliation은 별도 shared 계약이며 이번 Server 범위에 Client 수정은 포함하지 않습니다.
 
 Hit/death:
 

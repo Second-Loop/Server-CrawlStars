@@ -48,7 +48,7 @@ channels:
       Debug room을 `POST /rooms/{roomID}/start`로 직접 시작한 경우에는 바로 gameplay snapshot을 받습니다.
       Heartbeat는 snapshot fanout과 독립적으로 30초마다 실행하며 Ping 하나의 deadline은 90초입니다. 실패한 silent peer는 현재 session identity를 확인한 뒤 한 번만 해제합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하지만 matched/loading/starting disconnect는 pre-start cancel을 사용합니다. Intentional lifecycle close와 stale old-session close는 reconnect grace를 예약하지 않습니다.
       Optional `ClientTick`의 양수 값은 player별 monotonic input 순서와 processed ACK에 사용합니다. 같은 match에 재연결하면 gameplay snapshot의 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내며 새 match는 0에서 시작합니다.
-      일반 non-terminal gameplay snapshot은 capacity-1 latest-only로 합칩니다. 어느 player라도 `PressedSkill: true`이면 기존 size-8 reliable control FIFO로 승격하고, accepted approval을 모두 쓴 뒤 terminal snapshot -> GameEnd -> close를 실행합니다. Ready/lifecycle/error도 같은 reliable FIFO 순서를 사용합니다.
+      일반 non-terminal gameplay snapshot은 capacity-1 latest-only로 합칩니다. Destroyed projectile은 destroyed snapshot tick `D`부터 `D+29`까지 기존 `IsDestroyed: true` tombstone으로 보이고 `D+30` 전에 Server canonical history와 snapshot에서 제거합니다. 느린 writer는 특정 tombstone snapshot을 coalescing으로 건너뛸 수 있으므로 Client는 authoritative snapshot의 absent projectile ID를 정리해야 합니다. 어느 player라도 `PressedSkill: true`이면 기존 size-8 reliable control FIFO로 승격하고, accepted approval을 모두 쓴 뒤 terminal snapshot -> GameEnd -> close를 실행합니다. Ready/lifecycle/error도 같은 reliable FIFO 순서를 사용합니다. 새 wire field/event/ACK는 추가하지 않습니다.
     bindings:
       ws:
         method: GET
@@ -570,7 +570,7 @@ components:
               items:
                 $ref: "#/components/schemas/ProjectileData"
             - type: "null"
-          description: Character attack activation에서 생성되거나 이동/충돌로 갱신된 projectile history입니다. projectile이 없거나 starting/started control snapshot이면 null일 수 있습니다.
+          description: Character attack activation에서 생성되거나 이동/충돌로 갱신된 projectile history입니다. Destroyed projectile은 해당 gameplay snapshot tick부터 30 tick 동안 기존 IsDestroyed=true tombstone으로 유지된 뒤 제거됩니다. 느린 writer의 latest-only coalescing으로 개별 tombstone snapshot은 누락될 수 있습니다. projectile이 없거나 starting/started control snapshot이면 null일 수 있습니다.
     MatchStatus:
       type: string
       enum: [starting, started]
@@ -690,6 +690,7 @@ components:
         한 projectile이 같은 tick에 여러 eligible target과 겹치면 players의 join/배정 순서에서 첫 target만 damage를 받고 projectile이 destroy됩니다.
         같은 tick의 command batch는 caller input을 바꾸지 않고 PlayerID 오름차순 input 순서로 stable sort한 뒤 적용합니다. 이 input 적용 순서는 hit target 순서와 별개입니다.
         Death snapshot 이후 elimination/GameEnd는 room-local selected mode 규칙을 따릅니다.
+        Destroyed projectile은 해당 snapshot tick부터 정확히 30 gameplay tick 동안 IsDestroyed=true로 유지되고 그 다음 snapshot 전에 제거됩니다. 이 lifecycle은 기존 field만 사용하며 Client absent-ID reconciliation은 별도 shared 계약입니다.
       properties:
         Id:
           type: string

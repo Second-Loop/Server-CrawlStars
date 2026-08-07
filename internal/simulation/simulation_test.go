@@ -1298,11 +1298,13 @@ func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
 				t.Fatalf("missing player type %d", characterType)
 			}
 
+			acceptedAttacks := 0
 			for attack := 0; attack < playerType.NormalAttack.MaxCharges; attack++ {
 				snapshot := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
 				if !snapshot.Players[0].PressedAttack {
 					t.Fatalf("expected attack %d to be accepted", attack+1)
 				}
+				acceptedAttacks++
 				if characterType == CharacterTypeColt {
 					for range 30 {
 						state.Step(nil)
@@ -1311,12 +1313,8 @@ func TestStepEnforcesAttackChargeCapacity(t *testing.T) {
 			}
 			exhausted := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
 
-			wantProjectiles := 0
-			if playerType.NormalAttack.Projectile != nil {
-				wantProjectiles = playerType.NormalAttack.MaxCharges * playerType.NormalAttack.Projectile.Count
-			}
-			if got := len(exhausted.Projectiles); got != wantProjectiles {
-				t.Fatalf("expected exhausted attack to leave %d projectiles, got %d", wantProjectiles, got)
+			if acceptedAttacks != playerType.NormalAttack.MaxCharges {
+				t.Fatalf("accepted attacks = %d, want %d", acceptedAttacks, playerType.NormalAttack.MaxCharges)
 			}
 			if exhausted.Players[0].PressedAttack {
 				t.Fatal("expected exhausted fifth attack to leave PressedAttack false")

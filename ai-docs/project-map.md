@@ -22,7 +22,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 - 캐릭터별 `3/3/2 charge`, 30 tick recharge
 - Shelly 5-shot spread, Colt 6-shot scheduled burst, Lily 2.2 tile centerline melee
 - optional input `PressedSkill`, required gameplay `PressedSkill`/`SkillReadyTick`, server config v4 `360/390/330` cooldown
-- projectile 생성·이동·configured range, Wall/boundary destroy와 Bush/Water 통과
+- projectile 생성·이동·configured range, Wall/boundary destroy와 Bush/Water 통과, destroyed tombstone 30 tick bounded retention
 - selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP 감소, `IsDead` snapshot
 - dead player의 같은 tick input 차단
 - `duel_1v1` 2명과 `solo`/`team` 6명의 mode별 matchmaking pool
@@ -204,7 +204,7 @@ Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movem
 `internal/simulation.State.Step` 순서:
 
 1. `PressedAttack`과 `PressedSkill` transient state 초기화, attack charge recharge 진행
-2. 기존 projectile 이동
+2. 기존 projectile 이동과 destroyed tombstone `D..D+29` 유지
 3. projectile을 configured range endpoint까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 hit, range 만료 순서로 처리
 4. 현재 tick의 Colt scheduled emission을 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative/stale `ClientTick`을 검증
@@ -213,7 +213,7 @@ Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movem
 8. skill-ready와 non-zero direction이면 skill을 우선 승인하고 attack charge를 보존하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through
 9. 공격 요청, non-zero 방향, 캐릭터별 남은 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
 10. Lily same-tick batched damage 적용 후 projectile을 owner ID/ordinal 순서로 생성
-11. tick 증가와 ACK/HP/death/projectile 및 canonical skill ready state snapshot clone 반환
+11. tick 증가, `D+30` 만료 projectile prune, ACK/HP/death/projectile 및 canonical skill ready state snapshot clone 반환
 
 새 projectile은 생성된 tick에는 owner 위치에 보이고 다음 tick부터 이동합니다.
 
