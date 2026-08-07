@@ -788,3 +788,24 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 짧은 started-match 네트워크 단절은 10초 동안 authoritative simulation을 유지하며, grace 안의 reconnect는 state/tick continuity를 보장합니다.
 - 동일 tick의 다중 expiry가 goroutine scheduling이나 map iteration 순서에 의존하지 않고 기존 mode evaluator의 simultaneous result로 수렴합니다.
 - Intentional teardown, stale generation, finalized result 경계가 player forfeit와 분리되어 room cleanup/close barrier 정책을 바꾸지 않습니다.
+
+## ADR-0042: SL-105 Matched Human Attach Deadline은 30초에 Pre-start Room 전체를 취소한다
+
+상태: 승인됨
+
+맥락: Matchmaking join 응답을 받은 client가 WebSocket을 붙이지 않으면 full participant room이 `matched`에 영구 정체될 수 있습니다. Bot-fill match와 multi-human match 모두 room 단위 Ready gate를 쓰므로 일부 identity만 교체하면 participant cardinality와 credential ownership이 복잡해집니다. 사용자는 30초 strict deadline, room 전체 취소, 새 join identity, `Idempotency-Key` 미도입을 선택했습니다.
+
+결정:
+
+- Match가 완성되고 human participant가 하나 이상이면 room-owned one-shot 30초 attach deadline을 arm합니다. 모든 human current session이 붙으면 deadline을 detach하고 Loading/Ready로 전이합니다. 이미 attach된 human이 있는 bot-fill match는 즉시 전이하고 all-bot debug room에는 deadline을 만들지 않습니다.
+- `now >= deadline`인 reservation과 attach는 timer callback 실행 시각과 무관하게 거부합니다. Expiry transition은 `mutationMu -> matchmakingMu -> Store.mu -> room.mu` 순서로 직렬화해 room 전체를 registry에서 제거하고 남은 session을 `prestart_cancel`로 닫으며 모든 player ID와 credential을 폐기합니다.
+- Client recovery는 `POST /matchmaking/join`을 새로 호출해 새 room/player/session identity를 받는 방식입니다. 기존 join 응답 replay를 위한 `Idempotency-Key`는 추가하지 않습니다.
+- Debug start, pre-start disconnect cancel, TTL/delete/clear, game end, shutdown은 attach timer를 detach합니다. Resource/ID cleanup은 observer/logger callback panic에도 실행되도록 callback보다 우선하거나 defer로 보장합니다.
+- `matchmaking_transition` log는 `join_committed`, `matched`, `waiting_for_attach`, `loading`, `cancelled` state와 bounded cause만 기록합니다. Token, query, raw transport error는 포함하지 않습니다.
+- REST/WebSocket payload field는 추가하지 않습니다. OpenAPI/AsyncAPI와 human-readable docs에 lifecycle과 retry 계약만 기록합니다.
+
+결과:
+
+- 응답만 받고 WebSocket을 붙이지 않은 client가 full room capacity를 무기한 점유하지 않습니다.
+- Exact-boundary attach와 timer callback 지연이 같은 strict 30초 정책으로 수렴합니다.
+- Partial participant replacement 없이 room identity를 원자적으로 회수해 다음 join의 ownership을 단순하게 유지합니다.

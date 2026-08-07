@@ -903,6 +903,10 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	if room.removed || room.ending {
 		return nil, ErrRoomNotFound
 	}
+	if room.matchStatus == MatchStatusMatched && !room.matchAttachDeadlineAt.IsZero() &&
+		!s.clock.Now().Before(room.matchAttachDeadlineAt) {
+		return nil, ErrRoomNotFound
+	}
 	if !room.hasPlayer(playerID) {
 		return nil, ErrPlayerNotFound
 	}
@@ -988,6 +992,7 @@ func (s *Store) attachClient(reservation *clientReservation, conn clientConn) bo
 
 func (s *Store) attachClientSession(reservation *clientReservation, conn clientConn) (*clientSession, bool) {
 	var deliveries []webSocketDelivery
+	var resources roomResources
 
 	if !s.beginMutation() {
 		return nil, false
@@ -1004,7 +1009,9 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	}
 	room := reservation.room
 	room.mu.Lock()
-	if room.removed || room.ending || room.hasFinalizedGameEndResult(reservation.playerID) || room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
+	if room.removed || room.ending || room.hasFinalizedGameEndResult(reservation.playerID) ||
+		(room.matchStatus == MatchStatusMatched && !room.matchAttachDeadlineAt.IsZero() && !s.clock.Now().Before(room.matchAttachDeadlineAt)) ||
+		room.clients == nil || room.reservations == nil || room.reservations[reservation.playerID] != reservation {
 		room.mu.Unlock()
 		s.mu.Unlock()
 		return nil, false
@@ -1034,9 +1041,14 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	session.setConnectedAt(connectedAt, s.clock.Now)
 	room.lastActivityAt = connectedAt
 	room.disconnectedAt = time.Time{}
-	deliveries = append(deliveries, s.advanceMatchLoadingLocked(room)...)
+	loadingDeliveries, loading := s.advanceMatchLoadingLocked(room, &resources)
+	deliveries = append(deliveries, loadingDeliveries...)
 	deliveryFailures := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
+	resources.stop()
+	if loading {
+		s.logMatchmakingTransition(room.ID, "loading", "all_humans_attached")
+	}
 
 	session.readyLifecyclePublication(connectedPublication)
 	closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
@@ -1117,6 +1129,7 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 	if shouldClose {
 		if s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
+			s.logMatchmakingTransition(room.ID, "cancelled", "prestart_disconnect")
 		}
 		resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
 	}
@@ -1482,12 +1495,15 @@ func (r *room) hasPreStartMatch() bool {
 	return r.Status != RoomStatusStarted && r.matchStatus != ""
 }
 
-func (s *Store) advanceMatchLoadingLocked(room *room) []webSocketDelivery {
+func (s *Store) advanceMatchLoadingLocked(room *room, resources *roomResources) ([]webSocketDelivery, bool) {
 	if !room.hasPreStartMatch() || room.matchStatus != MatchStatusMatched ||
 		!room.allMatchClientsAttached() {
-		return nil
+		return nil, false
 	}
 	room.matchStatus = MatchStatusLoading
+	if resources != nil {
+		resources.detachMatchedAttachDeadlineLocked(room)
+	}
 	deliveries := room.readyEventDeliveries()
 	if room.allMatchPlayersReady() {
 		s.startMatchCountdownLocked(room)
@@ -1496,7 +1512,7 @@ func (s *Store) advanceMatchLoadingLocked(room *room) []webSocketDelivery {
 			room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...,
 		)
 	}
-	return deliveries
+	return deliveries, true
 }
 
 func (r *room) allMatchClientsAttached() bool {

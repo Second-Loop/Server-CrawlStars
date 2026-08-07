@@ -1452,8 +1452,10 @@ func assertCompletes(t *testing.T, name string, operation func()) {
 }
 
 type blockingStopClock struct {
-	now    time.Time
-	ticker *blockingStopTicker
+	now             time.Time
+	ticker          *blockingStopTicker
+	mu              sync.Mutex
+	janitorAssigned bool
 }
 
 type countingNowClock struct {
@@ -1505,7 +1507,16 @@ func (c *blockingStopClock) Now() time.Time {
 }
 
 func (c *blockingStopClock) NewTicker(duration time.Duration) ticker {
-	if duration == janitorInterval {
+	if duration != janitorInterval {
+		return newCountingTicker()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// NewStore creates the janitor before any room-owned 30-second timer.
+	// Keep only that first ticker blocking so a feature timer with the same
+	// duration cannot accidentally share the shutdown test barrier.
+	if !c.janitorAssigned {
+		c.janitorAssigned = true
 		return c.ticker
 	}
 	return newCountingTicker()
