@@ -742,6 +742,197 @@ func TestStepClampsDiagonalMovementWhenOtherAxisHitsWall(t *testing.T) {
 	assertPlayer(t, snapshot, PlayerID("red-1"), TeamRed, 0, Vector2{X: start.X, Y: start.Y + stepDistance})
 }
 
+func TestStepCancelsBothLivePlayerMovementCandidatesOnCollidingAxis(t *testing.T) {
+	gameMap := openMovementMap()
+	redStart := Vector2{X: -0.6, Y: 0}
+	blueStart := Vector2{X: 0.6, Y: 0}
+
+	players := []PlayerData{
+		{ID: "red", Team: TeamRed, Pos: redStart, Speed: 18},
+		{ID: "blue", Team: TeamBlue, Pos: blueStart, Speed: 18},
+	}
+	inputs := []InputCommand{
+		{PlayerID: "red", ClientTick: 1, MoveDir: Vector2{X: 1}},
+		{PlayerID: "blue", ClientTick: 1, MoveDir: Vector2{X: -1}},
+	}
+
+	for _, ordered := range [][]InputCommand{inputs, {inputs[1], inputs[0]}} {
+		state := NewStateWithConfig(players, Config{Map: gameMap})
+		snapshot := state.Step(ordered)
+
+		assertVector(t, "red blocked position", playerByID(t, snapshot, "red").Pos, redStart)
+		assertVector(t, "blue blocked position", playerByID(t, snapshot, "blue").Pos, blueStart)
+		if got := playerByID(t, snapshot, "red").LastProcessedClientTick; got != 1 {
+			t.Fatalf("red ACK=%d want=1 after blocked movement", got)
+		}
+		if got := playerByID(t, snapshot, "blue").LastProcessedClientTick; got != 1 {
+			t.Fatalf("blue ACK=%d want=1 after blocked movement", got)
+		}
+	}
+}
+
+func TestStepCancelsMovingLivePlayerAgainstStationaryLivePlayer(t *testing.T) {
+	gameMap := openMovementMap()
+	start := Vector2{X: 0}
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "red", Team: TeamRed, Pos: start, Speed: 6},
+		{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 1.1}},
+	}, Config{Map: gameMap})
+
+	snapshot := state.Step([]InputCommand{{PlayerID: "red", MoveDir: Vector2{X: 1}}})
+	assertVector(t, "moving player blocked by stationary live player", playerByID(t, snapshot, "red").Pos, start)
+	assertVector(t, "stationary live player remains still", playerByID(t, snapshot, "blue").Pos, Vector2{X: 1.1})
+}
+
+func TestStepCancelsBothLivePlayerMovementCandidatesOnYAxis(t *testing.T) {
+	gameMap := openMovementMap()
+	redStart := Vector2{Y: -0.6}
+	blueStart := Vector2{Y: 0.6}
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "red", Team: TeamRed, Pos: redStart, Speed: 18},
+		{ID: "blue", Team: TeamBlue, Pos: blueStart, Speed: 18},
+	}, Config{Map: gameMap})
+
+	snapshot := state.Step([]InputCommand{
+		{PlayerID: "red", MoveDir: Vector2{Y: 1}},
+		{PlayerID: "blue", MoveDir: Vector2{Y: -1}},
+	})
+	assertVector(t, "red Y-axis blocked position", playerByID(t, snapshot, "red").Pos, redStart)
+	assertVector(t, "blue Y-axis blocked position", playerByID(t, snapshot, "blue").Pos, blueStart)
+}
+
+func TestStepPreventsLivePlayersPassingThroughOnOneAxis(t *testing.T) {
+	gameMap := openMovementMap()
+	redStart := Vector2{X: -1.2, Y: 0}
+	blueStart := Vector2{X: 1.2, Y: 0}
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "red", Team: TeamRed, Pos: redStart, Speed: 72},
+		{ID: "blue", Team: TeamBlue, Pos: blueStart, Speed: 72},
+	}, Config{Map: gameMap})
+
+	snapshot := state.Step([]InputCommand{
+		{PlayerID: "red", MoveDir: Vector2{X: 1}},
+		{PlayerID: "blue", MoveDir: Vector2{X: -1}},
+	})
+
+	assertVector(t, "red no-pass position", playerByID(t, snapshot, "red").Pos, redStart)
+	assertVector(t, "blue no-pass position", playerByID(t, snapshot, "blue").Pos, blueStart)
+}
+
+func TestStepHandlesParallelApartAndTangentPlayerMovementDeterministically(t *testing.T) {
+	tests := []struct {
+		name        string
+		players     []PlayerData
+		inputs      []InputCommand
+		wantRedPos  Vector2
+		wantBluePos Vector2
+	}{
+		{
+			name: "parallel movement preserves separation",
+			players: []PlayerData{
+				{ID: "red", Team: TeamRed, Pos: Vector2{X: -0.6}, Speed: 6},
+				{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.6}, Speed: 6},
+			},
+			inputs: []InputCommand{
+				{PlayerID: "red", MoveDir: Vector2{X: 1}},
+				{PlayerID: "blue", MoveDir: Vector2{X: 1}},
+			},
+			wantRedPos:  Vector2{X: -0.4},
+			wantBluePos: Vector2{X: 0.8},
+		},
+		{
+			name: "moving apart is allowed",
+			players: []PlayerData{
+				{ID: "red", Team: TeamRed, Pos: Vector2{X: -0.6}, Speed: 6},
+				{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.6}, Speed: 6},
+			},
+			inputs:      []InputCommand{{PlayerID: "red", MoveDir: Vector2{X: -1}}},
+			wantRedPos:  Vector2{X: -0.8},
+			wantBluePos: Vector2{X: 0.6},
+		},
+		{
+			name: "new tangent contact is blocked",
+			players: []PlayerData{
+				{ID: "red", Team: TeamRed, Pos: Vector2{X: -0.7}, Speed: 6},
+				{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.5}, Speed: 6},
+			},
+			inputs:      []InputCommand{{PlayerID: "red", MoveDir: Vector2{X: 1}}},
+			wantRedPos:  Vector2{X: -0.7},
+			wantBluePos: Vector2{X: 0.5},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orders := [][]InputCommand{tt.inputs}
+			if len(tt.inputs) > 1 {
+				orders = append(orders, []InputCommand{tt.inputs[1], tt.inputs[0]})
+			}
+			for _, inputs := range orders {
+				state := NewStateWithConfig(tt.players, Config{Map: openMovementMap()})
+				snapshot := state.Step(inputs)
+				assertVector(t, "red movement relation", playerByID(t, snapshot, "red").Pos, tt.wantRedPos)
+				assertVector(t, "blue movement relation", playerByID(t, snapshot, "blue").Pos, tt.wantBluePos)
+			}
+		})
+	}
+}
+
+func TestStepAllowsOverlappingLivePlayersToMoveApartButNotDeeper(t *testing.T) {
+	gameMap := openMovementMap()
+	tests := []struct {
+		name      string
+		move      Vector2
+		wantRedX  float64
+		wantBlueX float64
+	}{
+		{name: "move apart", move: Vector2{X: -1}, wantRedX: -0.2, wantBlueX: 0.6},
+		{name: "maintain overlap", move: Vector2{}, wantRedX: 0, wantBlueX: 0.6},
+		{name: "deepen overlap", move: Vector2{X: 1}, wantRedX: 0, wantBlueX: 0.6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewStateWithConfig([]PlayerData{
+				{ID: "red", Team: TeamRed, Pos: Vector2{X: 0}, Speed: 6},
+				{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.6}},
+			}, Config{Map: gameMap})
+
+			snapshot := state.Step([]InputCommand{{PlayerID: "red", MoveDir: tt.move}})
+			assertVector(t, "red overlap position", playerByID(t, snapshot, "red").Pos, Vector2{X: tt.wantRedX})
+			assertVector(t, "blue overlap position", playerByID(t, snapshot, "blue").Pos, Vector2{X: tt.wantBlueX})
+		})
+	}
+}
+
+func TestStepCancelsParallelMovementThatMaintainsExistingOverlap(t *testing.T) {
+	players := []PlayerData{
+		{ID: "red", Team: TeamRed, Pos: Vector2{X: 0}, Speed: 6},
+		{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.6}, Speed: 6},
+	}
+	inputs := []InputCommand{
+		{PlayerID: "red", MoveDir: Vector2{X: 1}},
+		{PlayerID: "blue", MoveDir: Vector2{X: 1}},
+	}
+
+	for _, ordered := range [][]InputCommand{inputs, {inputs[1], inputs[0]}} {
+		state := NewStateWithConfig(players, Config{Map: openMovementMap()})
+		snapshot := state.Step(ordered)
+		assertVector(t, "red overlap-maintaining movement", playerByID(t, snapshot, "red").Pos, players[0].Pos)
+		assertVector(t, "blue overlap-maintaining movement", playerByID(t, snapshot, "blue").Pos, players[1].Pos)
+	}
+}
+
+func TestStepDeadPlayersDoNotBlockLiveMovement(t *testing.T) {
+	gameMap := openMovementMap()
+	state := NewStateWithConfig([]PlayerData{
+		{ID: "red", Team: TeamRed, Pos: Vector2{X: -0.6}, Speed: 18},
+		{ID: "blue", Team: TeamBlue, Pos: Vector2{X: 0.6}, IsDead: true, HP: 1},
+	}, Config{Map: gameMap})
+
+	snapshot := state.Step([]InputCommand{{PlayerID: "red", MoveDir: Vector2{X: 1}}})
+	assertVector(t, "live player moves through dead player", playerByID(t, snapshot, "red").Pos, Vector2{X: 0})
+	assertVector(t, "dead player stays still", playerByID(t, snapshot, "blue").Pos, Vector2{X: 0.6})
+}
+
 func TestStepAllowsMovementWhenPlayerCircleStaysOutsideWall(t *testing.T) {
 	start := Vector2{
 		X: StaticMapFixture().WorldPos(0, 1).X + TileSize/2 + DefaultPlayerRadius + 0.001 + DefaultPlayerSpeed*TickDuration,
@@ -1420,6 +1611,21 @@ func collisionPolicyMap(center TileType) MapData {
 	gameMap := StaticMapFixture()
 	gameMap.Map[2][2] = center
 	return gameMap
+}
+
+func openMovementMap() MapData {
+	const width, height = 20, 5
+	rows := make([][]TileType, height)
+	for y := range rows {
+		rows[y] = make([]TileType, width)
+	}
+	return MapData{
+		Width:      width,
+		Height:     height,
+		MaxPlayers: 6,
+		TileSize:   1.2,
+		Map:        rows,
+	}
 }
 
 func TestStepProjectileHitReducesTargetHPAndDestroysProjectile(t *testing.T) {

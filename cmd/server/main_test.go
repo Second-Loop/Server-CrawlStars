@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -15,38 +14,70 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
-func TestLoadGameConfigFromFallsBackToStaticV3Catalog(t *testing.T) {
+func TestLoadGameConfigFromRejectsInvalidProductionConfig(t *testing.T) {
 	for name, payload := range map[string]string{
 		"malformed JSON": `{`,
 		"version 1":      `{"version":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-
-			config := loadGameConfigFrom(strings.NewReader(payload), logger)
-
-			if config.Version != simulation.ServerGameConfigVersion {
-				t.Fatalf("fallback version = %d, want %d", config.Version, simulation.ServerGameConfigVersion)
+			config, err := loadGameConfigFrom(strings.NewReader(payload))
+			if err == nil {
+				t.Fatalf("loadGameConfigFrom() config=%+v error=nil, want startup rejection", config)
 			}
-			for characterType, wantID := range map[simulation.CharacterType]string{
-				simulation.CharacterTypeShelly: "shelly",
-				simulation.CharacterTypeColt:   "colt",
-				simulation.CharacterTypeLily:   "lily",
-			} {
-				playerType, ok := config.PlayerType(characterType)
-				if !ok || playerType.ID != wantID {
-					t.Fatalf("fallback PlayerType(%d) = %+v, %t; want %q", characterType, playerType, ok, wantID)
-				}
-			}
-			var entry map[string]any
-			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
-				t.Fatalf("decode fallback log: %v", err)
-			}
-			if entry["msg"] != "game_config_fallback" {
-				t.Fatalf("fallback log message = %v, want game_config_fallback", entry["msg"])
+			if config.Version != 0 {
+				t.Fatalf("loadGameConfigFrom() config=%+v, want zero config on error", config)
 			}
 		})
+	}
+}
+
+func TestNewApplicationRejectsInvalidEmbeddedGameConfigBeforeListening(t *testing.T) {
+	app, err := newApplicationWithLoggerAndGameConfigReader(
+		runtimeConfig{serverAddr: "127.0.0.1:0", metricsAddr: "127.0.0.1:0"},
+		slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		strings.NewReader(`{"version":1}`),
+	)
+	if err == nil {
+		if app != nil {
+			app.store.Close()
+		}
+		t.Fatal("newApplicationWithLoggerAndGameConfigReader() error=nil, want invalid production config rejection")
+	}
+	if app != nil {
+		t.Fatalf("newApplicationWithLoggerAndGameConfigReader() app=%+v, want nil on config error", app)
+	}
+	if !strings.Contains(err.Error(), "game config") {
+		t.Fatalf("newApplicationWithLoggerAndGameConfigReader() error=%v, want game config context", err)
+	}
+}
+
+func TestNewApplicationRejectsOverlappingCanonicalSpawnsBeforeListening(t *testing.T) {
+	gameConfig, err := loadGameConfig()
+	if err != nil {
+		t.Fatalf("load embedded game config: %v", err)
+	}
+	gameConfig.Player.Types[2].Radius = 100
+	payload, err := json.Marshal(gameConfig)
+	if err != nil {
+		t.Fatalf("marshal overlapping-spawn game config: %v", err)
+	}
+
+	app, err := newApplicationWithLoggerAndGameConfigReader(
+		runtimeConfig{serverAddr: "127.0.0.1:0", metricsAddr: "127.0.0.1:0"},
+		slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		strings.NewReader(string(payload)),
+	)
+	if err == nil {
+		if app != nil {
+			app.store.Close()
+		}
+		t.Fatal("newApplicationWithLoggerAndGameConfigReader() error=nil, want overlapping-spawn rejection")
+	}
+	if app != nil {
+		t.Fatalf("newApplicationWithLoggerAndGameConfigReader() app=%+v, want nil on config error", app)
+	}
+	if !strings.Contains(err.Error(), "spawn") || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("newApplicationWithLoggerAndGameConfigReader() error=%v, want spawn-overlap context", err)
 	}
 }
 
@@ -327,9 +358,13 @@ func TestLoadRoomHandlerConfigWiresRateOverrides(t *testing.T) {
 
 func mustNewMux(t *testing.T, config rooms.HandlerConfig) http.Handler {
 	t.Helper()
+	gameConfig, err := loadGameConfig()
+	if err != nil {
+		t.Fatalf("load embedded game config: %v", err)
+	}
 
 	store := rooms.NewStoreWithConfig(5, rooms.StoreConfig{
-		GameConfig: loadGameConfig(slog.New(slog.NewJSONHandler(io.Discard, nil))),
+		GameConfig: gameConfig,
 	})
 	t.Cleanup(store.Close)
 	roomHandler, err := rooms.HandlerWithConfig(store, config)

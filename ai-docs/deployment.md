@@ -67,6 +67,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 - 같은 IP에서 Solo/Team 6-client smoke를 동시에 실행하면 첫 네 join 뒤 429가 날 수 있습니다. Client는 `Retry-After` 뒤 재시도해야 하며, 격리된 local smoke에서 즉시 여섯 join이 꼭 필요할 때만 `MATCHMAKING_JOIN_BURST=6`을 명시합니다. Production 기본값 변경은 join-spam 방어를 약화하므로 별도 보안 결정을 거칩니다.
 - `TRUSTED_PROXY_CIDRS`는 comma-separated CIDR입니다. Empty element, bare IP, invalid CIDR은 startup error입니다.
 - Systemd unit의 `METRICS_ADDR`를 바꿀 때도 loopback IP literal과 숫자 port만 사용할 수 있습니다. `127.0.0.1:9090`, `[::1]:9090`은 가능하지만 hostname, wildcard, private/Tailscale IP는 startup error입니다.
+- Binary에 embed된 `server-config/game-config.json`에 trailing JSON value/garbage가 있거나 decode, version, catalog, map, spawn capacity 또는 max supported character radius 비겹침 검증이 실패하면 listener를 열지 않고 startup error로 종료합니다. Production은 `StaticGameConfig()`의 5x5 map으로 fallback하지 않습니다.
 
 설정을 바꾼 뒤에는 `sudo systemctl restart crawl-stars-server`와 status/health check를 실행합니다.
 

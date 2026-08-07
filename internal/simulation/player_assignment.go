@@ -1,5 +1,7 @@
 package simulation
 
+import "fmt"
+
 type PlayerAssignment struct {
 	ID            PlayerID
 	Team          Team
@@ -33,8 +35,11 @@ func PlayerAssignments(playerIDs []PlayerID, config GameConfig) []PlayerAssignme
 }
 
 func resolveAssignmentGameConfig(config GameConfig) GameConfig {
-	if config.Version != ServerGameConfigVersion {
+	if config.Version == 0 {
 		return StaticGameConfig()
+	}
+	if config.Version != ServerGameConfigVersion {
+		panic(fmt.Sprintf("resolve explicit assignment game config: game config version must be %d", ServerGameConfigVersion))
 	}
 	gameMap := config.Map
 	if gameMap.TileSize <= 0 {
@@ -45,8 +50,7 @@ func resolveAssignmentGameConfig(config GameConfig) GameConfig {
 	}
 	resolvedMap, err := ResolveMapData(gameMap)
 	if err != nil {
-		config.Map = StaticGameConfig().Map
-		return config
+		panic(fmt.Sprintf("resolve explicit assignment game config map: %v", err))
 	}
 	config.Map = resolvedMap
 	return config

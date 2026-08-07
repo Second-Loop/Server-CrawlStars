@@ -173,8 +173,17 @@ func (config GameConfig) SelectMode(id string) (GameConfig, error) {
 
 func LoadGameConfig(reader io.Reader) (GameConfig, error) {
 	var config GameConfig
-	if err := json.NewDecoder(reader).Decode(&config); err != nil {
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&config); err != nil {
 		return GameConfig{}, fmt.Errorf("decode game config: %w", err)
+	}
+	var trailing json.RawMessage
+	switch err := decoder.Decode(&trailing); {
+	case err == io.EOF:
+	case err != nil:
+		return GameConfig{}, fmt.Errorf("decode trailing game config data: %w", err)
+	default:
+		return GameConfig{}, fmt.Errorf("decode game config: multiple JSON values")
 	}
 	return ResolveGameConfig(config)
 }
@@ -226,6 +235,9 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 		}
 	}
 	config.Map = resolvedMap
+	if err := validateCanonicalSpawnAssignments(config); err != nil {
+		return GameConfig{}, err
+	}
 	selectedModeID := config.SelectedMode.ID
 	selectedModeSource := "selected"
 	if selectedModeID == "" {
@@ -237,6 +249,31 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 		return GameConfig{}, fmt.Errorf("select game config mode.%s: %w", selectedModeSource, err)
 	}
 	return selected, nil
+}
+
+func validateCanonicalSpawnAssignments(config GameConfig) error {
+	playerIDs := make([]PlayerID, config.Map.MaxPlayers)
+	assignments := PlayerAssignments(playerIDs, config)
+	maximumRadius := 0.0
+	for _, playerType := range config.Player.Types {
+		if playerType.Radius > maximumRadius {
+			maximumRadius = playerType.Radius
+		}
+	}
+	for left := 0; left < len(assignments); left++ {
+		for right := left + 1; right < len(assignments); right++ {
+			if !spawnCirclesOverlap(assignments[left].SpawnPosition, assignments[right].SpawnPosition, maximumRadius) {
+				continue
+			}
+			return fmt.Errorf(
+				"game config spawn assignments %d and %d overlap for maximum player radius %g",
+				left,
+				right,
+				maximumRadius,
+			)
+		}
+	}
+	return nil
 }
 
 func validatePlayerTypeCatalog(config GameConfig) error {
@@ -645,21 +682,25 @@ func roomTeamForPlayerIndex(index int, teams []TeamConfig) (Team, int, bool) {
 func resolveStateGameConfig(config Config) GameConfig {
 	gameConfig := config.Game
 	hasConfigMap := config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0
-	if gameConfig.Version != ServerGameConfigVersion {
+	if gameConfig.Version == 0 {
 		gameConfig = StaticGameConfig()
 		if !hasConfigMap {
 			gameConfig.Map = MapData{}
+			return gameConfig
 		}
 	}
 	if hasConfigMap {
 		gameConfig.Map = config.Map
 	}
-	if gameConfig.Map.Width > 0 || gameConfig.Map.Height > 0 || len(gameConfig.Map.Map) > 0 {
-		resolved, err := ResolveGameConfig(gameConfig)
-		if err != nil {
-			return StaticGameConfig()
-		}
-		return resolved
+	if gameConfig.Version != ServerGameConfigVersion {
+		panic(fmt.Sprintf("resolve explicit simulation game config: game config version must be %d", ServerGameConfigVersion))
 	}
-	return gameConfig
+	if gameConfig.Map.Width == 0 && gameConfig.Map.Height == 0 && len(gameConfig.Map.Map) == 0 {
+		return gameConfig
+	}
+	resolved, err := ResolveGameConfig(gameConfig)
+	if err != nil {
+		panic(fmt.Sprintf("resolve explicit simulation game config: %v", err))
+	}
+	return resolved
 }

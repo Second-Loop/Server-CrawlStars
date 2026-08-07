@@ -746,3 +746,25 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - 종료 원인과 reconnect generation을 낮은 카디널리티로 상관 분석할 수 있습니다.
 - 기존 lifecycle·wire 동작을 바꾸지 않으면서 비밀값과 raw transport 오류를 관측 표면에서 제외합니다.
+
+## ADR-0040: SL-102 Player Collision은 축별 동시 취소와 Production Config Fail-Fast를 사용
+
+상태: 승인됨
+
+맥락: Wall/Water/boundary collision만 적용하면 live player가 같은 위치를 통과하거나 겹칠 수 있습니다. 또한 canonical spawn 좌표 수만 검증하면 캐릭터 radius가 커졌을 때 서로 다른 좌표의 원형이 겹칠 수 있고, production이 invalid embedded config를 5x5 static config로 숨기면 승인되지 않은 map과 mode로 서버가 시작됩니다.
+
+결정:
+
+- `State.Step`은 유효 input과 ACK를 먼저 준비한 뒤 X축, Y축 순서로 모든 live player movement candidate를 함께 계산합니다.
+- 같은 축의 swept circle이 접촉하거나 서로 통과하면 해당 pair 양쪽의 그 축 이동을 취소합니다. `PlayerID` 우선순위, 한쪽만 취소, push/relocation은 사용하지 않습니다.
+- 이미 겹친 pair는 separation이 엄격히 증가하고 이동 경로가 overlap을 더 깊게 만들지 않을 때만 해당 축 이동을 허용합니다. overlap을 유지하거나 심화하는 이동은 취소합니다. Dead player는 movement blocker가 아닙니다.
+- Movement 뒤 normal attack/skill 판정을 유지하고, collision으로 이동이 취소돼도 유효한 양수 `ClientTick` ACK는 진행합니다.
+- Config load는 `map.maxPlayers`명 canonical assignment를 만든 뒤 지원 캐릭터 중 최대 radius를 양쪽에 적용해 실제 원형 overlap을 검사합니다. Tangent spawn은 허용하고 실제 overlap은 거부합니다.
+- `cmd/server` production entrypoint는 embedded config의 trailing JSON value/garbage, decode, version, catalog, map, spawn capacity 또는 max-radius overlap 검증 오류를 application/listener 생성 전에 반환합니다. 명시된 nonzero invalid config는 room store, simulation state, assignment helper에서도 silent fallback하지 않고 fail-fast합니다. `StaticGameConfig()`의 5x5 fallback은 config를 생략한 명시적 test/dev helper에서만 사용합니다.
+- REST/WebSocket wire field는 추가하지 않습니다. OpenAPI/AsyncAPI에는 map과 movement 설명만 현재 동작으로 갱신합니다.
+
+결과:
+
+- 같은 tick 결과가 input map 순회와 PlayerID ordering에 흔들리지 않고, live player가 서로 통과하거나 기존 overlap을 유지하는 이동을 할 수 없습니다.
+- 잘못된 production config는 운영 중 조용한 fallback 대신 배포/startup 단계에서 드러납니다.
+- Spawn validation과 gameplay collision이 같은 최대-radius 안전 경계를 공유하되 test/dev fixture 사용은 유지됩니다.

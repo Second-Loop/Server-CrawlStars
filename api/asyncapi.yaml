@@ -180,7 +180,7 @@ components:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
         - name: teamReadyEvent
-          summary: team mode의 human 2명과 bot 4명이 5x5 fallback map에 참여하는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
+          summary: team mode의 human 2명과 bot 4명이 명시적 test/dev용 5x5 map에 참여하는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
           payload:
             Type: Ready
             Map:

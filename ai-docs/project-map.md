@@ -197,7 +197,7 @@ Started room의 tick 흐름:
 
 Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movement, projectile, hit, HP/death, attack charge와 processed input ACK는 모두 `internal/simulation.State.Step`이 계속 소유합니다. Receipt나 pending 저장만으로 ACK하지 않습니다.
 
-기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. SpawnPoint가 부족하면 player blocking policy를 재사용해 Wall/Water를 제외한 fallback candidate를 쓰며 Ground/Bush는 유지합니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이어야 하므로 정상 room의 spawn은 겹치지 않습니다.
+기본 runtime map은 client SL-79에서 merge된 `Map_0`과 값이 같은 20x20 grid입니다. Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 사용합니다. SpawnPoint가 부족하면 player blocking policy를 재사용해 Wall/Water를 제외한 fallback candidate를 쓰며 Ground/Bush는 유지합니다. Map config는 고유 후보 수와 max supported character radius의 canonical assignment 비겹침을 함께 검증하고, production 검증 실패는 listener 이전 startup 실패입니다. Gameplay movement는 X/Y축별 live player 후보를 함께 판정해 충돌 pair의 해당 축 이동을 모두 취소하며 기존 overlap은 separation을 엄격히 늘리는 이동만 허용합니다.
 
 `internal/simulation.State.Step` 순서:
 

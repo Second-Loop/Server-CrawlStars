@@ -111,6 +111,27 @@ type attackState struct {
 	rechargeTicks int
 }
 
+type preparedInput struct {
+	input       InputCommand
+	playerIndex int
+	attackDir   Vector2
+	movement    Vector2
+}
+
+type playerMovementCandidate struct {
+	playerIndex int
+	origin      Vector2
+	target      Vector2
+	radius      float64
+}
+
+type movementAxis uint8
+
+const (
+	movementAxisX movementAxis = iota
+	movementAxisY
+)
+
 type State struct {
 	tick              Tick
 	players           []PlayerData
@@ -158,9 +179,17 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	snapshotTick := s.tick + 1
 	emissions := s.collectDueBurstEmissions(snapshotTick)
 	meleeIntents := make([]meleeIntent, 0, len(inputs))
+	prepared := make([]preparedInput, 0, len(inputs))
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
-		if intent, ok := s.applyInput(input, snapshotTick); ok {
+		if input, ok := s.prepareInput(input); ok {
+			prepared = append(prepared, input)
+		}
+	}
+	s.applyPlayerMovement(prepared)
+
+	for _, input := range prepared {
+		if intent, ok := s.applyPreparedInput(input, snapshotTick); ok {
 			if intent.attack.Kind == NormalAttackMelee {
 				if melee, approved := s.approveMeleeAttack(intent); approved {
 					meleeIntents = append(meleeIntents, melee)
@@ -270,19 +299,19 @@ func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []Playe
 	return cloned
 }
 
-func (s *State) applyInput(input InputCommand, activationTick Tick) (attackIntent, bool) {
+func (s *State) prepareInput(input InputCommand) (preparedInput, bool) {
 	for i := range s.players {
 		if s.players[i].ID != input.PlayerID {
 			continue
 		}
 		if s.players[i].IsDead || !isFinite(input.MoveDir) || !isFinite(input.AttackDir) {
-			return attackIntent{}, false
+			return preparedInput{}, false
 		}
 		if input.ClientTick < 0 {
-			return attackIntent{}, false
+			return preparedInput{}, false
 		}
 		if input.ClientTick > 0 && input.ClientTick <= s.players[i].LastProcessedClientTick {
-			return attackIntent{}, false
+			return preparedInput{}, false
 		}
 		if input.ClientTick > 0 {
 			s.players[i].LastProcessedClientTick = input.ClientTick
@@ -297,35 +326,151 @@ func (s *State) applyInput(input InputCommand, activationTick Tick) (attackInten
 			X: s.players[i].Speed * s.tickDuration() * moveDir.X,
 			Y: s.players[i].Speed * s.tickDuration() * moveDir.Y,
 		}
-
-		nextX := Vector2{X: s.players[i].Pos.X + movement.X, Y: s.players[i].Pos.Y}
-		if !s.collidesWithMap(nextX, s.players[i].Radius, tileBlocksPlayer) {
-			s.players[i].Pos = nextX
-		}
-
-		nextY := Vector2{X: s.players[i].Pos.X, Y: s.players[i].Pos.Y + movement.Y}
-		if !s.collidesWithMap(nextY, s.players[i].Radius, tileBlocksPlayer) {
-			s.players[i].Pos = nextY
-		}
-		if input.PressedSkill && attackDir != (Vector2{}) &&
-			s.tryApproveSkill(i, activationTick) {
-			return attackIntent{}, false
-		}
-		if !input.PressedAttack || attackDir == (Vector2{}) {
-			return attackIntent{}, false
-		}
-		attack, ok := s.normalAttackConfig(input.PlayerID)
-		if !ok {
-			return attackIntent{}, false
-		}
-		return attackIntent{
+		return preparedInput{
+			input:       input,
 			playerIndex: i,
-			owner:       s.players[i],
-			direction:   attackDir,
-			attack:      attack,
+			attackDir:   attackDir,
+			movement:    movement,
 		}, true
 	}
-	return attackIntent{}, false
+	return preparedInput{}, false
+}
+
+func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool) {
+	if input.input.PressedSkill && input.attackDir != (Vector2{}) &&
+		s.tryApproveSkill(input.playerIndex, activationTick) {
+		return attackIntent{}, false
+	}
+	if !input.input.PressedAttack || input.attackDir == (Vector2{}) {
+		return attackIntent{}, false
+	}
+	attack, ok := s.normalAttackConfig(input.input.PlayerID)
+	if !ok {
+		return attackIntent{}, false
+	}
+	return attackIntent{
+		playerIndex: input.playerIndex,
+		owner:       s.players[input.playerIndex],
+		direction:   input.attackDir,
+		attack:      attack,
+	}, true
+}
+
+func (s *State) applyPlayerMovement(inputs []preparedInput) {
+	candidates := make([]playerMovementCandidate, len(s.players))
+	for index, player := range s.players {
+		candidates[index] = playerMovementCandidate{
+			playerIndex: index,
+			origin:      player.Pos,
+			target:      player.Pos,
+			radius:      player.Radius,
+		}
+	}
+	for _, input := range inputs {
+		if input.playerIndex < 0 || input.playerIndex >= len(candidates) {
+			continue
+		}
+		candidate := &candidates[input.playerIndex]
+		nextX := Vector2{X: candidate.origin.X + input.movement.X, Y: candidate.origin.Y}
+		if !s.collidesWithMap(nextX, candidate.radius, tileBlocksPlayer) {
+			candidate.target.X = nextX.X
+		}
+	}
+	s.resolvePlayerMovementAxis(candidates, movementAxisX)
+
+	for index, candidate := range candidates {
+		input, ok := preparedInputForPlayer(inputs, index)
+		if !ok {
+			continue
+		}
+		nextY := Vector2{X: candidate.target.X, Y: candidate.origin.Y + input.movement.Y}
+		if !s.collidesWithMap(nextY, candidate.radius, tileBlocksPlayer) {
+			candidate.target.Y = nextY.Y
+		}
+		candidates[index] = candidate
+	}
+	s.resolvePlayerMovementAxis(candidates, movementAxisY)
+
+	for _, candidate := range candidates {
+		s.players[candidate.playerIndex].Pos = candidate.target
+	}
+}
+
+func preparedInputForPlayer(inputs []preparedInput, playerIndex int) (preparedInput, bool) {
+	for _, input := range inputs {
+		if input.playerIndex == playerIndex {
+			return input, true
+		}
+	}
+	return preparedInput{}, false
+}
+
+func (s *State) resolvePlayerMovementAxis(candidates []playerMovementCandidate, axis movementAxis) {
+	blocked := make([]bool, len(candidates))
+	for left := 0; left < len(candidates); left++ {
+		if s.players[candidates[left].playerIndex].IsDead {
+			continue
+		}
+		for right := left + 1; right < len(candidates); right++ {
+			if s.players[candidates[right].playerIndex].IsDead {
+				continue
+			}
+			if axisMovementCollides(candidates[left], candidates[right], axis) {
+				blocked[left] = true
+				blocked[right] = true
+			}
+		}
+	}
+	for index, candidate := range candidates {
+		if !blocked[index] {
+			continue
+		}
+		if axis == movementAxisX {
+			candidate.target.X = candidate.origin.X
+		} else {
+			candidate.target.Y = candidate.origin.Y
+		}
+		candidates[index] = candidate
+	}
+}
+
+func axisMovementCollides(a, b playerMovementCandidate, axis movementAxis) bool {
+	var aStart, aEnd, bStart, bEnd, aOther, bOther float64
+	if axis == movementAxisX {
+		aStart, aEnd = a.origin.X, a.target.X
+		bStart, bEnd = b.origin.X, b.target.X
+		aOther, bOther = a.origin.Y, b.origin.Y
+	} else {
+		aStart, aEnd = a.origin.Y, a.target.Y
+		bStart, bEnd = b.origin.Y, b.target.Y
+		aOther, bOther = a.target.X, b.target.X
+	}
+
+	radiusSum := math.Max(a.radius, 0) + math.Max(b.radius, 0)
+	otherDistance := math.Abs(aOther - bOther)
+	if otherDistance > radiusSum+1e-12 {
+		return false
+	}
+	axisContactDistanceSquared := radiusSum*radiusSum - otherDistance*otherDistance
+	if axisContactDistanceSquared < 0 {
+		return false
+	}
+	axisContactDistance := math.Sqrt(axisContactDistanceSquared)
+	initialDistance := math.Abs(aStart - bStart)
+	relativeStart := aStart - bStart
+	relativeDelta := (aEnd - aStart) - (bEnd - bStart)
+	finalDistance := math.Abs(relativeStart + relativeDelta)
+	minimumDistance := math.Min(math.Abs(relativeStart), math.Abs(relativeStart+relativeDelta))
+	if relativeDelta != 0 {
+		closestT := clamp(-relativeStart/relativeDelta, 0, 1)
+		minimumDistance = math.Min(minimumDistance, math.Abs(relativeStart+relativeDelta*closestT))
+	}
+	if initialDistance <= axisContactDistance+1e-12 {
+		separatesStrictly := finalDistance > initialDistance+1e-12
+		neverDeepensOverlap := minimumDistance >= initialDistance-1e-12
+		return !separatesStrictly || !neverDeepensOverlap
+	}
+	return minimumDistance <= axisContactDistance+1e-12
 }
 
 func (s *State) rechargeAttackCharges() {
@@ -585,6 +730,15 @@ func circlesOverlap(a Vector2, aRadius float64, b Vector2, bRadius float64) bool
 	dy := a.Y - b.Y
 	radius := aRadius + bRadius
 	return dx*dx+dy*dy <= radius*radius+1e-12
+}
+
+func spawnCirclesOverlap(a Vector2, b Vector2, radius float64) bool {
+	if radius < 0 {
+		radius = 0
+	}
+	dx := a.X - b.X
+	dy := a.Y - b.Y
+	return dx*dx+dy*dy < (radius+radius)*(radius+radius)
 }
 
 func clamp(value float64, min float64, max float64) float64 {
