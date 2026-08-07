@@ -926,6 +926,47 @@ func (s *Store) reserveClient(roomID string, playerID string, tokens []string) (
 	return reservation, nil
 }
 
+func isReconnectableCloseCause(cause websocketCloseCause) bool {
+	switch cause {
+	case websocketCloseCausePeerClose,
+		websocketCloseCauseReadFailure,
+		websocketCloseCauseWriteTimeout,
+		websocketCloseCauseWriteError,
+		websocketCloseCausePingTimeout,
+		websocketCloseCausePingError,
+		websocketCloseCauseControlOverflow:
+		return true
+	default:
+		return false
+	}
+}
+
+// expiredReconnectPlayersLocked removes due records in stable room-player
+// order. The caller holds room.mu; expiry is consumed exactly once before the
+// next gameplay Step.
+func (r *room) expiredReconnectPlayersLocked(now time.Time) []simulation.PlayerID {
+	if len(r.reconnectGraces) == 0 {
+		return nil
+	}
+
+	expired := make([]simulation.PlayerID, 0, len(r.reconnectGraces))
+	for _, player := range r.Players {
+		pending, ok := r.reconnectGraces[player.ID]
+		if !ok {
+			continue
+		}
+		if now.Before(pending.expiresAt) {
+			continue
+		}
+		delete(r.reconnectGraces, player.ID)
+		if pending.generation != r.connectionGenerations[player.ID] {
+			continue
+		}
+		expired = append(expired, simulation.PlayerID(player.ID))
+	}
+	return expired
+}
+
 func (s *Store) rollbackClientReservation(reservation *clientReservation) {
 	if reservation == nil {
 		return
@@ -968,6 +1009,10 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 		s.mu.Unlock()
 		return nil, false
 	}
+	// A valid reconnect reservation supersedes the disconnected generation.
+	// The generation check at expiry is an additional guard against stale
+	// records if a lifecycle callback races this attach.
+	delete(room.reconnectGraces, reservation.playerID)
 	session := newClientSession(conn, func(expected *clientSession) {
 		s.releaseClient(reservation, expected)
 	})
@@ -1035,10 +1080,22 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 		room.mu.Unlock()
 		return
 	}
+	closeObservation := currentSession.closeObservation()
 	currentSession.setMatchPhase(matchPhaseForRoom(room))
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
 	delete(room.readyPlayers, playerID)
+	if room.Status == RoomStatusStarted && !room.ending &&
+		isReconnectableCloseCause(closeObservation.cause) &&
+		closeObservation.connectionGeneration == room.connectionGenerations[playerID] {
+		if room.reconnectGraces == nil {
+			room.reconnectGraces = make(map[string]reconnectGrace)
+		}
+		room.reconnectGraces[playerID] = reconnectGrace{
+			generation: closeObservation.connectionGeneration,
+			expiresAt:  s.clock.Now().Add(defaultReconnectGrace),
+		}
+	}
 	clientTransitions := s.clientObservationTransitionsLocked([]clientObservation{{
 		roomID:   room.ID,
 		playerID: playerID,
@@ -1251,6 +1308,21 @@ func (s *Store) tickRoomState(room *room) {
 		return
 	}
 
+	expiredPlayerIDs := room.expiredReconnectPlayersLocked(s.clock.Now())
+	if len(expiredPlayerIDs) > 0 {
+		room.state.EliminatePlayers(expiredPlayerIDs)
+		expired := make(map[simulation.PlayerID]struct{}, len(expiredPlayerIDs))
+		for _, playerID := range expiredPlayerIDs {
+			expired[playerID] = struct{}{}
+		}
+		for index := range room.lastPlayers {
+			if _, ok := expired[room.lastPlayers[index].ID]; !ok {
+				continue
+			}
+			room.lastPlayers[index].HP = 0
+			room.lastPlayers[index].IsDead = true
+		}
+	}
 	inputs := mergedTickInputs(room.pendingInputs, room.lastPlayers)
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	stepStarted := s.wallNow()

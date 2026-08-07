@@ -169,6 +169,27 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 	}
 }
 
+// EliminatePlayers applies authoritative same-tick deaths without advancing
+// the simulation. The next Step publishes the resulting snapshot together
+// with any other gameplay changes from that tick.
+func (s *State) EliminatePlayers(ids []PlayerID) {
+	if len(ids) == 0 {
+		return
+	}
+
+	eliminated := make(map[PlayerID]struct{}, len(ids))
+	for _, id := range ids {
+		eliminated[id] = struct{}{}
+	}
+	for index := range s.players {
+		if _, ok := eliminated[s.players[index].ID]; !ok {
+			continue
+		}
+		s.players[index].HP = 0
+		s.players[index].IsDead = true
+	}
+}
+
 func (s *State) Step(inputs []InputCommand) Snapshot {
 	for i := range s.players {
 		s.players[i].PressedAttack = false

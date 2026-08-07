@@ -5430,6 +5430,8 @@ func TestFakeClockTicksIndependentTickersWithSameDuration(t *testing.T) {
 
 type testRoomStepper func([]simulation.InputCommand) simulation.Snapshot
 
+func (step testRoomStepper) EliminatePlayers([]simulation.PlayerID) {}
+
 func (step testRoomStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
 	return step(inputs)
 }
@@ -5438,6 +5440,8 @@ type botRecordingStepper struct {
 	calls    [][]simulation.InputCommand
 	snapshot simulation.Snapshot
 }
+
+func (stepper *botRecordingStepper) EliminatePlayers([]simulation.PlayerID) {}
 
 func (stepper *botRecordingStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
 	stepper.calls = append(
@@ -5451,6 +5455,10 @@ type capturingSimulationStepper struct {
 	delegate  simulationStepper
 	calls     [][]simulation.InputCommand
 	snapshots []simulation.Snapshot
+}
+
+func (stepper *capturingSimulationStepper) EliminatePlayers(ids []simulation.PlayerID) {
+	stepper.delegate.EliminatePlayers(ids)
 }
 
 func (stepper *capturingSimulationStepper) Step(

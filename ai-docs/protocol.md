@@ -24,10 +24,11 @@
 - client별 snapshot coalescing과 reliable control/terminal delivery
 - Store당 30초 cleanup janitor와 cap-pressure 단일 cleanup/retry
 - client build용 shared game config artifact
+- started match의 비의도적 WebSocket disconnect에 대한 room-owned 10초 reconnect grace와 같은 tick batch expiry
 
 아직 구현하지 않은 것:
 
-- bot replacement와 별도 reconnect grace
+- bot replacement
 - pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
 - production matchmaking queue
@@ -36,9 +37,10 @@
 
 ```text
 internal/simulation.State.Step(inputs []InputCommand) Snapshot
+internal/simulation.State.EliminatePlayers(ids []PlayerID)
 ```
 
-이 계약은 transport와 분리되어 Go unit test에서 직접 검증합니다. REST, WebSocket, room lifecycle, matching queue는 simulation package 안으로 들어오지 않습니다.
+이 계약은 transport와 분리되어 Go unit test에서 직접 검증합니다. `EliminatePlayers`는 room이 reconnect grace deadline에 도달한 player를 다음 `Step` 직전에 한 번에 authoritative death로 표시할 때만 사용하며 tick을 스스로 증가시키지 않습니다. REST, WebSocket, room lifecycle, matching queue는 simulation package 안으로 들어오지 않습니다.
 
 `Step` 순서:
 
@@ -146,11 +148,11 @@ WS /rooms/{roomID}/players/{playerID}?token=<player-session-token>
 - gameplay snapshot은 room이 started가 된 뒤에만 broadcast합니다.
 - payload write는 client별 writer가 수행하며 매번 새 5초 context를 사용합니다.
 
-Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하므로 그 뒤에는 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. 같은 started match에 reconnect하면 snapshot의 기존 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내고, 새 match의 ACK는 `0`으로 초기화됩니다. Failed HTTP-to-WebSocket upgrade는 reservation만 rollback해 같은 발급 경로로 재시도할 수 있습니다.
+Token은 일회용 credential이 아니며 room/player session이 존재하는 동안 재사용할 수 있습니다. 다만 matchmaking matched/loading/starting 단계의 실제 disconnect는 pre-start cancel로 room을 삭제하므로 그 뒤에는 reconnect할 수 없습니다. Started match에서 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`가 발생하면 10초 reconnect grace를 시작합니다. Grace 중에는 simulation을 멈추지 않고 player를 계속 피격 가능한 상태로 유지합니다. Grace 안에 재연결하면 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. `now >= deadline`인 player는 다음 gameplay tick 직전에 HP `0`/`IsDead: true`로 batch 처리하고 기존 Duel/Solo/Team evaluator로 결과를 확정합니다. 같은 tick의 여러 expiry는 한 batch의 simultaneous Draw/Win/Lose 판정을 따릅니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않으며, 결과가 확정된 player는 reconnect할 수 없습니다. Started room도 all-disconnected 5분 TTL과 hard 1시간 lifetime 안에서만 남습니다. 같은 started match에 reconnect하면 snapshot의 기존 `LastProcessedClientTick` 다음 양수 tick부터 이어 보내고, 새 match의 ACK는 `0`으로 초기화됩니다. Failed HTTP-to-WebSocket upgrade는 reservation만 rollback해 같은 발급 경로로 재시도할 수 있습니다.
 
 발급 JSON의 `sessionToken`, tokenized `webSocketPath`, inbound query는 모두 같은 raw secret을 담습니다. Raw token과 전체 query 문자열을 log나 telemetry에 남기지 않습니다. Ready/Snapshot/GameEnd payload에는 token이나 digest가 없습니다.
 
-Server는 각 connection에 snapshot writer와 독립적인 30초 heartbeat ticker를 둡니다. 각 Ping은 90초 context로 제한하며 error/timeout은 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 최초 close cause는 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`, `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete` 중 하나로 고정합니다. 종료 publication은 이 cause와 connection generation, 종료 시 match phase, session duration, 마지막 전송 gameplay tick을 정확히 한 번 log/metric에 반영하며 raw close reason, transport error, room/player ID는 metric label로 쓰지 않습니다. 오래된 heartbeat가 늦게 실패해도 expected-session identity가 다르면 reconnect된 connection을 제거하지 않고, 그 종료 관측도 이전 generation에 귀속됩니다. Reconnect 전에 current map에서 빠진 이전 connection도 transport `closeDone`까지 room-owned close barrier에 남습니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 match cancel을 적용하며, started room에서 마지막 client가 사라지면 disconnected TTL을 시작합니다. Bot replacement나 reconnect grace는 만들지 않습니다.
+Server는 각 connection에 snapshot writer와 독립적인 30초 heartbeat ticker를 둡니다. 각 Ping은 90초 context로 제한하며 error/timeout은 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 최초 close cause는 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`, `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete` 중 하나로 고정합니다. 종료 publication은 이 cause와 connection generation, 종료 시 match phase, session duration, 마지막 전송 gameplay tick을 정확히 한 번 log/metric에 반영하며 raw close reason, transport error, room/player ID는 metric label로 쓰지 않습니다. 오래된 heartbeat가 늦게 실패해도 expected-session identity가 다르면 reconnect된 connection을 제거하지 않고, 그 종료 관측도 이전 generation에 귀속됩니다. Reconnect 전에 current map에서 빠진 이전 connection도 transport `closeDone`까지 room-owned close barrier에 남습니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 match cancel을 적용하며, started room에서 마지막 client가 사라지면 disconnected TTL을 시작합니다. Started grace expiry는 per-player timer/goroutine 없이 room gameplay tick에서 batch 처리합니다. Bot replacement는 만들지 않습니다.
 
 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v4 경계를 유지합니다.
 
@@ -328,7 +330,7 @@ GameEnd event:
 
 Player별 첫 결과는 immutable ledger에 한 번만 확정합니다. 그래서 Solo에서 이전 Lose는 유지되고, 나중에 전원 사망한 terminal tick은 아직 결과가 없던 player에게만 Draw를 보냅니다. 이미 Lose와 close를 받은 player는 새 terminal event를 받지 않습니다.
 
-Solo 중간 탈락은 해당 session에만 `terminal snapshot -> GameEnd -> close`를 보내며 room ticker는 계속 동작합니다. Room terminal decision에서는 `ending`을 먼저 예약하고 ticker를 terminal decision 즉시 중단합니다. 그 뒤 tick observer, encode, enqueue를 실행해 terminal snapshot과 player별 GameEnd, close 순서를 보장합니다. 새 input, join, reservation, attach, start, 추가 tick은 ending/finalized 경계에서 거부합니다.
+Solo 중간 탈락 또는 reconnect grace expiry는 해당 session이 있으면 `terminal snapshot -> GameEnd -> close`를 보내며 room ticker는 계속 동작합니다. Room terminal decision에서는 `ending`을 먼저 예약하고 ticker를 terminal decision 즉시 중단합니다. 그 뒤 tick observer, encode, enqueue를 실행해 terminal snapshot과 player별 GameEnd, close 순서를 보장합니다. 새 input, join, reservation, attach, start, 추가 tick은 ending/finalized 경계에서 거부합니다.
 
 ## Field 의미
 

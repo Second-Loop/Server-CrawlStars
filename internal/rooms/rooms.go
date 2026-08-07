@@ -27,6 +27,7 @@ const (
 	defaultMatchCancelMsg           = "match canceled"
 	defaultGameEndCloseMsg          = "game ended"
 	defaultPlayerEliminatedCloseMsg = "player eliminated"
+	defaultReconnectGrace           = 10 * time.Second
 	webSocketWriteTimeout           = 5 * time.Second
 	defaultHeartbeatInterval        = 30 * time.Second
 	defaultHeartbeatTimeout         = 90 * time.Second
