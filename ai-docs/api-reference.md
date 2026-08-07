@@ -164,6 +164,9 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - Human과 bot을 합친 participant가 mode 정원을 채워야 full participant gate를 통과합니다. 그전까지 `room.status`는 `waiting`입니다.
 - Human participant가 0명이면 attach/ACK quorum은 성립하지 않습니다.
 - 정원을 채운 뒤 human participant의 WebSocket session이 모두 연결되면 human connection만 같은 `Type: "Ready"` event를 받습니다. Payload의 `Players`는 bot을 포함한 full participant list입니다.
+- Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. `now >= deadline`이면 reserve/attach를 거부하고 pre-start room 전체와 player/session credential을 폐기합니다.
+- 모든 human session이 deadline 전에 붙으면 deadline을 해제하고 Loading으로 전이합니다. Bot-fill match에서 human이 이미 붙어 있으면 즉시 이 gate를 통과하며, human이 없는 all-bot debug room에는 deadline을 걸지 않습니다.
+- 취소된 match는 `POST /matchmaking/join`을 다시 호출해 새 room/player/session identity로 재시도합니다. `Idempotency-Key` 기반 응답 replay는 제공하지 않습니다.
 - Ready의 `Players[].Team`, `Slot`, `IsBot`, `SpawnPosition`은 room이 선택한 mode config의 assignment 결과입니다.
 - Ready ACK quorum도 human participant만 셉니다. Human 한 명이라도 ACK하지 않으면 countdown을 시작하지 않고, 연결된 human 전원이 ACK하면 `starting/countdown: 5`를 한 번 보냅니다.
 - 같은 player의 중복 ACK는 quorum을 늘리지 않고 countdown이나 gameplay ticker를 다시 만들지 않습니다.
@@ -171,7 +174,7 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - 첫 human matchmaking join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
 - deadline을 먼저 획득하면 selected mode의 남은 slot을 bot으로 원자적으로 채웁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 `room_cap_reached` 409를 반환합니다.
 - Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
-- Ready timeout과 participant replacement는 없습니다. Started match의 비의도적 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 사용하고, grace 중 simulation은 계속됩니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
+- Ready ACK timeout과 participant replacement는 없습니다. Started match의 비의도적 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 사용하고, grace 중 simulation은 계속됩니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
 - 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 
 ### Room debug API

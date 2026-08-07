@@ -15,6 +15,8 @@ import (
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
 
+const matchedAttachDeadline = 30 * time.Second
+
 // Store owns registry and store-lifecycle synchronization only.
 //
 // mutationMu is the outer quiescing gate for externally initiated mutations.
@@ -111,6 +113,9 @@ type room struct {
 	countdownStop            chan struct{}
 	botFillTicker            ticker
 	botFillStop              chan struct{}
+	matchAttachTicker        ticker
+	matchAttachStop          chan struct{}
+	matchAttachDeadlineAt    time.Time
 }
 
 type simulationStepper interface {
@@ -555,17 +560,28 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	}
 	bots := s.appendReservedBotsLocked(room, reservedBotIDs)
 	reservedBotIDs = nil
-	s.markRoomMatchedIfFullLocked(room)
+	resources.merge(s.markRoomMatchedIfFullLocked(room))
+	matched := room.matchStatus == MatchStatusMatched
 	if len(room.Players) == room.gameConfig.MatchPlayerCount() {
 		resources.detachBotFillLocked(room)
 	}
 	s.mu.Unlock()
 	storeLocked = false
 
-	deliveries := s.advanceMatchLoadingLocked(room)
+	deliveries, loading := s.advanceMatchLoadingLocked(room, &resources)
+	waitingForAttach := room.matchStatus == MatchStatusMatched && room.matchAttachTicker != nil
 	deliveryFailures = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 	roomLocked = false
+	if matched {
+		s.logMatchmakingTransition(room.ID, "matched", "manual_bot_add")
+	}
+	if waitingForAttach {
+		s.logMatchmakingTransition(room.ID, "waiting_for_attach", "attach_deadline_armed")
+	}
+	if loading {
+		s.logMatchmakingTransition(room.ID, "loading", "all_humans_attached")
+	}
 	return bots, nil
 }
 
@@ -592,6 +608,7 @@ func botAppendErrorLocked(room *room, count int) error {
 type matchmakingJoinResult struct {
 	Response               matchmakingJoinResponse
 	CharacterTypeDefaulted bool
+	Matched                bool
 }
 
 func resolveMatchmakingCharacterType(
@@ -629,9 +646,21 @@ func (s *Store) joinMatchmakingRequest(
 	var resources roomResources
 	defer func() { resources.closeWithCause(defaultRoomWebSocketCloseMsg, websocketCloseCauseExpiry) }()
 	defer s.endMutation()
-	s.matchmakingMu.Lock()
-	defer s.matchmakingMu.Unlock()
-	return s.joinMatchmakingLocked(gameMode, rawCharacterType, &resources)
+	var result matchmakingJoinResult
+	var err error
+	func() {
+		s.matchmakingMu.Lock()
+		defer s.matchmakingMu.Unlock()
+		result, err = s.joinMatchmakingLocked(gameMode, rawCharacterType, &resources)
+	}()
+	if err == nil {
+		s.logMatchmakingTransition(result.Response.Room.ID, "join_committed", "human_join")
+		if result.Matched {
+			s.logMatchmakingTransition(result.Response.Room.ID, "matched", "human_join")
+			s.logMatchmakingTransition(result.Response.Room.ID, "waiting_for_attach", "attach_deadline_armed")
+		}
+	}
+	return result, err
 }
 
 func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.RawMessage, resources *roomResources) (matchmakingJoinResult, error) {
@@ -662,7 +691,11 @@ func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.Raw
 		}
 		if joined, joinedResources, ok := s.tryJoinMatchmakingRoom(room, *credentials, characterType); ok {
 			resources.merge(joinedResources)
-			return matchmakingJoinResult{Response: joined, CharacterTypeDefaulted: defaulted}, nil
+			return matchmakingJoinResult{
+				Response:               joined,
+				CharacterTypeDefaulted: defaulted,
+				Matched:                len(joined.Room.Players) == selectedConfig.MatchPlayerCount(),
+			}, nil
 		}
 	}
 
@@ -676,7 +709,11 @@ func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.Raw
 	if err != nil && credentials != nil {
 		s.releasePlayerID(credentials.id)
 	}
-	return matchmakingJoinResult{Response: response, CharacterTypeDefaulted: defaulted}, err
+	return matchmakingJoinResult{
+		Response:               response,
+		CharacterTypeDefaulted: defaulted,
+		Matched:                err == nil && len(response.Room.Players) == selectedConfig.MatchPlayerCount(),
+	}, err
 }
 
 func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials, characterType simulation.CharacterType) (matchmakingJoinResponse, roomResources, bool) {
@@ -688,8 +725,8 @@ func (s *Store) tryJoinMatchmakingRoom(room *room, credentials playerCredentials
 
 	humanCount := matchmakingHumanCount(room.Players)
 	issued := s.addPlayerLocked(room, credentials, characterType)
-	s.markRoomMatchedIfFullLocked(room)
 	var resources roomResources
+	resources.merge(s.markRoomMatchedIfFullLocked(room))
 	if humanCount == 0 {
 		resources.merge(s.armBotFillLocked(room))
 	} else if len(room.Players) == room.gameConfig.MatchPlayerCount() {
@@ -724,8 +761,8 @@ func (s *Store) createMatchmakingRoom(credentials *playerCredentials, gameConfig
 
 	room := s.newRoomLocked(roomID, gameConfig)
 	issued := s.addPlayerLocked(room, *credentials, characterType)
-	s.markRoomMatchedIfFullLocked(room)
-	resources := s.armBotFillLocked(room)
+	resources := s.markRoomMatchedIfFullLocked(room)
+	resources.merge(s.armBotFillLocked(room))
 	response := matchmakingJoinResponseFrom(room.toResponse(s.gameMap), issued)
 	s.rooms[room.ID] = room
 	transition := s.observation.activeRoomsDelta(1)
@@ -822,14 +859,25 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 	}
 	s.appendReservedBotsLocked(room, reservedBotIDs)
 	reservedBotIDs = nil
-	s.markRoomMatchedIfFullLocked(room)
+	resources.merge(s.markRoomMatchedIfFullLocked(room))
+	matched := room.matchStatus == MatchStatusMatched
 	s.mu.Unlock()
 	storeLocked = false
 
-	deliveries := s.advanceMatchLoadingLocked(room)
+	deliveries, loading := s.advanceMatchLoadingLocked(room, &resources)
+	waitingForAttach := room.matchStatus == MatchStatusMatched
 	deliveryFailures = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 	roomLocked = false
+	if matched {
+		s.logMatchmakingTransition(room.ID, "matched", "bot_fill")
+	}
+	if waitingForAttach {
+		s.logMatchmakingTransition(room.ID, "waiting_for_attach", "attach_deadline_armed")
+	}
+	if loading {
+		s.logMatchmakingTransition(room.ID, "loading", "all_humans_attached")
+	}
 }
 
 func matchmakingHumanCount(players []playerResponse) int {
@@ -842,13 +890,87 @@ func matchmakingHumanCount(players []playerResponse) int {
 	return count
 }
 
-func (s *Store) markRoomMatchedIfFullLocked(room *room) {
+func (s *Store) markRoomMatchedIfFullLocked(room *room) roomResources {
 	if len(room.Players) != room.gameConfig.MatchPlayerCount() {
-		return
+		return roomResources{}
 	}
 	room.matchStatus = MatchStatusMatched
 	room.readyPlayers = make(map[string]bool)
 	room.lastActivityAt = s.clock.Now()
+	return s.armMatchedAttachDeadlineLocked(room)
+}
+
+// armMatchedAttachDeadlineLocked starts the room-owned one-shot deadline for
+// the Matched -> Loading attach transition. The caller holds room.mu (or owns
+// an unpublished room) and stops returned resources after releasing locks.
+func (s *Store) armMatchedAttachDeadlineLocked(room *room) roomResources {
+	var resources roomResources
+	if room.removed || room.ending || room.matchStatus != MatchStatusMatched ||
+		matchmakingHumanCount(room.Players) == 0 || room.matchAttachTicker != nil {
+		return resources
+	}
+	deadlineTicker := s.clock.NewTicker(matchedAttachDeadline)
+	deadlineStop := make(chan struct{})
+	room.matchAttachTicker = deadlineTicker
+	room.matchAttachStop = deadlineStop
+	room.matchAttachDeadlineAt = s.clock.Now().Add(matchedAttachDeadline)
+	if !s.launchRoomWorker(func() { s.runMatchedAttachDeadline(room, deadlineTicker, deadlineStop) }) {
+		resources.detachMatchedAttachDeadlineLocked(room)
+	}
+	return resources
+}
+
+func (s *Store) runMatchedAttachDeadline(room *room, deadlineTicker ticker, stop <-chan struct{}) {
+	select {
+	case <-deadlineTicker.C():
+		s.expireMatchedAttachDeadline(room, deadlineTicker)
+	case <-stop:
+	}
+}
+
+func (s *Store) expireMatchedAttachDeadline(room *room, expectedTicker ticker) {
+	if room == nil || expectedTicker == nil || !s.beginMutation() {
+		return
+	}
+	var resources roomResources
+	var playerIDs []string
+	removed := false
+	defer func() {
+		if removed {
+			s.releasePlayerIDs(playerIDs)
+			resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
+		}
+		s.endMutation()
+	}()
+
+	s.mu.Lock()
+	if s.closed || s.rooms[room.ID] != room {
+		s.mu.Unlock()
+		return
+	}
+	room.mu.Lock()
+	if room.removed || room.ending || room.matchStatus != MatchStatusMatched ||
+		room.matchAttachTicker != expectedTicker || s.clock.Now().Before(room.matchAttachDeadlineAt) {
+		room.mu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	clientStart := len(resources.clientObservations)
+	playerIDs, removed = resources.removeRoomLockedWithCause(room, websocketCloseCausePrestartCancel)
+	clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
+	if removed {
+		delete(s.rooms, room.ID)
+	}
+	activeTransition := s.observation.activeRoomsDelta(-1)
+	room.mu.Unlock()
+	s.mu.Unlock()
+
+	if !removed {
+		return
+	}
+	s.publishDisconnectedClients(clientTransitions)
+	s.observation.publish(activeTransition)
+	s.logMatchmakingTransition(room.ID, "cancelled", "attach_deadline_expired")
 }
 
 func matchmakingJoinResponseFrom(room roomResponse, issued playerSessionResponse) matchmakingJoinResponse {
@@ -904,6 +1026,7 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 	}
 
 	resources.detachBotFillLocked(room)
+	resources.detachMatchedAttachDeadlineLocked(room)
 	started := s.startRoomLocked(room)
 	response := room.toResponse(s.gameMap)
 	room.mu.Unlock()
@@ -920,6 +1043,27 @@ func (s *Store) logRoomEvent(event string, roomID string) {
 		return
 	}
 	s.logger.Info(event, "event", event, "roomID", roomID)
+}
+
+func (s *Store) logMatchmakingTransition(roomID string, state string, cause string) {
+	valid := map[string]map[string]bool{
+		"join_committed":     {"human_join": true},
+		"matched":            {"human_join": true, "bot_fill": true, "manual_bot_add": true},
+		"waiting_for_attach": {"attach_deadline_armed": true},
+		"loading":            {"all_humans_attached": true},
+		"cancelled":          {"attach_deadline_expired": true, "prestart_disconnect": true},
+	}
+	causes, ok := valid[state]
+	if !ok || !causes[cause] {
+		return
+	}
+	s.logger.Info(
+		"matchmaking_transition",
+		"event", "matchmaking_transition",
+		"roomID", roomID,
+		"state", state,
+		"cause", cause,
+	)
 }
 
 func (s *Store) logCharacterTypeDefaulted(gameMode string) {

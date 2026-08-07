@@ -907,12 +907,13 @@ func TestMatchmakingBotFillTimerFiresOnceAndDetaches(t *testing.T) {
 		room.mu.Lock()
 		detached := room.botFillTicker == nil && room.botFillStop == nil
 		room.mu.Unlock()
-		if detached {
+		stopped := fillTicker.(*fakeTicker).StopCount() == 1
+		if detached && stopped {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatal("bot-fill worker did not detach timer resources")
+			t.Fatalf("bot-fill worker cleanup incomplete: detached=%t stop count=%d", detached, fillTicker.(*fakeTicker).StopCount())
 		default:
 			time.Sleep(time.Millisecond)
 		}

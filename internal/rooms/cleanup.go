@@ -337,6 +337,20 @@ func (r *roomResources) detachBotFillLocked(room *room) {
 	}
 }
 
+// detachMatchedAttachDeadlineLocked removes the one-shot Matched -> Loading
+// attach deadline. The caller holds room.mu and stops resources after unlock.
+func (r *roomResources) detachMatchedAttachDeadlineLocked(room *room) {
+	if room.matchAttachTicker != nil {
+		r.tickers = append(r.tickers, room.matchAttachTicker)
+		room.matchAttachTicker = nil
+	}
+	if room.matchAttachStop != nil {
+		r.stops = append(r.stops, room.matchAttachStop)
+		room.matchAttachStop = nil
+	}
+	room.matchAttachDeadlineAt = time.Time{}
+}
+
 func (s *Store) scheduleGameEndCleanup(room *room, sessions []*clientSession) bool {
 	return s.launchRoomWorker(func() {
 		defer room.signalGameEndCleanupWorkerDone()
@@ -428,6 +442,7 @@ func (r *roomResources) removeRoomLockedWithCause(room *room, cause websocketClo
 		room.countdownStop = nil
 	}
 	r.detachBotFillLocked(room)
+	r.detachMatchedAttachDeadlineLocked(room)
 	if room.ticker != nil {
 		r.tickers = append(r.tickers, room.ticker)
 		room.ticker = nil
