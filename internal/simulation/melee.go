@@ -90,8 +90,20 @@ func (s *State) firstBlockingSegmentT(start, end Vector2) float64 {
 		blockingT = math.Min(blockingT, (min.Y-start.Y)/direction.Y)
 	}
 
-	for y, row := range s.gameMap.Map {
-		for x, tile := range row {
+	candidates := s.gameMap.segmentCandidateRange(start, end)
+	if !candidates.valid {
+		return blockingT
+	}
+	for y := candidates.minY; y <= candidates.maxY; y++ {
+		if y < 0 || y >= len(s.gameMap.Map) {
+			continue
+		}
+		row := s.gameMap.Map[y]
+		for x := candidates.minX; x <= candidates.maxX; x++ {
+			if x < 0 || x >= len(row) {
+				continue
+			}
+			tile := row[x]
 			if tile != TileWall {
 				continue
 			}

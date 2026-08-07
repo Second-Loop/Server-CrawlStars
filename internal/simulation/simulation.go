@@ -633,8 +633,20 @@ func (s *State) collidesWithMap(position Vector2, radius float64, blocksTile fun
 		return true
 	}
 
-	for y, row := range s.gameMap.Map {
-		for x, tile := range row {
+	candidates := s.gameMap.circleCandidateRange(position, radius)
+	if !candidates.valid {
+		return false
+	}
+	for y := candidates.minY; y <= candidates.maxY; y++ {
+		if y < 0 || y >= len(s.gameMap.Map) {
+			continue
+		}
+		row := s.gameMap.Map[y]
+		for x := candidates.minX; x <= candidates.maxX; x++ {
+			if x < 0 || x >= len(row) {
+				continue
+			}
+			tile := row[x]
 			if !blocksTile(tile) {
 				continue
 			}
