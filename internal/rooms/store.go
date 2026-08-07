@@ -909,11 +909,12 @@ func (s *Store) armMatchedAttachDeadlineLocked(room *room) roomResources {
 		matchmakingHumanCount(room.Players) == 0 || room.matchAttachTicker != nil {
 		return resources
 	}
+	deadlineAt := s.clock.Now().Add(matchedAttachDeadline)
 	deadlineTicker := s.clock.NewTicker(matchedAttachDeadline)
 	deadlineStop := make(chan struct{})
 	room.matchAttachTicker = deadlineTicker
 	room.matchAttachStop = deadlineStop
-	room.matchAttachDeadlineAt = s.clock.Now().Add(matchedAttachDeadline)
+	room.matchAttachDeadlineAt = deadlineAt
 	if !s.launchRoomWorker(func() { s.runMatchedAttachDeadline(room, deadlineTicker, deadlineStop) }) {
 		resources.detachMatchedAttachDeadlineLocked(room)
 	}

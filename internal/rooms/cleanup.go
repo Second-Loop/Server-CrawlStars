@@ -377,6 +377,17 @@ func (s *Store) finishGameEnd(room *room) {
 	var clientTransitions []clientObservationTransition
 	var activeTransition observationTransition
 	var playerIDs []string
+	removed := false
+	cleanupSucceeded := false
+	defer func() {
+		if removed {
+			s.releasePlayerIDs(playerIDs)
+			resources.closeWithCause(defaultGameEndCloseMsg, websocketCloseCauseGameEnd)
+		}
+		if cleanupSucceeded {
+			room.signalGameEndCleanupDone()
+		}
+	}()
 
 	s.mu.Lock()
 	if s.closed || s.rooms[room.ID] != room {
@@ -390,7 +401,6 @@ func (s *Store) finishGameEnd(room *room) {
 		return
 	}
 	clientStart := len(resources.clientObservations)
-	var removed bool
 	playerIDs, removed = resources.removeRoomLockedWithCause(room, websocketCloseCauseGameEnd)
 	if !removed {
 		room.mu.Unlock()
@@ -405,10 +415,8 @@ func (s *Store) finishGameEnd(room *room) {
 
 	s.publishDisconnectedClients(clientTransitions)
 	s.observation.publish(activeTransition)
-	s.releasePlayerIDs(playerIDs)
 	s.logRoomEvent("room_ended", room.ID)
-	resources.closeWithCause(defaultGameEndCloseMsg, websocketCloseCauseGameEnd)
-	room.signalGameEndCleanupDone()
+	cleanupSucceeded = true
 }
 
 type clientObservation struct {
