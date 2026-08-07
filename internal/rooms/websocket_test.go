@@ -4318,11 +4318,9 @@ func TestBotFillMatchedDisconnectCancelsRoom(t *testing.T) {
 
 			_ = conn.Close(websocket.StatusNormalClosure, "")
 			waitForRoomDeleted(t, store, joined.Room.ID)
-			if got := fillTicker.StopCalls(); got != 1 {
-				t.Fatalf("%s cancellation bot-fill Stop calls=%d want=1", target, got)
-			}
-			if countdownTicker != nil && countdownTicker.StopCalls() != 1 {
-				t.Fatalf("starting cancellation countdown Stop calls=%d want=1", countdownTicker.StopCalls())
+			waitForCountingStopTicker(t, fillTicker, 1)
+			if countdownTicker != nil {
+				waitForCountingStopTicker(t, countdownTicker, 1)
 			}
 			store.mu.RLock()
 			remainingIDs := len(store.playerIDs)

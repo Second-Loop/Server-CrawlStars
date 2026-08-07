@@ -1172,6 +1172,8 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 		"time": true, "level": true, "msg": true, "event": true,
 		"game_mode": true,
 		"roomID":    true, "playerID": true, "category": true, "status": true,
+		"close_cause": true, "connection_generation": true, "match_phase": true,
+		"session_duration_ms": true, "last_sent_tick": true,
 		"room_id": true, "error": true,
 	}
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {

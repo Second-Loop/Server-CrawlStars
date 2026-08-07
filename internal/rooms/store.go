@@ -90,6 +90,7 @@ type room struct {
 	lastPlayers              []simulation.PlayerData
 	pendingInputs            map[string]simulation.InputCommand
 	clients                  map[string]*clientSession
+	connectionGenerations    map[string]uint64
 	closeBarrierSessions     map[*clientSession]struct{}
 	reservations             map[string]*clientReservation
 	finalizedGameEndResults  map[string]gameEndResult
@@ -242,7 +243,7 @@ func (s *Store) createRoom() (roomResponse, error) {
 		return roomResponse{}, ErrInternal
 	}
 	var resources roomResources
-	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
+	defer func() { resources.closeWithCause(defaultRoomWebSocketCloseMsg, websocketCloseCauseExpiry) }()
 	defer s.endMutation()
 
 	response, err := s.createRoomOnce()
@@ -285,7 +286,7 @@ func (s *Store) clearRooms() clearRoomsResponse {
 		return clearRoomsResponse{}
 	}
 	var resources roomResources
-	defer func() { resources.close(defaultRoomDebugDeleteMsg) }()
+	defer func() { resources.closeWithCause(defaultRoomDebugDeleteMsg, websocketCloseCauseDebugDelete) }()
 	defer s.endMutation()
 
 	registered := s.registeredRooms()
@@ -297,7 +298,7 @@ func (s *Store) clearRooms() clearRoomsResponse {
 			room.mu.Unlock()
 			continue
 		}
-		playerIDs, removed := resources.removeRoomLocked(room)
+		playerIDs, removed := resources.removeRoomLockedWithCause(room, websocketCloseCauseDebugDelete)
 		clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)
 		room.mu.Unlock()
 		s.publishDisconnectedClients(clientTransitions)
@@ -315,7 +316,7 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 		return clearRoomsResponse{}, false
 	}
 	var resources roomResources
-	defer func() { resources.close(defaultRoomDebugDeleteMsg) }()
+	defer func() { resources.closeWithCause(defaultRoomDebugDeleteMsg, websocketCloseCauseDebugDelete) }()
 	defer s.endMutation()
 
 	room := s.lookupRoom(roomID)
@@ -328,7 +329,7 @@ func (s *Store) deleteRoom(roomID string) (clearRoomsResponse, bool) {
 		room.mu.Unlock()
 		return clearRoomsResponse{}, false
 	}
-	playerIDs, removed := resources.removeRoomLocked(room)
+	playerIDs, removed := resources.removeRoomLockedWithCause(room, websocketCloseCauseDebugDelete)
 	clientTransitions := s.clientObservationTransitionsLocked(resources.clientObservations, -1)
 	room.mu.Unlock()
 	s.publishDisconnectedClients(clientTransitions)
@@ -422,7 +423,18 @@ func (s *Store) publishDisconnectedClients(transitions []clientObservationTransi
 				}
 				s.logWebSocketEvent("websocket_io_error", observed.roomID, observed.playerID, attrs...)
 			}
-			s.logWebSocketEvent("websocket_disconnected", observed.roomID, observed.playerID)
+			closeObservation := observed.session.closeObservation()
+			s.logWebSocketEvent(
+				"websocket_disconnected",
+				observed.roomID,
+				observed.playerID,
+				"close_cause", string(closeObservation.cause),
+				"connection_generation", closeObservation.connectionGeneration,
+				"match_phase", closeObservation.matchPhase,
+				"session_duration_ms", closeObservation.sessionDuration.Milliseconds(),
+				"last_sent_tick", closeObservation.lastSentTick,
+			)
+			s.observation.observeWebSocketClose(string(closeObservation.cause))
 		})
 	}
 }
@@ -479,8 +491,10 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	if !s.beginMutation() {
 		return nil, ErrInternal
 	}
-	var failedSessions []*clientSession
-	defer func() { closeClientSessions(failedSessions, "control delivery failed") }()
+	var deliveryFailures []webSocketDeliveryFailure
+	defer func() {
+		closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
+	}()
 	var resources roomResources
 	defer func() { resources.stop() }()
 	defer s.endMutation()
@@ -541,7 +555,7 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	storeLocked = false
 
 	deliveries := s.advanceMatchLoadingLocked(room)
-	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
+	deliveryFailures = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 	roomLocked = false
 	return bots, nil
@@ -605,7 +619,7 @@ func (s *Store) joinMatchmakingRequest(
 		return matchmakingJoinResult{}, ErrInternal
 	}
 	var resources roomResources
-	defer func() { resources.close(defaultRoomWebSocketCloseMsg) }()
+	defer func() { resources.closeWithCause(defaultRoomWebSocketCloseMsg, websocketCloseCauseExpiry) }()
 	defer s.endMutation()
 	s.matchmakingMu.Lock()
 	defer s.matchmakingMu.Unlock()
@@ -747,11 +761,11 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 		return
 	}
 	var resources roomResources
-	var failedSessions []*clientSession
+	var deliveryFailures []webSocketDeliveryFailure
 	var fillErr error
 	defer func() {
 		resources.stop()
-		closeClientSessions(failedSessions, "control delivery failed")
+		closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
 		if fillErr != nil {
 			s.logger.Error("bot fill failed", "event", "bot_fill_failed", "room_id", room.ID, "error", fillErr)
 		}
@@ -805,7 +819,7 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 	storeLocked = false
 
 	deliveries := s.advanceMatchLoadingLocked(room)
-	failedSessions = tryEnqueueWebSocketDeliveries(deliveries)
+	deliveryFailures = tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 	roomLocked = false
 }
@@ -910,8 +924,10 @@ func (s *Store) logCharacterTypeDefaulted(gameMode string) {
 
 func (s *Store) logWebSocketEvent(event string, roomID string, playerID string, attrs ...any) {
 	switch event {
-	case "websocket_connected", "websocket_disconnected":
+	case "websocket_connected":
 		attrs = nil
+	case "websocket_disconnected":
+		attrs = boundedWebSocketCloseLogAttrs(attrs)
 	case "websocket_auth_rejected":
 		attrs = boundedWebSocketLogAttrs(attrs, map[string]bool{"category": true}, map[string]bool{"invalid_token": true}, nil)
 	case "websocket_io_error":
@@ -933,6 +949,53 @@ func (s *Store) logWebSocketEvent(event string, roomID string, playerID string, 
 	fields := []any{"event", event, "roomID", roomID, "playerID", playerID}
 	fields = append(fields, attrs...)
 	s.logger.Info(event, fields...)
+}
+
+func boundedWebSocketCloseLogAttrs(attrs []any) []any {
+	bounded := make([]any, 0, 10)
+	for index := 0; index+1 < len(attrs); index += 2 {
+		key, ok := attrs[index].(string)
+		if !ok {
+			continue
+		}
+		value := attrs[index+1]
+		switch key {
+		case "close_cause":
+			cause, ok := value.(string)
+			if !ok || !isBoundedWebSocketCloseCause(websocketCloseCause(cause)) {
+				continue
+			}
+		case "connection_generation", "last_sent_tick":
+			switch value.(type) {
+			case uint64:
+			default:
+				continue
+			}
+		case "session_duration_ms":
+			duration, ok := value.(int64)
+			if !ok || duration < 0 {
+				continue
+			}
+		case "match_phase":
+			phase, ok := value.(string)
+			if !ok || !boundedWebSocketMatchPhase(phase) {
+				continue
+			}
+		default:
+			continue
+		}
+		bounded = append(bounded, key, value)
+	}
+	return bounded
+}
+
+func boundedWebSocketMatchPhase(phase string) bool {
+	switch phase {
+	case "unknown", "waiting", "matched", "loading", "starting", "started", "ending":
+		return true
+	default:
+		return false
+	}
 }
 
 func boundedWebSocketLogAttrs(attrs []any, allowedKeys map[string]bool, allowedCategories map[string]bool, allowedStatuses map[string]bool) []any {
@@ -964,6 +1027,7 @@ func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *
 		sessions:                 make(map[string]playerSession),
 		pendingInputs:            make(map[string]simulation.InputCommand),
 		clients:                  make(map[string]*clientSession),
+		connectionGenerations:    make(map[string]uint64),
 		closeBarrierSessions:     make(map[*clientSession]struct{}),
 		reservations:             make(map[string]*clientReservation),
 		finalizedGameEndResults:  make(map[string]gameEndResult),

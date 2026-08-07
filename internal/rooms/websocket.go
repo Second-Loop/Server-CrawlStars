@@ -64,12 +64,39 @@ type writerCommand struct {
 	kind    writerCommandKind
 	payload []byte
 	reason  string
+	cause   websocketCloseCause
+}
+
+type websocketCloseCause string
+
+const (
+	websocketCloseCausePeerClose       websocketCloseCause = "peer_close"
+	websocketCloseCauseReadFailure     websocketCloseCause = "read_failure"
+	websocketCloseCauseWriteTimeout    websocketCloseCause = "write_timeout"
+	websocketCloseCauseWriteError      websocketCloseCause = "write_error"
+	websocketCloseCausePingTimeout     websocketCloseCause = "ping_timeout"
+	websocketCloseCausePingError       websocketCloseCause = "ping_error"
+	websocketCloseCauseControlOverflow websocketCloseCause = "control_overflow"
+	websocketCloseCauseGameEnd         websocketCloseCause = "game_end"
+	websocketCloseCausePrestartCancel  websocketCloseCause = "prestart_cancel"
+	websocketCloseCauseExpiry          websocketCloseCause = "expiry"
+	websocketCloseCauseShutdown        websocketCloseCause = "shutdown"
+	websocketCloseCauseDebugDelete     websocketCloseCause = "debug_delete"
+)
+
+type websocketCloseObservation struct {
+	cause                websocketCloseCause
+	connectionGeneration uint64
+	matchPhase           string
+	sessionDuration      time.Duration
+	lastSentTick         uint64
 }
 
 type terminalWriterCommand struct {
 	snapshot []byte
 	gameEnd  []byte
 	reason   string
+	cause    websocketCloseCause
 }
 
 type clientLifecyclePublication struct {
@@ -79,37 +106,46 @@ type clientLifecyclePublication struct {
 }
 
 type clientSession struct {
-	conn                clientConn
-	snapshots           chan []byte
-	control             chan writerCommand
-	terminalHandoff     chan terminalWriterCommand
-	done                chan struct{}
-	closeDone           chan struct{}
-	transportCloseStart chan struct{}
-	writerDone          chan struct{}
-	heartbeatDone       chan struct{}
-	writerCtx           context.Context
-	cancelWriter        context.CancelFunc
-	enqueueMu           sync.Mutex
-	heartbeatMu         sync.Mutex
-	ioErrorMu           sync.Mutex
-	publicationMu       sync.Mutex
-	closeOnce           sync.Once
-	forceOnce           sync.Once
-	heartbeatDoneOnce   sync.Once
-	onClose             func(*clientSession)
-	publications        []*clientLifecyclePublication
-	ioErrorCategory     string
-	ioErrorStatus       string
-	publicationDraining bool
-	heartbeatStarted    bool
-	terminal            bool
-	reliablePending     int
-	deferredLatest      []byte
+	conn                 clientConn
+	snapshots            chan []byte
+	control              chan writerCommand
+	terminalHandoff      chan terminalWriterCommand
+	done                 chan struct{}
+	closeDone            chan struct{}
+	transportCloseStart  chan struct{}
+	writerDone           chan struct{}
+	heartbeatDone        chan struct{}
+	writerCtx            context.Context
+	cancelWriter         context.CancelFunc
+	enqueueMu            sync.Mutex
+	heartbeatMu          sync.Mutex
+	ioErrorMu            sync.Mutex
+	publicationMu        sync.Mutex
+	closeMetadataMu      sync.Mutex
+	closeCauseOnce       sync.Once
+	closeOnce            sync.Once
+	forceOnce            sync.Once
+	heartbeatDoneOnce    sync.Once
+	onClose              func(*clientSession)
+	publications         []*clientLifecyclePublication
+	ioErrorCategory      string
+	ioErrorStatus        string
+	closeCause           websocketCloseCause
+	connectionGeneration uint64
+	matchPhase           string
+	connectedAt          time.Time
+	now                  func() time.Time
+	lastSentTick         uint64
+	publicationDraining  bool
+	heartbeatStarted     bool
+	terminal             bool
+	reliablePending      int
+	deferredLatest       []byte
 }
 
 func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSession {
 	writerCtx, cancelWriter := context.WithCancel(context.Background())
+	now := time.Now()
 	session := &clientSession{
 		conn:                conn,
 		snapshots:           make(chan []byte, 1),
@@ -123,9 +159,116 @@ func newClientSession(conn clientConn, onClose func(*clientSession)) *clientSess
 		writerCtx:           writerCtx,
 		cancelWriter:        cancelWriter,
 		onClose:             onClose,
+		connectedAt:         now,
+		now:                 time.Now,
 	}
 	go session.writeLoop()
 	return session
+}
+
+func (s *clientSession) setConnectionMetadata(generation uint64, phase string, now func() time.Time) {
+	s.closeMetadataMu.Lock()
+	s.connectionGeneration = generation
+	s.matchPhase = phase
+	if now != nil {
+		s.now = now
+		s.connectedAt = now()
+	}
+	s.closeMetadataMu.Unlock()
+}
+
+func (s *clientSession) setConnectedAt(connectedAt time.Time, now func() time.Time) {
+	s.closeMetadataMu.Lock()
+	if now != nil {
+		s.now = now
+	}
+	s.connectedAt = connectedAt
+	s.closeMetadataMu.Unlock()
+}
+
+func (s *clientSession) setMatchPhase(phase string) {
+	s.closeMetadataMu.Lock()
+	if boundedWebSocketMatchPhase(phase) {
+		s.matchPhase = phase
+	} else {
+		s.matchPhase = "unknown"
+	}
+	s.closeMetadataMu.Unlock()
+}
+
+func (s *clientSession) closeObservation() websocketCloseObservation {
+	s.closeMetadataMu.Lock()
+	defer s.closeMetadataMu.Unlock()
+	cause := s.closeCause
+	if !isBoundedWebSocketCloseCause(cause) {
+		cause = websocketCloseCausePeerClose
+	}
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	duration := now().Sub(s.connectedAt)
+	if duration < 0 {
+		duration = 0
+	}
+	phase := s.matchPhase
+	if phase == "" {
+		phase = "unknown"
+	}
+	return websocketCloseObservation{
+		cause:                cause,
+		connectionGeneration: s.connectionGeneration,
+		matchPhase:           phase,
+		sessionDuration:      duration,
+		lastSentTick:         s.lastSentTick,
+	}
+}
+
+func (s *clientSession) claimCloseCause(cause websocketCloseCause) {
+	if !isBoundedWebSocketCloseCause(cause) {
+		cause = websocketCloseCausePeerClose
+	}
+	s.closeCauseOnce.Do(func() {
+		s.closeMetadataMu.Lock()
+		s.closeCause = cause
+		s.closeMetadataMu.Unlock()
+	})
+}
+
+func (s *clientSession) recordSentTick(payload []byte) {
+	var message struct {
+		Snapshot struct {
+			Tick uint64 `json:"Tick"`
+		} `json:"Snapshot"`
+	}
+	if err := json.Unmarshal(payload, &message); err != nil || message.Snapshot.Tick == 0 {
+		return
+	}
+	s.closeMetadataMu.Lock()
+	if message.Snapshot.Tick > s.lastSentTick {
+		s.lastSentTick = message.Snapshot.Tick
+	}
+	s.closeMetadataMu.Unlock()
+}
+
+func isBoundedWebSocketCloseCause(cause websocketCloseCause) bool {
+	switch cause {
+	case websocketCloseCausePeerClose,
+		websocketCloseCauseReadFailure,
+		websocketCloseCauseWriteTimeout,
+		websocketCloseCauseWriteError,
+		websocketCloseCausePingTimeout,
+		websocketCloseCausePingError,
+		websocketCloseCauseControlOverflow,
+		websocketCloseCauseGameEnd,
+		websocketCloseCausePrestartCancel,
+		websocketCloseCauseExpiry,
+		websocketCloseCauseShutdown,
+		websocketCloseCauseDebugDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 // Ready lifecycle publications are synchronous: the mutator returns only after
@@ -234,10 +377,12 @@ func (s *clientSession) startHeartbeat(clock clock, interval time.Duration, time
 				cancel()
 				if err != nil {
 					category := "ping_failed"
+					cause := websocketCloseCausePingError
 					if timedOut {
 						category = "ping_timeout"
+						cause = websocketCloseCausePingTimeout
 					}
-					s.closeWithIOError(websocket.StatusGoingAway, "heartbeat failed", category, "")
+					s.closeWithCause(websocket.StatusGoingAway, "heartbeat failed", cause, category, "")
 					return
 				}
 			case <-s.done:
@@ -313,7 +458,7 @@ func (s *clientSession) enqueueSkillApprovalSnapshot(payload []byte) bool {
 	s.enqueueMu.Unlock()
 
 	if shouldClose {
-		s.close(websocket.StatusGoingAway, "control queue overflow")
+		s.closeWithCause(websocket.StatusGoingAway, "control queue overflow", websocketCloseCauseControlOverflow, "", "")
 	}
 	return queued
 }
@@ -345,7 +490,7 @@ func (s *clientSession) completeReliableSnapshot() {
 func (s *clientSession) enqueueControl(payload []byte) bool {
 	queued, shouldClose := s.tryEnqueueControl(payload)
 	if shouldClose {
-		s.close(websocket.StatusGoingAway, "control queue overflow")
+		s.closeWithCause(websocket.StatusGoingAway, "control queue overflow", websocketCloseCauseControlOverflow, "", "")
 	}
 	return queued
 }
@@ -391,7 +536,12 @@ func (s *clientSession) enqueueTerminal(snapshot []byte, gameEnd []byte, reason 
 	default:
 	}
 	s.deferredLatest = nil
-	s.terminalHandoff <- terminalWriterCommand{snapshot: snapshot, gameEnd: gameEnd, reason: reason}
+	s.terminalHandoff <- terminalWriterCommand{
+		snapshot: snapshot,
+		gameEnd:  gameEnd,
+		reason:   reason,
+		cause:    websocketCloseCauseGameEnd,
+	}
 	s.enqueueMu.Unlock()
 	return true
 }
@@ -460,7 +610,7 @@ func (s *clientSession) writeTerminal(terminal terminalWriterCommand) {
 			for _, command := range [...]writerCommand{
 				{kind: writerCommandPayload, payload: terminal.snapshot},
 				{kind: writerCommandPayload, payload: terminal.gameEnd},
-				{kind: writerCommandClose, reason: terminal.reason},
+				{kind: writerCommandClose, reason: terminal.reason, cause: terminal.cause},
 			} {
 				if !s.writeCommand(command) {
 					return
@@ -476,16 +626,22 @@ func (s *clientSession) writeCommand(command writerCommand) bool {
 		return false
 	}
 	if command.kind == writerCommandClose {
-		s.close(websocket.StatusNormalClosure, command.reason)
+		s.closeWithCause(websocket.StatusNormalClosure, command.reason, command.cause, "", "")
 		return false
 	}
 	ctx, cancel := context.WithTimeout(s.writerCtx, webSocketWriteTimeout)
 	err := s.conn.Write(ctx, websocket.MessageText, command.payload)
+	timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 	cancel()
 	if err != nil {
-		s.closeWithIOError(websocket.StatusGoingAway, "write failed", "write_failed", "")
+		cause := websocketCloseCauseWriteError
+		if timedOut {
+			cause = websocketCloseCauseWriteTimeout
+		}
+		s.closeWithCause(websocket.StatusGoingAway, "write failed", cause, "write_failed", "")
 		return false
 	}
+	s.recordSentTick(command.payload)
 	if command.kind == writerCommandReliableSnapshot {
 		s.completeReliableSnapshot()
 	}
@@ -502,14 +658,26 @@ func (s *clientSession) isDone() bool {
 }
 
 func (s *clientSession) close(code websocket.StatusCode, reason string) {
-	s.closeWithCause(code, reason, "", "")
+	s.closeWithCause(code, reason, websocketCloseCausePeerClose, "", "")
 }
 
 func (s *clientSession) closeWithIOError(code websocket.StatusCode, reason string, category string, status string) {
-	s.closeWithCause(code, reason, category, status)
+	cause := websocketCloseCauseReadFailure
+	switch category {
+	case "write_failed":
+		cause = websocketCloseCauseWriteError
+	case "ping_failed":
+		cause = websocketCloseCausePingError
+	case "ping_timeout":
+		cause = websocketCloseCausePingTimeout
+	case "read_close":
+		cause = websocketCloseCausePeerClose
+	}
+	s.closeWithCause(code, reason, cause, category, status)
 }
 
-func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string, category string, status string) {
+func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string, cause websocketCloseCause, category string, status string) {
+	s.claimCloseCause(cause)
 	s.closeOnce.Do(func() {
 		defer close(s.closeDone)
 		if category != "" {
@@ -538,7 +706,11 @@ func (s *clientSession) closeWithCause(code websocket.StatusCode, reason string,
 // forceClose starts the logical close if necessary, then interrupts a transport
 // that may already be blocked inside another closeOnce owner.
 func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
-	go s.close(code, reason)
+	s.forceCloseWithCause(code, reason, websocketCloseCausePeerClose)
+}
+
+func (s *clientSession) forceCloseWithCause(code websocket.StatusCode, reason string, cause websocketCloseCause) {
+	go s.closeWithCause(code, reason, cause, "", "")
 	select {
 	case <-s.transportCloseStart:
 	case <-s.closeDone:
@@ -553,6 +725,22 @@ func (s *clientSession) forceClose(code websocket.StatusCode, reason string) {
 type clientReservation struct {
 	room     *room
 	playerID string
+}
+
+func matchPhaseForRoom(room *room) string {
+	if room == nil {
+		return "unknown"
+	}
+	if room.ending {
+		return "ending"
+	}
+	if room.Status == RoomStatusStarted {
+		return "started"
+	}
+	if room.matchStatus != "" {
+		return string(room.matchStatus)
+	}
+	return string(room.Status)
 }
 
 func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID string, playerID string) {
@@ -671,13 +859,14 @@ func (s *Store) handleWebSocket(w http.ResponseWriter, r *http.Request, roomID s
 func recordWebSocketReadError(session *clientSession, err error) {
 	status := websocket.CloseStatus(err)
 	if status == websocket.StatusNormalClosure || status == websocket.StatusGoingAway {
+		session.closeWithCause(websocket.StatusNormalClosure, "", websocketCloseCausePeerClose, "", "")
 		return
 	}
 	if status == -1 {
-		session.closeWithIOError(websocket.StatusNormalClosure, "", "read_failed", "")
+		session.closeWithCause(websocket.StatusNormalClosure, "", websocketCloseCauseReadFailure, "read_failed", "")
 		return
 	}
-	session.closeWithIOError(websocket.StatusNormalClosure, "", "read_close", normalizedWebSocketStatus(status))
+	session.closeWithCause(websocket.StatusNormalClosure, "", websocketCloseCausePeerClose, "read_close", normalizedWebSocketStatus(status))
 }
 
 func normalizedWebSocketStatus(status websocket.StatusCode) string {
@@ -782,6 +971,9 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	session := newClientSession(conn, func(expected *clientSession) {
 		s.releaseClient(reservation, expected)
 	})
+	generation := room.connectionGenerations[reservation.playerID] + 1
+	room.connectionGenerations[reservation.playerID] = generation
+	session.setConnectionMetadata(generation, matchPhaseForRoom(room), nil)
 	connectedClient := clientObservation{roomID: room.ID, playerID: reservation.playerID, session: session}
 	connectedTransition := s.observation.connectedClientsDelta(1)
 	connectedPublication := s.prepareConnectedClientPublication(connectedClient, connectedTransition)
@@ -793,14 +985,16 @@ func (s *Store) attachClientSession(reservation *clientReservation, conn clientC
 	s.monitorClientSession(room, session, lifecycleDone)
 	session.startHeartbeat(s.clock, s.heartbeatInterval, s.heartbeatTimeout)
 	s.mu.Unlock()
-	room.lastActivityAt = s.clock.Now()
+	connectedAt := s.clock.Now()
+	session.setConnectedAt(connectedAt, s.clock.Now)
+	room.lastActivityAt = connectedAt
 	room.disconnectedAt = time.Time{}
 	deliveries = append(deliveries, s.advanceMatchLoadingLocked(room)...)
-	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	deliveryFailures := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
 	session.readyLifecyclePublication(connectedPublication)
-	closeClientSessions(failedSessions, "control delivery failed")
+	closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
 	return session, true
 }
 
@@ -841,6 +1035,7 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 		room.mu.Unlock()
 		return
 	}
+	currentSession.setMatchPhase(matchPhaseForRoom(room))
 	delete(room.clients, playerID)
 	delete(room.pendingInputs, playerID)
 	delete(room.readyPlayers, playerID)
@@ -852,7 +1047,7 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 	var playerIDs []string
 	if room.hasPreStartMatch() {
 		clientStart := len(resources.clientObservations)
-		playerIDs, shouldClose = resources.removeRoomLocked(room)
+		playerIDs, shouldClose = resources.removeRoomLockedWithCause(room, websocketCloseCausePrestartCancel)
 		clientTransitions = append(clientTransitions,
 			s.clientObservationTransitionsLocked(resources.clientObservations[clientStart:], -1)...)
 	}
@@ -866,7 +1061,7 @@ func (s *Store) releaseClient(reservation *clientReservation, expectedSession *c
 		if s.deleteRoomIfSame(room.ID, room) {
 			s.releasePlayerIDs(playerIDs)
 		}
-		resources.close(defaultMatchCancelMsg)
+		resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
 	}
 }
 
@@ -943,10 +1138,10 @@ func (s *Store) markClientReady(roomID string, playerID string, expectedSession 
 		s.startMatchCountdownLocked(room)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
-	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	deliveryFailures := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
-	closeClientSessions(failedSessions, "control delivery failed")
+	closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
 }
 
 func (s *Store) startMatchCountdownLocked(room *room) {
@@ -1025,13 +1220,13 @@ func (s *Store) tickMatchCountdownRoom(room *room, countdownTicker ticker) bool 
 	room.countdown = 0
 	started := s.startRoomLocked(room)
 	deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarted, 0)...)
-	failedSessions := tryEnqueueWebSocketDeliveries(deliveries)
+	deliveryFailures := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
 
 	if started {
 		s.logRoomEvent("room_started", room.ID)
 	}
-	closeClientSessions(failedSessions, "control delivery failed")
+	closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
 	return true
 }
 
@@ -1089,12 +1284,12 @@ func (s *Store) tickRoomState(room *room) {
 	snapshotPayload, snapshotMarshalErr := marshalMessage(message)
 	if snapshotMarshalErr != nil {
 		if terminal {
-			closeClientSessions(terminalSessions, "message marshal failed")
+			closeClientSessionsWithCause(terminalSessions, "message marshal failed", websocketCloseCauseWriteError)
 			s.scheduleGameEndCleanup(room, terminalSessions)
 			return
 		}
 		for _, delivery := range deliveries {
-			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
+			delivery.session.closeWithCause(websocket.StatusGoingAway, "message marshal failed", websocketCloseCauseWriteError, "", "")
 		}
 		return
 	}
@@ -1115,7 +1310,7 @@ func (s *Store) tickRoomState(room *room) {
 		delivered[delivery.session] = struct{}{}
 		gameEndPayload, err := marshalMessage(delivery.message)
 		if err != nil {
-			delivery.session.close(websocket.StatusGoingAway, "message marshal failed")
+			delivery.session.closeWithCause(websocket.StatusGoingAway, "message marshal failed", websocketCloseCauseWriteError, "", "")
 			continue
 		}
 		delivery.session.enqueueTerminal(snapshotPayload, gameEndPayload, closeReason)
@@ -1127,7 +1322,7 @@ func (s *Store) tickRoomState(room *room) {
 		if _, ok := delivered[session]; ok || session.isTerminalOrDone() {
 			continue
 		}
-		session.close(websocket.StatusNormalClosure, defaultGameEndCloseMsg)
+		session.closeWithCause(websocket.StatusNormalClosure, defaultGameEndCloseMsg, websocketCloseCauseGameEnd, "", "")
 	}
 	s.scheduleGameEndCleanup(room, terminalSessions)
 }
@@ -1137,31 +1332,52 @@ type webSocketDelivery struct {
 	message any
 }
 
+type webSocketDeliveryFailure struct {
+	session *clientSession
+	cause   websocketCloseCause
+}
+
 // tryEnqueueWebSocketDeliveries only performs non-blocking channel operations.
 // Callers hold room.mu so lifecycle control ordering is fixed before the next
 // countdown or gameplay transition can acquire the room.
-func tryEnqueueWebSocketDeliveries(deliveries []webSocketDelivery) []*clientSession {
-	var failedSessions []*clientSession
+func tryEnqueueWebSocketDeliveries(deliveries []webSocketDelivery) []webSocketDeliveryFailure {
+	var failures []webSocketDeliveryFailure
 	for _, delivery := range deliveries {
 		if delivery.session == nil {
 			continue
 		}
 		payload, err := marshalMessage(delivery.message)
 		if err != nil {
-			failedSessions = append(failedSessions, delivery.session)
+			failures = append(failures, webSocketDeliveryFailure{
+				session: delivery.session,
+				cause:   websocketCloseCauseWriteError,
+			})
 			continue
 		}
 		_, shouldClose := delivery.session.tryEnqueueControl(payload)
 		if shouldClose {
-			failedSessions = append(failedSessions, delivery.session)
+			failures = append(failures, webSocketDeliveryFailure{
+				session: delivery.session,
+				cause:   websocketCloseCauseControlOverflow,
+			})
 		}
 	}
-	return failedSessions
+	return failures
+}
+
+func closeWebSocketDeliveryFailures(failures []webSocketDeliveryFailure, reason string) {
+	for _, failure := range failures {
+		failure.session.closeWithCause(websocket.StatusGoingAway, reason, failure.cause, "", "")
+	}
 }
 
 func closeClientSessions(sessions []*clientSession, reason string) {
+	closeClientSessionsWithCause(sessions, reason, websocketCloseCausePeerClose)
+}
+
+func closeClientSessionsWithCause(sessions []*clientSession, reason string, cause websocketCloseCause) {
 	for _, session := range sessions {
-		session.close(websocket.StatusGoingAway, reason)
+		session.closeWithCause(websocket.StatusGoingAway, reason, cause, "", "")
 	}
 }
 

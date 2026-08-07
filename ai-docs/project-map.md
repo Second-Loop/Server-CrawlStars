@@ -47,7 +47,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 - reliable Ready/lifecycle/error와 terminal snapshot → GameEnd → close 전달
 - 30초 WebSocket heartbeat와 Ping별 90초 deadline
 - Store당 30초 janitor와 cap-pressure 단일 cleanup/retry
-- JSON room/WebSocket lifecycle log와 process-local Prometheus metrics
+- bounded close cause/context를 포함한 JSON room/WebSocket lifecycle log와 process-local Prometheus metrics
 - application HTTP와 private metrics의 coordinated graceful shutdown
 
 아직 안 되는 것:
@@ -256,7 +256,7 @@ Room store는 in-memory입니다.
 
 현재 WebSocket close는 client connection과 pending input을 제거합니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 match cancel로 room을 제거합니다. Started room에서 모든 client가 나가면 disconnected TTL을 시작합니다.
 
-각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
+각 connection은 snapshot fanout과 독립적인 30초 heartbeat를 실행하고 Ping마다 90초 deadline을 사용합니다. 실패는 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 첫 종료 원인만 bounded cause로 보존하고 종료 log에는 generation, phase, duration, last sent tick을 남기며 `crawlstars_websocket_closes_total`은 cause 하나만 label로 사용합니다. Attach된 session generation은 `room.mu`가 보호하는 close barrier set에도 등록되며 lifecycle monitor가 transport `closeDone` 뒤 종료 관측을 정확히 한 번 publish하고 barrier에서 제거합니다. Store당 하나의 30초 janitor가 TTL을 검사하고, cap-pressure create/matchmaking만 cleanup/retry를 한 번 즉시 수행합니다.
 
 외부 mutation의 lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `matchmakingMu`는 같은 mode의 동시 첫 join이 여러 room을 만들지 않도록 find-or-create 전체를 직렬화합니다. Logger와 Observer callback은 core lock을 놓은 뒤 동기 실행하는 bounded pure sink라서 Store method나 publication을 다시 호출하면 안 됩니다. Mutation 함수가 반환되면 그 transition의 log와 metrics publication도 끝난 상태입니다.
 
