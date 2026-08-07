@@ -188,7 +188,7 @@ Pending map key가 authoritative `PlayerID`라 payload에 섞인 ID를 신뢰하
 Started room의 tick 흐름:
 
 1. `room.mu`가 보호하는 직전 authoritative `lastPlayers` snapshot과 player별 processed ACK를 읽습니다.
-2. Pure bot controller가 nearest live enemy를 골라 공통 `InputCommand`를 만듭니다. 같은 거리는 `PlayerID`, 같은 좌표 방향은 `+X`로 결정합니다.
+2. Pure bot controller가 nearest live enemy를 골라 공통 `InputCommand`를 만듭니다. 같은 거리는 `PlayerID`, 같은 좌표 방향은 `+X`로 결정합니다. 첫 gameplay activation은 즉시 요청하고, 이전 bot activation이 승인된 tick `A`와 room-local `normalAttack.rechargeTicks`로 계산한 next-attack tick 전까지는 MoveDir/AttackDir만 유지하며 `PressedAttack`을 만들지 않습니다.
 3. Applied ACK와 positive pending을 통과한 human command의 `ClientTick`을 보존하고 bot key input을 tick 0 controller 결과로 대체한 뒤 `PlayerID` 오름차순으로 정렬합니다.
 4. Pending map을 비우고 `room.state.Step(inputs)`를 정확히 한 번 호출합니다.
 5. Simulation이 처리한 `LastProcessedClientTick`을 포함한 반환 snapshot을 다음 tick의 `lastPlayers`로 복사하고 Room REST detail/list의 `latestSnapshot` summary를 바로 갱신합니다.
@@ -306,6 +306,7 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-88`: room-local mode rules 기반 projectile eligibility와 결정적 target/input 순서
 - `SL-89`: mode별 GameEnd, immutable result ledger, terminal close barrier와 Shutdown 예외
 - `SL-90`: internal bot participant, 결정적 basic controller, human-only Ready quorum, shared one-Step integration
+- `SL-108`: server-config `normalAttack.rechargeTicks` 기반 bot attack cadence와 room/controller 회귀 검증
 - `SL-91`: first-lock-wins 10초 automatic bot fill, human-only Ready quorum, lifecycle cleanup
 - `SL-94`: optional ClientTick, monotonic processed input ACK, legacy zero compatibility, stale/duplicate silent drop
 - `SL-82`: config v2 CharacterType `0/1/2` join-to-Ready/Snapshot contract and docs drift validation
