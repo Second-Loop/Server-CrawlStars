@@ -48,7 +48,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 4. 현재 snapshot tick에 예정된 Colt burst projectile 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
 6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
-7. movement는 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
+7. movement는 X축, Y축 순서로 Wall/Water/boundary와 live player 후보를 검사합니다. 같은 축에서 swept circle이 접촉/통과하면 충돌 pair 양쪽 이동을 취소하고, 기존 overlap은 separation을 엄격히 늘리는 이동만 허용합니다.
 8. `PressedSkill` 시도가 ready이고 방향이 non-zero면 skill을 우선 승인해 attack charge를 보존하고, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through
 9. 공격 요청, non-zero 방향, 남은 캐릭터별 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
 10. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/ordinal 순서로 생성
@@ -71,7 +71,7 @@ internal/simulation.State.Step(inputs []InputCommand) Snapshot
 - tile 값은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`
 - Player는 Wall/Water/boundary, projectile은 Wall/boundary에 충돌
 - `StaticMapFixture().MaxPlayers = 6`
-- Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용합니다. SpawnPoint가 부족하면 map에서 유도한 fallback candidate를 사용하되 player blocking policy와 같은 기준으로 Wall과 Water를 제외합니다. Ground와 Bush는 후보가 될 수 있습니다. Config 검증은 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상인지 확인하므로, 정상 room의 spawn은 서로 겹치지 않습니다.
+- Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용합니다. SpawnPoint가 부족하면 map에서 유도한 fallback candidate를 사용하되 player blocking policy와 같은 기준으로 Wall과 Water를 제외합니다. Ground와 Bush는 후보가 될 수 있습니다. Config 검증은 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상인지, canonical assignment의 원형이 max supported character radius에서도 실제로 겹치지 않는지 확인합니다.
 - server mode catalog는 `duel_1v1`, `solo`, `team`이고 body가 선택을 생략하면 default `duel_1v1`입니다.
 
 Config artifact는 client 공유용과 server runtime용을 분리합니다.
@@ -265,7 +265,7 @@ Ready event:
 }
 ```
 
-예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 5x5 fallback map 기준입니다. Ready는 human session에만 전달하지만 payload의 `Players`는 bot을 포함한 full participant list입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
+예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload의 `Players`는 bot을 포함한 full participant list입니다. 실제 기본 runtime map은 `server-config/game-config.json`의 20x20 map입니다. SpawnPoint를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용하므로 실제 위치는 예시와 다를 수 있습니다.
 
 Ready ACK:
 
@@ -443,9 +443,9 @@ Deadline worker는 selected mode의 남은 participant slot을 bot으로 원자�
 
 첫 번째 player만 연결된 상태에서는 room이 `waiting`이라 WebSocket input은 저장되지만 gameplay snapshot은 오지 않습니다. 1명으로 테스트하려면 debug API `POST /rooms/{roomID}/start`를 호출해야 합니다.
 
-Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. 서버가 이 config 로드나 검증에 실패하면 `StaticGameConfig()`의 5x5 map으로 fallback합니다. `internal/simulation/fixtures/default-map.json`은 runtime source가 아니라 테스트와 legacy 호환 확인용 fixture입니다.
+Room response와 Ready event의 `map`은 서버 simulation이 collision에 쓰는 tile grid입니다. `map` row는 Base64 문자열이 아니라 JSON number array로 직렬화합니다. 기본 map source는 server binary가 embed한 `server-config/game-config.json`의 `map`입니다. Production은 이 config의 decode·검증 또는 max-radius spawn 검증에 실패하면 listener를 열기 전에 시작을 실패시킵니다. `StaticGameConfig()`의 5x5 map은 명시적 test/dev helper이고 `internal/simulation/fixtures/default-map.json`은 runtime source가 아니라 테스트와 legacy 호환 확인용 fixture입니다.
 
-`room.maxPlayers`와 `room.map.maxPlayers`는 map/debug room capacity를 뜻하며 runtime map과 5x5 fallback map 모두 6입니다. Matchmaking required participant 수는 room-local selected mode의 `playersPerMatch`입니다. `duel_1v1`은 2명, `solo`와 `team`은 6명이며 다른 mode끼리는 waiting room을 공유하지 않습니다. Solo team 값은 `solo-1`부터 `solo-6`, team mode assignment는 `red/0, blue/0, red/1, blue/1, red/2, blue/2`입니다.
+`room.maxPlayers`와 `room.map.maxPlayers`는 map/debug room capacity를 뜻하며 runtime map과 명시적 test/dev용 5x5 map 모두 6입니다. Matchmaking required participant 수는 room-local selected mode의 `playersPerMatch`입니다. `duel_1v1`은 2명, `solo`와 `team`은 6명이며 다른 mode끼리는 waiting room을 공유하지 않습니다. Solo team 값은 `solo-1`부터 `solo-6`, team mode assignment는 `red/0, blue/0, red/1, blue/1, red/2, blue/2`입니다.
 
 `SL-58`에서는 당시 `POST /matchmaking/join` response shape를 유지한 채 WebSocket state message를 추가했습니다. `SL-81` Stack 3은 transport credential을 위해 `sessionToken`과 tokenized `webSocketPath`를 발급합니다. REST polling이나 SSE는 늘리지 않습니다.
 

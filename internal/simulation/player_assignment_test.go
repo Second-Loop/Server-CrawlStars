@@ -55,6 +55,15 @@ func TestPlayerAssignmentsUseMapSpawnPointTilesInJoinOrder(t *testing.T) {
 	})
 }
 
+func TestPlayerAssignmentsPanicsOnExplicitInvalidConfig(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("PlayerAssignments() did not panic for explicit invalid config")
+		}
+	}()
+	PlayerAssignments([]PlayerID{"player-1"}, GameConfig{Version: 1})
+}
+
 func TestPlayerAssignmentsUseSelectedModeTeams(t *testing.T) {
 	playerIDs := []PlayerID{"player-1", "player-2", "player-3", "player-4", "player-5", "player-6"}
 	tests := []struct {

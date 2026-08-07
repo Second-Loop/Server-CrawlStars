@@ -130,12 +130,24 @@ func newApplication(config runtimeConfig) (*application, error) {
 }
 
 func newApplicationWithLogger(config runtimeConfig, logger *slog.Logger) (*application, error) {
+	return newApplicationWithLoggerAndGameConfigReader(config, logger, serverconfig.Reader())
+}
+
+func newApplicationWithLoggerAndGameConfigReader(
+	config runtimeConfig,
+	logger *slog.Logger,
+	gameConfigReader io.Reader,
+) (*application, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
+	gameConfig, err := loadGameConfigFrom(gameConfigReader)
+	if err != nil {
+		return nil, fmt.Errorf("load server game config: %w", err)
+	}
 	metrics := observability.NewMetrics()
 	store := rooms.NewStoreWithConfig(5, rooms.StoreConfig{
-		GameConfig: loadGameConfig(logger),
+		GameConfig: gameConfig,
 		Logger:     logger,
 		Observer:   metrics,
 	})
@@ -405,19 +417,17 @@ func parseTrustedProxyPrefixes(value string) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
-func loadGameConfig(logger *slog.Logger) simulation.GameConfig {
-	return loadGameConfigFrom(serverconfig.Reader(), logger)
+func loadGameConfig() (simulation.GameConfig, error) {
+	return loadGameConfigFrom(serverconfig.Reader())
 }
 
-func loadGameConfigFrom(reader io.Reader, logger *slog.Logger) simulation.GameConfig {
+func loadGameConfigFrom(reader io.Reader) (simulation.GameConfig, error) {
+	if reader == nil {
+		return simulation.GameConfig{}, fmt.Errorf("game config reader must not be nil")
+	}
 	gameConfig, err := simulation.LoadGameConfig(reader)
 	if err != nil {
-		logger.Warn("game_config_fallback", "error", err.Error())
-		return simulation.StaticGameConfig()
+		return simulation.GameConfig{}, err
 	}
-	if gameConfig.Version != simulation.ServerGameConfigVersion {
-		logger.Warn("game_config_fallback", "error", "unexpected server game config version")
-		return simulation.StaticGameConfig()
-	}
-	return gameConfig
+	return gameConfig, nil
 }

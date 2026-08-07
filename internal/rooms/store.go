@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -139,7 +140,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 		random = rand.Reader
 	}
 	gameConfig := config.GameConfig
-	if gameConfig.Version != simulation.ServerGameConfigVersion {
+	if gameConfig.Version == 0 {
 		gameConfig = simulation.StaticGameConfig()
 	}
 	if config.Map.Width > 0 || config.Map.Height > 0 || len(config.Map.Map) > 0 {
@@ -147,7 +148,7 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	}
 	resolvedConfig, err := simulation.ResolveGameConfig(gameConfig)
 	if err != nil {
-		resolvedConfig = simulation.StaticGameConfig()
+		panic(fmt.Sprintf("resolve explicit room store game config: %v", err))
 	}
 	heartbeatInterval := config.HeartbeatInterval
 	if heartbeatInterval <= 0 {

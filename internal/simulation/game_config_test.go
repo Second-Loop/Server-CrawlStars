@@ -183,6 +183,36 @@ func TestResolveGameConfigRejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
+func TestLoadGameConfigRejectsTrailingJSONValuesAndGarbage(t *testing.T) {
+	valid, err := json.Marshal(StaticGameConfig())
+	if err != nil {
+		t.Fatalf("marshal valid config: %v", err)
+	}
+	for name, suffix := range map[string]string{
+		"second JSON value": ` {}`,
+		"trailing garbage":  ` garbage`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			config, err := LoadGameConfig(strings.NewReader(string(valid) + suffix))
+			if err == nil {
+				t.Fatalf("LoadGameConfig() config=%+v error=nil, want trailing input rejection", config)
+			}
+			if config.Version != 0 {
+				t.Fatalf("LoadGameConfig() config=%+v, want zero config on error", config)
+			}
+		})
+	}
+}
+
+func TestResolveStateGameConfigPanicsOnExplicitInvalidConfig(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("resolveStateGameConfig() did not panic for explicit invalid config")
+		}
+	}()
+	resolveStateGameConfig(Config{Game: GameConfig{Version: 1}})
+}
+
 func TestResolveGameConfigRejectsInvalidSkillCooldown(t *testing.T) {
 	for _, cooldown := range []int{0, -1} {
 		t.Run(fmt.Sprintf("cooldown_%d", cooldown), func(t *testing.T) {
@@ -441,6 +471,68 @@ func TestResolveGameConfigWrapsUniqueSpawnCapacityError(t *testing.T) {
 	}
 	if got, want := err.Error(), "resolve game config map: map maxPlayers 6 exceeds unique spawn capacity 1"; got != want {
 		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestResolveGameConfigRejectsCanonicalSpawnOverlapUsingMaximumCharacterRadius(t *testing.T) {
+	config := StaticGameConfig()
+	config.Player.Types[2].Radius = 0.75
+	config.ModeCatalog.Catalog = []GameModeConfig{DefaultGameModeConfig()}
+	config.Map = canonicalSpawnValidationMap()
+
+	_, err := ResolveGameConfig(config)
+	if err == nil {
+		t.Fatal("expected canonical spawn circles to be rejected")
+	}
+	if !strings.Contains(err.Error(), "spawn") || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("ResolveGameConfig() error=%v, want spawn-overlap rejection", err)
+	}
+}
+
+func TestResolveGameConfigAcceptsCanonicalSpawnsWhenMaximumRadiusFits(t *testing.T) {
+	config := StaticGameConfig()
+	config.Player.Types[2].Radius = 0.6
+	config.ModeCatalog.Catalog = []GameModeConfig{DefaultGameModeConfig()}
+	config.Map = canonicalSpawnValidationMap()
+
+	if _, err := ResolveGameConfig(config); err != nil {
+		t.Fatalf("ResolveGameConfig() error=%v, want non-overlapping canonical spawns", err)
+	}
+}
+
+func TestResolveGameConfigAcceptsTangentCanonicalSpawnCircles(t *testing.T) {
+	config := StaticGameConfig()
+	config.ModeCatalog.Catalog = []GameModeConfig{DefaultGameModeConfig()}
+	config.Map = MapData{
+		Width:      4,
+		Height:     4,
+		MaxPlayers: 2,
+		TileSize:   1,
+		Map: [][]TileType{
+			{TileWall, TileWall, TileWall, TileWall},
+			{TileWall, TileSpawnPoint, TileSpawnPoint, TileWall},
+			{TileWall, TileGround, TileGround, TileWall},
+			{TileWall, TileWall, TileWall, TileWall},
+		},
+	}
+
+	if _, err := ResolveGameConfig(config); err != nil {
+		t.Fatalf("ResolveGameConfig() error=%v, want tangent canonical spawns accepted", err)
+	}
+}
+
+func canonicalSpawnValidationMap() MapData {
+	return MapData{
+		Width:      4,
+		Height:     4,
+		MaxPlayers: 2,
+		TileSize:   1,
+		Map: [][]TileType{
+			{TileWall, TileWall, TileWall, TileWall},
+			{TileWall, TileSpawnPoint, TileGround, TileWall},
+			{TileWall, TileGround, TileGround, TileWall},
+			{TileWall, TileWall, TileWall, TileWall},
+		},
 	}
 }
 

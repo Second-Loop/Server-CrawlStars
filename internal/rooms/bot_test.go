@@ -175,6 +175,42 @@ func TestBotBasicAttackUsesSharedSimulationChargeBudget(t *testing.T) {
 	}
 }
 
+func TestRoomTickAppliesPlayerCollisionBetweenHumanAndBot(t *testing.T) {
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
+	if err != nil {
+		t.Fatalf("select duel mode: %v", err)
+	}
+	players := []simulation.PlayerData{
+		{ID: "human", Team: simulation.TeamRed, Pos: simulation.Vector2{X: -0.55}},
+		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 0.55}, IsBot: true},
+	}
+	room := store.newRoomLocked("room-player-collision", config)
+	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.Players = []playerResponse{
+		{ID: "human", Team: string(simulation.TeamRed)},
+		{ID: "bot", Team: string(simulation.TeamBlue), IsBot: true},
+	}
+	room.lastPlayers = append([]simulation.PlayerData(nil), players...)
+	room.state = simulation.NewStateWithConfig(players, simulation.Config{Game: config})
+	room.pendingInputs = map[string]simulation.InputCommand{
+		"human": {PlayerID: "human", MoveDir: simulation.Vector2{X: 1}},
+	}
+
+	store.tickRoomState(room)
+
+	human := playerByID(t, room.lastPlayers, "human")
+	bot := playerByID(t, room.lastPlayers, "bot")
+	if human.Pos != players[0].Pos || bot.Pos != players[1].Pos {
+		t.Fatalf("human/bot collision positions human=%+v bot=%+v, want %+v/%+v", human.Pos, bot.Pos, players[0].Pos, players[1].Pos)
+	}
+	if human.MoveDir != (simulation.Vector2{X: 1}) || bot.MoveDir != (simulation.Vector2{X: -1}) {
+		t.Fatalf("human/bot inputs were not processed together: human=%+v bot=%+v", human.MoveDir, bot.MoveDir)
+	}
+}
+
 func inputPlayerIDs(inputs []simulation.InputCommand) []simulation.PlayerID {
 	ids := make([]simulation.PlayerID, len(inputs))
 	for index, input := range inputs {

@@ -362,6 +362,14 @@ func TestLilyMutualKillIsDeterministicAcrossInputOrder(t *testing.T) {
 
 func newLilyTestState(players []PlayerData, gameMap MapData) *State {
 	gameConfig := StaticGameConfig()
+	if gameMap.Width > 0 || gameMap.Height > 0 || len(gameMap.Map) > 0 {
+		gameMap.MaxPlayers = 2
+		gameConfig.ModeCatalog = GameModeCatalogConfig{
+			Default: GameModeDuel1v1,
+			Catalog: []GameModeConfig{DefaultGameModeConfig()},
+		}
+		gameConfig.SelectedMode = GameModeConfig{}
+	}
 	gameConfig.Map = gameMap
 	return NewStateWithConfig(players, Config{Game: gameConfig})
 }

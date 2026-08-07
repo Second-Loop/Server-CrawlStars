@@ -63,7 +63,7 @@ OpenAPI `Player`는 room participant schema라 required `isBot` boolean과 requi
 
 Join의 process-local per-IP token bucket은 store보다 먼저 평가합니다. OpenAPI 429에는 `rate_limited` JSON, 최소 1초 정수 `Retry-After`, 429가 409/500보다 우선하고 허용된 409/500 요청도 quota를 소비한다는 내용을 기록합니다. 같은 IP에서 6-client smoke를 실행할 때는 client가 `Retry-After` 뒤 재시도하거나 격리된 local 환경에서만 burst 6을 명시합니다.
 
-Room debug API는 기본 비활성화되어 `404 not_found`를 반환합니다. 활성화하면 정확히 하나의 `Authorization: Bearer <DEBUG_API_TOKEN>`이 필요하고, missing/wrong/multiple credential은 route dispatch보다 먼저 `401 unauthorized`입니다. 올바른 credential 뒤에 기존 route 결과를 평가합니다. Matched 이후 matchmaking room에 debug player를 추가하면 409 `room_full`입니다. `DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 operation입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array입니다. OpenAPI와 AsyncAPI의 `MapData` tile item enum은 `[0, 1, 2, 3, 4]`이며 각각 Ground, Wall, SpawnPoint, Bush, Water입니다. Player는 Wall/Water, projectile은 Wall에 충돌하고 map boundary는 둘 다 막습니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이어야 합니다.
+Room debug API는 기본 비활성화되어 `404 not_found`를 반환합니다. 활성화하면 정확히 하나의 `Authorization: Bearer <DEBUG_API_TOKEN>`이 필요하고, missing/wrong/multiple credential은 route dispatch보다 먼저 `401 unauthorized`입니다. 올바른 credential 뒤에 기존 route 결과를 평가합니다. Matched 이후 matchmaking room에 debug player를 추가하면 409 `room_full`입니다. `DELETE /rooms`와 `DELETE /rooms/{roomID}`는 테스트 중 active room cap을 즉시 회복하기 위한 operation입니다. Room response에는 server simulation이 쓰는 `map` 데이터와 `latestSnapshot` summary가 포함됩니다. 외부 응답의 `map` row는 Base64 문자열이 아니라 JSON number array입니다. OpenAPI와 AsyncAPI의 `MapData` tile item enum은 `[0, 1, 2, 3, 4]`이며 각각 Ground, Wall, SpawnPoint, Bush, Water입니다. Player는 Wall/Water와 다른 live player, projectile은 Wall에 충돌하고 map boundary는 둘 다 막습니다. Map config는 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상이고 max supported character radius의 canonical spawn 원형이 겹치지 않아야 합니다. Production config 검증 실패는 5x5 fallback 대신 startup 실패입니다.
 
 Match Ready event, ready ACK, 5초 server-internal countdown, matched/loading/starting disconnect cancel은 WebSocket 계약에서 다룹니다. 새 REST polling이나 SSE를 늘리지 않고 Ready event와 기존 gameplay WebSocket wrapper인 `Type: snapshot` 안의 `Snapshot.status`/`Snapshot.countdown`을 사용합니다. `starting`은 countdown 시작 신호로 1번만 보냅니다.
 
@@ -254,7 +254,7 @@ Ready event:
 }
 ```
 
-Ready 예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 5x5 fallback map 기준입니다. Ready는 human session에만 전달하지만 payload에는 full participant list가 들어갑니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며 client SL-79에서 merge된 `Map_0`과 exact grid가 같습니다. Spawn은 `TileSpawnPoint(2)`를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용합니다.
+Ready 예시는 human 한 명과 bot 한 명으로 채운 exact 2-participant duel cardinality와 명시적 test/dev용 5x5 map 기준입니다. Ready는 human session에만 전달하지만 payload에는 full participant list가 들어갑니다. 실제 기본 runtime map은 server binary가 embed한 `server-config/game-config.json`의 20x20 map이며 client SL-79에서 merge된 `Map_0`과 exact grid가 같습니다. Spawn은 `TileSpawnPoint(2)`를 먼저 쓰고 부족하면 Wall/Water를 제외한 Ground/Bush fallback candidate를 사용합니다.
 
 Match ready ACK:
 

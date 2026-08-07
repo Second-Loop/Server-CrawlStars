@@ -130,6 +130,8 @@ Lookup은 배열 index가 아니라 `PlayerType(characterType)` 같은 명시적
 
 현재 application/store의 config 오류 정책은 유지해요. Embedded config load가 실패하면 loader는 오류를 반환하고 application은 오류를 기록한 뒤 valid version `2`의 static 3종 catalog로 fallback해 계속 시작해요. CI와 unit test는 embedded source config 오류를 실패로 잡고, runtime fallback 자체도 별도 회귀 테스트로 보호해요.
 
+후속 반영(SL-102): 위 문장은 SL-82 당시 정책을 기록합니다. 현재 production application은 embedded server config의 decode·검증 또는 max-radius spawn 검증이 실패하면 listener 이전에 startup을 실패시키며, `StaticGameConfig()` fallback은 명시적 test/dev helper에만 남습니다.
+
 ## 4. Wire 계약
 
 ### 4.1 REST request

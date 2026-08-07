@@ -139,9 +139,9 @@ Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 
 - projectile speed/radius = `13`, `0.3`; damage/type은 공격 owner의 `normalAttack`에서 projectile snapshot으로 복사
 - default map source = server binary가 embed한 `server-config/game-config.json`의 client SL-79 `Map_0` exact 20x20 grid
 - map drift guard = client `Map_0` 값을 고정한 exact-grid Go regression
-- config load/validation failure fallback = `StaticGameConfig()`의 5x5 static map, max players `6`
+- production config load/validation failure = listener를 열기 전에 process startup 실패. `StaticGameConfig()`의 5x5 map은 명시적 test/dev helper에서만 사용
 - `internal/simulation/fixtures/default-map.json`은 테스트용 fixture로만 사용
-- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용하고, 부족하면 Wall/Water를 제외한 fallback candidate 사용. Ground/Bush는 유지하고 config 단계에서 `map.maxPlayers`명분의 고유 좌표를 검증함
+- player spawn = map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용하고, 부족하면 Wall/Water를 제외한 fallback candidate 사용. Ground/Bush는 유지하고 config 단계에서 `map.maxPlayers`명분의 고유 좌표와 max supported character radius 기준 원형 spawn 비겹침을 검증함
 
 Movement:
 
@@ -149,8 +149,9 @@ Movement:
 - 유한한 `MoveDir`의 크기가 `1` 이하면 그대로 보존하고, `1`보다 크면 unit vector로 clamp합니다.
 - X축과 Y축을 분리해 player의 Wall/Water/boundary collision을 검사합니다.
 - blocking tile rectangle에 닿거나 map 밖으로 나가면 해당 axis movement를 무시합니다.
+- 같은 tick의 live player 후보를 축별로 함께 계산하고 swept circle이 접촉하거나 통과하면 충돌한 두 player의 해당 축 이동을 모두 취소합니다. 입력/PlayerID 우선순위나 밀어내기는 없습니다.
+- 이미 겹친 live player는 해당 축의 separation을 엄격히 늘리고 중간에 더 깊어지지 않는 이동만 허용합니다. overlap 유지·심화 이동은 취소하고 dead player는 blocking 대상에서 제외합니다.
 - non-finite input은 무시합니다.
-- player-player collision은 아직 없습니다.
 
 양수 `ClientTick`은 live player와 유한한 방향, stale 여부를 통과하면 movement collision이나 attack effect 판정보다 먼저 ACK합니다. 그래서 Wall 충돌, zero attack 방향, charge 소진처럼 visible effect가 없는 유효 input도 ACK하고 unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다. Legacy `ClientTick: 0`은 gameplay에는 적용할 수 있지만 기존 ACK를 유지합니다.
 
@@ -209,7 +210,7 @@ Room response에는 서버 simulation이 쓰는 `map` 데이터와 마지막 tic
 
 Room/player ID는 16 random bytes를 Raw URL Base64로 바꾼 22자 payload와 prefix를 사용합니다. Player session token은 32 random bytes 기반 43자이며, 발급 응답의 `sessionToken`과 tokenized `webSocketPath`에 같은 raw secret으로 나타납니다. Room private state는 SHA-256 digest만 저장합니다. Public Room/Player/Ready/Snapshot/GameEnd DTO에는 raw token이나 digest가 없습니다.
 
-`cmd/server`는 시작할 때 embed된 `server-config/game-config.json`을 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. config를 읽지 못하거나 검증에 실패하면 `internal/simulation.StaticGameConfig()`의 5x5 map fallback을 사용합니다. Resolved `GameConfig`는 `ModeCatalog` 전체와 default로 고른 `SelectedMode`를 가집니다.
+`cmd/server`는 시작할 때 embed된 `server-config/game-config.json`의 JSON value를 정확히 하나만 `simulation.LoadGameConfig`로 로드해 `rooms.StoreConfig`로 주입합니다. trailing value/garbage, decode, version, catalog, map, spawn capacity 또는 max-radius spawn 비겹침 검증이 실패하면 application과 listener를 만들지 않고 process startup을 실패시킵니다. 명시된 nonzero invalid config는 rooms/simulation/assignment helper에서도 silent fallback하지 않습니다. `internal/simulation.StaticGameConfig()`의 5x5 map은 config를 생략한 명시적 test/dev helper에만 남습니다. Resolved `GameConfig`는 `ModeCatalog` 전체와 default로 고른 `SelectedMode`를 가집니다.
 
 Mode config 소유권은 다음 한 방향으로 흐릅니다.
 
