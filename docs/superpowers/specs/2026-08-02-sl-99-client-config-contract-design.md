@@ -30,23 +30,25 @@ Server의 `client-config/game-config.json`을 명시적인 v3 계약으로 제�
     },
     {
       "type": 1,
-      "normalAttackDistance": 1.5,
-      "skillAttackDistance": 3.0,
-      "skillAttackCoolDown": 10,
-      "maxBullets": 3
-    },
-    {
-      "type": 2,
       "normalAttackDistance": 6.0,
       "skillAttackDistance": 7.0,
       "skillAttackCoolDown": 10,
       "maxBullets": 4
+    },
+    {
+      "type": 2,
+      "normalAttackDistance": 1.5,
+      "skillAttackDistance": 3.0,
+      "skillAttackCoolDown": 10,
+      "maxBullets": 3
     }
   ],
   "normalAttackCoolDown": 1,
   "projectileRadius": 0.3
 }
 ```
+
+위 Colt/Lily 값은 Client PR #29 병합 계약에 맞춰 SL-113에서 후속 정정했어요. Schema version과 stable character ID는 바뀌지 않아요.
 
 v2의 `playerTypes`, `projectileTypes`, `characters[].characterType/id/name/role`은 Unity가 소비하지 않고 새 canonical schema와 중복되므로 v3에서 제거해요. Stable 캐릭터 ID는 `characters[].type`의 `0=Shelly`, `1=Colt`, `2=Lily`로 유지해요.
 
@@ -59,7 +61,7 @@ v2의 `playerTypes`, `projectileTypes`, `characters[].characterType/id/name/role
 | `characters[].type` | stable numeric ID | Client/Server shared identity이며 `0/1/2`를 재번호화하지 않아요. |
 | `normalAttackDistance`, `skillAttackDistance` | Unity world unit | Client 조준 UI와 로컬 bot 판단용 값이에요. Server hit/range 판정은 `server-config`를 계속 사용해요. |
 | `normalAttackCoolDown`, `skillAttackCoolDown` | 초 | Client cooldown UI와 로컬 bot 입력 시도용 값이에요. Server의 실제 공격 승인은 tick 기반 상태가 계속 소유해요. |
-| `maxBullets` | client charge 개수 | Client cooldown UI와 로컬 bot용 값이에요. Server의 authoritative charge는 `server-config`가 소유하므로 Lily의 client 값 `4`와 server 값 `2`를 억지로 동기화하지 않아요. |
+| `maxBullets` | client charge 개수 | Client cooldown UI와 로컬 bot용 값이에요. Server의 authoritative charge는 `server-config`가 소유하므로 Lily의 client 값 `3`과 server 값 `2`를 억지로 동기화하지 않아요. |
 
 따라서 이번 변경은 클라이언트 설정 계약을 맞추는 작업이지, Server의 Shelly/Colt/Lily 일반 공격 거리 `7.2/9/2.2 tile`이나 charge `3/3/2`를 변경하는 밸런스 작업이 아니에요. Server snapshot과 attack approval이 최종 gameplay truth예요.
 

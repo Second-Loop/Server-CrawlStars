@@ -15,14 +15,16 @@ Server가 client config v3의 canonical artifact와 strict Go validator를 제�
 
 - Version: `3`
 - Character type: `0=Shelly`, `1=Colt`, `2=Lily`
-- `normalAttackDistance`: `5 / 1.5 / 6`
-- `skillAttackDistance`: `1 / 3 / 7`
+- `normalAttackDistance`: `5 / 6 / 1.5`
+- `skillAttackDistance`: `1 / 7 / 3`
 - `skillAttackCoolDown`: `10 / 10 / 10`
-- `maxBullets`: `3 / 3 / 4`
+- `maxBullets`: `3 / 4 / 3`
 - `normalAttackCoolDown=1`
 - `tileSize=1.2`, `playerRadius=0.5`, `projectileRadius=0.3`
 
 Unknown JSON field는 additive 호환성을 위해 허용해요. Version, 필수 field, exact character type set, 양수 값은 엄격하게 검증해요.
+
+위 숫자 배열은 Shelly/Colt/Lily 순서이며, Colt/Lily 값은 Client PR #29 병합 계약에 맞춘 SL-113 후속 정정을 반영해요.
 
 `skillAttackCoolDown=10`과 `maxBullets`는 Client cooldown UI·로컬 bot 입력 보조값이에요. 실제 attack range, charge, hit/damage와 skill 승인은 `server-config`와 simulation/snapshot이 소유해요.
 
