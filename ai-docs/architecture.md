@@ -166,6 +166,22 @@ Tile collision은 circle-vs-tile 기하와 boundary 계산을 공유하고 entit
 | Water | 4 | 충돌 | 통과 |
 | Map boundary | - | 충돌 | 충돌 |
 
+### SL-104 Map collision candidate traversal
+
+Map collision의 결과 계약은 바꾸지 않고, tile 순회 범위만 query의 축 정렬 bounding box에서 유도합니다.
+
+- Player circle과 projectile circle은 먼저 기존 map boundary 검사를 수행한 뒤, circle AABB를 map의 row/column index로 변환합니다. 각 index 범위는 map 경계로 clamp하고, 부동소수점 접점과 `±epsilon` 경계를 놓치지 않도록 보수적으로 한 칸을 포함합니다.
+- Player blocking tile은 `Wall`/`Water`, projectile blocking tile은 `Wall`이라는 기존 정책을 그대로 사용합니다. radius `0`, default radius, 큰 radius, custom `tileSize`, mapless state의 fallback도 같은 boundary/tangent semantics를 유지합니다.
+- Lily의 centerline은 segment AABB를 같은 방식으로 row/column 후보로 줄입니다. map boundary의 first-contact `t`, wall AABB의 tangent 접촉, wall과 target이 같은 contact인 경우의 wall 우선 규칙은 바꾸지 않습니다.
+- `internal/simulation/map_collision_test.go`의 exhaustive oracle은 test-only 기준 구현입니다. deterministic property-style 차분 테스트가 player Wall/Water, projectile Wall, boundary/tangent, Lily wall segment 결과를 최적화 경로와 비교합니다. Production code는 oracle을 호출하지 않습니다.
+- 재현 가능한 비교 benchmark는 `BenchmarkCollidesWithMap{Optimized,Exhaustive}`, `BenchmarkFirstBlockingSegmentT{Optimized,Exhaustive}`, `BenchmarkStateStepWithLargeMap`이며 다음처럼 실행합니다.
+
+  ```sh
+  go test ./internal/simulation -run '^$' -bench 'Benchmark(CollidesWithMap|FirstBlockingSegmentT|StateStep)' -benchmem -count=3
+  ```
+
+  Exhaustive benchmark는 변경 전 순회 비용의 proxy이고, 큰 map의 `State.Step` benchmark는 실제 room tick 경로의 성능 경계를 확인합니다. Benchmark 수치는 CPU와 Go version에 따라 달라지므로 correctness 판정은 차분 테스트, 성능 판단은 같은 command의 optimized/exhaustive 쌍으로 합니다.
+
 Attack/projectile:
 
 - zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화합니다.
