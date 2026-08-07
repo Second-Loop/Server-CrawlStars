@@ -772,9 +772,6 @@ function assertEveryYAMLPlayerHasCharacterType(objects, name) {
     assert(fields.length === 1, `${name} player ${index} must contain exactly one CharacterType`);
     const characterType = Number(fields[0][1]);
     assert(Number.isSafeInteger(characterType) && characterType >= 0 && characterType <= 2, `${name} player ${index} has invalid CharacterType`);
-    if (/^\s+IsBot:\s+true$/m.test(object)) {
-      assert(characterType === 0, `${name} bot player ${index} must use Shelly`);
-    }
   }
 }
 
@@ -783,10 +780,24 @@ function assertEveryJSONPlayerHasCharacterType(players, name) {
   for (const [index, player] of players.entries()) {
     assert(Object.hasOwn(player, "CharacterType"), `${name} player ${index} is missing CharacterType`);
     assert(Number.isSafeInteger(player.CharacterType) && player.CharacterType >= 0 && player.CharacterType <= 2, `${name} player ${index} has invalid CharacterType`);
-    if (player.IsBot === true) {
-      assert(player.CharacterType === 0, `${name} bot player ${index} must use Shelly`);
-    }
   }
+}
+
+function assertYAMLExamplesIncludeNonShellyBot(objects, name) {
+  assert(
+    objects.some((object) => {
+      const characterType = object.match(/^\s+CharacterType:\s+(-?\d+)$/m);
+      return /^\s+IsBot:\s+true$/m.test(object) && characterType && Number(characterType[1]) !== 0;
+    }),
+    `${name} must include a non-Shelly bot CharacterType`,
+  );
+}
+
+function assertJSONExamplesIncludeNonShellyBot(players, name) {
+  assert(
+    players.some((player) => player.IsBot === true && player.CharacterType !== 0),
+    `${name} must include a non-Shelly bot CharacterType`,
+  );
 }
 
 function validateBotIdentitySchemas() {
@@ -868,12 +879,28 @@ function validateCharacterTypeContract() {
   const gameplayPlayers = extractYAMLSequenceObjects(extractYAMLNamedBlock(messages, "    SnapshotMessage:"), "Players");
   assertEveryYAMLPlayerHasCharacterType(readyPlayers, "AsyncAPI Ready examples");
   assertEveryYAMLPlayerHasCharacterType(gameplayPlayers, "AsyncAPI gameplay examples");
+  assertYAMLExamplesIncludeNonShellyBot([...readyPlayers, ...gameplayPlayers], "AsyncAPI examples");
   assert(asyncAPIText.includes("CharacterType: 2"), "AsyncAPI must show Lily stable ID 2");
 
   const docsReady = extractDocsJSONExample("Ready Event");
   const docsGameplay = extractDocsJSONExample("Gameplay");
   assertEveryJSONPlayerHasCharacterType(docsReady.Players, "docs UI Ready example");
   assertEveryJSONPlayerHasCharacterType(docsGameplay.Snapshot.Players, "docs UI Gameplay example");
+  assertJSONExamplesIncludeNonShellyBot(
+    [...docsReady.Players, ...docsGameplay.Snapshot.Players],
+    "docs UI examples",
+  );
+
+  for (const [text, name] of [
+    [asyncAPIText, "AsyncAPI"],
+    [apiDocsText, "api docs"],
+    [protocolText, "protocol"],
+    [docsBuildText, "docs UI"],
+  ]) {
+    for (const marker of ["server-owned", "균등", "독립", "중복", "match 동안 고정"]) {
+      assert(text.includes(marker), `${name} must document bot CharacterType ${marker}`);
+    }
+  }
 }
 
 function validateCharacterNormalAttackContract() {

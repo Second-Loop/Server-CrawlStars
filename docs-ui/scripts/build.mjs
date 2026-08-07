@@ -61,7 +61,7 @@ function renderAsyncAPI(specText) {
   return page({
     title: "AsyncAPI",
     eyebrow: "WebSocket API",
-    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, 선택한 CharacterType의 Ready/Snapshot 전파, ClientTick 처리 ACK, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
+    description: "E2 개발용 WebSocket 계약입니다. Player session 인증, server-owned bot CharacterType의 균등·독립 선택과 중복 허용, match 동안 고정된 Ready/Snapshot 전파, ClientTick 처리 ACK, heartbeat, gameplay snapshot 전달 흐름을 확인합니다.",
     rawPath: "/asyncapi.yaml",
     content: `
       <section class="panel">
@@ -83,7 +83,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>2. Ready</h3>
-            <p>선택 mode의 participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 human client가 <code>Type: Ready</code>를 받습니다. Payload에는 bot을 포함한 full participant의 <code>IsBot</code>, required PascalCase <code>CharacterType</code>, <code>SpawnPosition</code>이 들어갑니다. <code>duel_1v1</code> capacity는 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
+            <p>선택 mode의 participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 human client가 <code>Type: Ready</code>를 받습니다. Payload에는 bot을 포함한 full participant의 <code>IsBot</code>, required PascalCase <code>CharacterType</code>, <code>SpawnPosition</code>이 들어갑니다. Bot은 server-owned chooser로 Shelly/Colt/Lily를 각 bot마다 균등·독립 선택하고 중복을 허용하며, 선택값은 match 동안 고정됩니다. <code>duel_1v1</code> capacity는 2명, <code>solo</code>와 <code>team</code>은 6명입니다.</p>
           </article>
           <article>
             <h3>3. ready</h3>
@@ -153,7 +153,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Ready Event</h3>
-            <p>Server가 human session에 <code>Type: Ready</code>, <code>Map</code>, bot을 포함한 <code>Players[].IsBot</code>, required <code>Players[].CharacterType</code>, <code>Players[].SpawnPosition</code>을 보냅니다.</p>
+            <p>Server가 human session에 <code>Type: Ready</code>, Map, bot을 포함한 <code>Players[].IsBot</code>, required <code>Players[].CharacterType</code>, <code>Players[].SpawnPosition</code>을 보냅니다. Bot CharacterType은 server-owned chooser가 균등·독립적으로 고르고 중복을 허용하며 match 동안 고정합니다.</p>
           </article>
           <article>
             <h3>Ready ACK</h3>
@@ -198,7 +198,7 @@ function renderAsyncAPI(specText) {
       "Team": "blue",
       "Slot": 0,
       "IsBot": true,
-      "CharacterType": 0,
+      "CharacterType": 1,
       "SpawnPosition": { "x": 1.2, "y": -1.2 }
     }
   ]
