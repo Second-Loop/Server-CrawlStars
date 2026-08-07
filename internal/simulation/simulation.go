@@ -18,6 +18,8 @@ const (
 	DefaultProjectileRadius = 0.3
 )
 
+const projectileTombstoneRetentionTicks Tick = 30
+
 type PlayerID string
 
 type ProjectileID string
@@ -133,15 +135,16 @@ const (
 )
 
 type State struct {
-	tick              Tick
-	players           []PlayerData
-	projectiles       []ProjectileData
-	nextProjectileSeq uint64
-	gameMap           MapData
-	gameConfig        GameConfig
-	attackStates      map[PlayerID]attackState
-	burstStates       map[PlayerID]burstState
-	projectileRuntime map[ProjectileID]projectileRuntime
+	tick                  Tick
+	players               []PlayerData
+	projectiles           []ProjectileData
+	nextProjectileSeq     uint64
+	gameMap               MapData
+	gameConfig            GameConfig
+	attackStates          map[PlayerID]attackState
+	burstStates           map[PlayerID]burstState
+	projectileRuntime     map[ProjectileID]projectileRuntime
+	projectileDestroyedAt map[ProjectileID]Tick
 }
 
 func NewState(players []PlayerData) *State {
@@ -160,12 +163,13 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 		attackStates[player.ID] = attackState{charges: playerType.NormalAttack.MaxCharges}
 	}
 	return &State{
-		players:           normalizedPlayers,
-		gameMap:           gameConfig.Map,
-		gameConfig:        gameConfig,
-		attackStates:      attackStates,
-		burstStates:       make(map[PlayerID]burstState),
-		projectileRuntime: make(map[ProjectileID]projectileRuntime),
+		players:               normalizedPlayers,
+		gameMap:               gameConfig.Map,
+		gameConfig:            gameConfig,
+		attackStates:          attackStates,
+		burstStates:           make(map[PlayerID]burstState),
+		projectileRuntime:     make(map[ProjectileID]projectileRuntime),
+		projectileDestroyedAt: make(map[ProjectileID]Tick),
 	}
 }
 
@@ -191,13 +195,13 @@ func (s *State) EliminatePlayers(ids []PlayerID) {
 }
 
 func (s *State) Step(inputs []InputCommand) Snapshot {
+	snapshotTick := s.tick + 1
 	for i := range s.players {
 		s.players[i].PressedAttack = false
 		s.players[i].PressedSkill = false
 	}
 	s.rechargeAttackCharges()
 	s.moveProjectiles()
-	snapshotTick := s.tick + 1
 	emissions := s.collectDueBurstEmissions(snapshotTick)
 	meleeIntents := make([]meleeIntent, 0, len(inputs))
 	prepared := make([]preparedInput, 0, len(inputs))
@@ -225,12 +229,62 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.finishCompletedBursts()
 
 	s.tick++
+	s.pruneExpiredProjectileTombstones()
 
 	return Snapshot{
 		Tick:        s.tick,
 		Players:     clonePlayers(s.players),
 		Projectiles: cloneProjectiles(s.projectiles),
 	}
+}
+
+func (s *State) markProjectileDestroyed(projectile *ProjectileData) {
+	if projectile.IsDestroyed {
+		return
+	}
+	projectile.IsDestroyed = true
+	if s.projectileDestroyedAt == nil {
+		s.projectileDestroyedAt = make(map[ProjectileID]Tick)
+	}
+	s.projectileDestroyedAt[projectile.ID] = s.tick + 1
+}
+
+func (s *State) pruneExpiredProjectileTombstones() {
+	if len(s.projectiles) == 0 {
+		return
+	}
+
+	kept := 0
+	for _, projectile := range s.projectiles {
+		if !projectile.IsDestroyed {
+			s.projectiles[kept] = projectile
+			kept++
+			continue
+		}
+
+		destroyedAt, ok := s.projectileDestroyedAt[projectile.ID]
+		if !ok {
+			// State is normally created through NewStateWithConfig, but keeping
+			// pre-seeded destroyed test state visible for one full retention
+			// window preserves the public snapshot contract.
+			destroyedAt = s.tick
+			if s.projectileDestroyedAt == nil {
+				s.projectileDestroyedAt = make(map[ProjectileID]Tick)
+			}
+			s.projectileDestroyedAt[projectile.ID] = destroyedAt
+		}
+		if s.tick >= destroyedAt && s.tick-destroyedAt >= projectileTombstoneRetentionTicks {
+			delete(s.projectileDestroyedAt, projectile.ID)
+			continue
+		}
+
+		s.projectiles[kept] = projectile
+		kept++
+	}
+	for index := kept; index < len(s.projectiles); index++ {
+		s.projectiles[index] = ProjectileData{}
+	}
+	s.projectiles = s.projectiles[:kept]
 }
 
 func orderedInputsByPlayerID(inputs []InputCommand) []InputCommand {
@@ -557,13 +611,13 @@ func (s *State) moveProjectiles() {
 			runtime.moved += stepDistance
 		}
 		if s.collidesWithMap(next, projectile.Radius, tileBlocksProjectile) {
-			projectile.IsDestroyed = true
+			s.markProjectileDestroyed(projectile)
 		}
 		if !projectile.IsDestroyed {
 			s.applyProjectileHit(projectile)
 		}
 		if !projectile.IsDestroyed && reachedRange {
-			projectile.IsDestroyed = true
+			s.markProjectileDestroyed(projectile)
 		}
 		if projectile.IsDestroyed {
 			delete(s.projectileRuntime, projectile.ID)
@@ -587,7 +641,7 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 			s.players[i].HP = 0
 			s.players[i].IsDead = true
 		}
-		projectile.IsDestroyed = true
+		s.markProjectileDestroyed(projectile)
 		return
 	}
 }

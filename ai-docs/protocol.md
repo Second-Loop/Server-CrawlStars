@@ -46,7 +46,7 @@ internal/simulation.State.EliminatePlayers(ids []PlayerID)
 
 1. 모든 player의 transient `PressedAttack`, `PressedSkill`을 `false`로 초기화
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
-3. 기존 projectile을 남은 range까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 player hit, range 만료 순서로 처리
+3. 기존 projectile을 남은 range까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 player hit, range 만료 순서로 처리합니다. Destroyed snapshot tick을 `D`라고 하면 `D..D+29`까지 `IsDestroyed: true`를 유지하고 `D+30` 전에 canonical history에서 제거합니다.
 4. 현재 snapshot tick에 예정된 Colt burst projectile 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
 6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
@@ -72,6 +72,7 @@ internal/simulation.State.EliminatePlayers(ids []PlayerID)
 - `DefaultProjectileRadius = 0.3`
 - tile 값은 `0=Ground`, `1=Wall`, `2=SpawnPoint`, `3=Bush`, `4=Water`
 - Player는 Wall/Water/boundary, projectile은 Wall/boundary에 충돌
+- Destroyed projectile tombstone은 기존 `IsDestroyed` field로 30 gameplay tick만 전달됩니다. 새 event, ACK, wire field는 추가하지 않으며, latest-only coalescing으로 tombstone snapshot을 놓친 Client의 absent-ID 정리는 shared Client 계약으로 남습니다.
 - `StaticMapFixture().MaxPlayers = 6`
 - Player spawn은 map의 `TileSpawnPoint(2)`를 join 순서대로 먼저 사용합니다. SpawnPoint가 부족하면 map에서 유도한 fallback candidate를 사용하되 player blocking policy와 같은 기준으로 Wall과 Water를 제외합니다. Ground와 Bush는 후보가 될 수 있습니다. Config 검증은 명시적 SpawnPoint와 passable fallback의 고유 좌표가 `map.maxPlayers` 이상인지, canonical assignment의 원형이 max supported character radius에서도 실제로 겹치지 않는지 확인합니다.
 - server mode catalog는 `duel_1v1`, `solo`, `team`이고 body가 선택을 생략하면 default `duel_1v1`입니다.

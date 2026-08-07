@@ -497,7 +497,7 @@ Snapshot의 `Players[].PressedAttack`은 input echo가 아니라 방향, 생존 
 
 Snapshot의 `Players[].PressedSkill`은 skill이 승인된 tick에만 `true`인 transient 결과이고, `Players[].SkillReadyTick`은 다음 readiness를 결정하는 persistent canonical state입니다. 초기값은 `false/0`이며 control snapshot의 `Players: null`, `Projectiles: null`은 그대로 유지합니다.
 
-Snapshot `Projectiles[]`는 기존 `Damage`와 `Type` wire field를 그대로 씁니다. `Damage`는 owner 캐릭터의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 복사합니다. Projectile은 configured range endpoint까지 clamp한 위치에서 Wall/boundary 충돌, player hit, range 만료 순서로 판정하므로 endpoint tangent hit도 포함됩니다. Lily 피해는 `Projectiles`가 아니라 같은 gameplay snapshot의 `Players[].HP/IsDead`로 나타납니다.
+Snapshot `Projectiles[]`는 기존 `Damage`와 `Type` wire field를 그대로 씁니다. `Damage`는 owner 캐릭터의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 복사합니다. Projectile은 configured range endpoint까지 clamp한 위치에서 Wall/boundary 충돌, player hit, range 만료 순서로 판정하므로 endpoint tangent hit도 포함됩니다. Destroyed projectile은 destroyed snapshot tick `D`부터 `D+29`까지 정확히 30개 gameplay snapshot에 `IsDestroyed: true`로 남고 `D+30` 전에 제거됩니다. 느린 writer의 latest-only coalescing으로 개별 tombstone snapshot은 누락될 수 있어 Client absent-ID reconciliation이 필요합니다. 새 wire field/event/ACK는 없습니다. Lily 피해는 `Projectiles`가 아니라 같은 gameplay snapshot의 `Players[].HP/IsDead`로 나타납니다.
 
 Snapshot의 `Players[].IsBot`은 Ready의 participant identity를 그대로 유지합니다. Bot도 human과 같은 `PlayerData`로 simulation에 들어가며 별도 bot snapshot schema를 만들지 않습니다.
 

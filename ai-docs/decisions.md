@@ -204,7 +204,7 @@
 
 맥락: SL-53은 SL-40에서 snapshot에만 추가되던 `ProjectileData` skeleton을 실제 tick 흐름에서 이동시키고, wall 또는 map boundary에 닿으면 destroyed state로 표시해야 합니다. 이 단계는 player hit, HP, death, respawn, score를 아직 포함하지 않습니다.
 
-결정: `internal/simulation.State.Step`은 input으로 새 projectile을 만들기 전에 기존 projectile을 먼저 이동합니다. Projectile 이동은 `Dir * Speed * TickDuration` 기준입니다. 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다. 이동한 projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`로 표시합니다. Destroyed projectile은 snapshot에 남지만 이후 tick에서 더 이동하지 않습니다.
+결정: `internal/simulation.State.Step`은 input으로 새 projectile을 만들기 전에 기존 projectile을 먼저 이동합니다. Projectile 이동은 `Dir * Speed * TickDuration` 기준입니다. 새 projectile은 생성된 tick의 snapshot에는 생성 위치로 보이고, 다음 tick부터 이동합니다. 이동한 projectile circle이 wall tile 또는 map boundary에 닿거나 밖으로 나가면 `IsDestroyed = true`로 표시합니다. Destroyed projectile은 snapshot에서 더 이동하지 않으며, history retention은 후속 ADR-0044의 `D..D+29` bounded tombstone 정책을 따릅니다.
 
 결과:
 
@@ -829,3 +829,24 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Client/Linear/server의 40x40 map contract가 source evidence와 semantic hash로 추적됩니다.
 - REST/Ready가 full grid와 `index/maxPlayers/spawn` metadata를 동일하게 전달합니다.
 - map artifact synchronization은 collision algorithm, gameplay loop, protocol shape, fixture ownership을 확장하지 않습니다.
+
+## ADR-0044: SL-107 Destroyed Projectile History는 30 Tick Bounded Tombstone으로 유지한다
+
+상태: 승인됨
+
+맥락: 기존 simulation은 projectile이 Wall, boundary, player hit 또는 configured range에서 `IsDestroyed: true`가 된 뒤에도 canonical `State.projectiles`와 모든 gameplay snapshot에 영구 보관했습니다. Server의 non-terminal snapshot은 느린 writer에서 capacity-1 latest-only로 coalescing하므로, Client가 한 번의 destroyed snapshot을 놓칠 수 있습니다. Server가 history를 무한히 쌓으면 반복 발사 시 canonical state와 payload가 계속 커지고, 반대로 새 wire event나 ACK를 추가하면 기존 Client 계약이 바뀝니다.
+
+결정:
+
+- projectile이 gameplay snapshot tick `D`에서 destroyed가 되면 `D`부터 `D+29`까지 정확히 30개 snapshot에 기존 `IsDestroyed: true` tombstone으로 남깁니다.
+- `D+30` snapshot을 만들기 전에 tombstone을 canonical state와 snapshot에서 제거합니다. 살아 있는 projectile은 이동·hit·생성 순서를 바꾸지 않고 누락하거나 중복하지 않습니다.
+- destroyed 시점은 Server 내부의 tick metadata로만 추적합니다. `ProjectileData` field, AsyncAPI message/event, ACK, Lily hitscan 계약은 추가·변경하지 않습니다.
+- slow writer는 기존 latest-only slot을 계속 사용합니다. 따라서 특정 tombstone snapshot이 coalescing으로 전달되지 않을 수 있으며, Client는 authoritative snapshot에 absent한 projectile ID를 정리하는 shared reconciliation을 별도 계약으로 가져야 합니다. 이번 Server 범위에서는 Client repo를 수정하지 않습니다.
+- REST room response의 `latestSnapshot`은 기존 summary count만 제공하고 projectile history를 추가하지 않습니다. Full `Projectiles[]`는 기존 WebSocket gameplay snapshot 계약을 그대로 사용합니다.
+
+검증:
+
+- simulation regression은 `D..D+29` 보존과 `D+30` canonical/snapshot 제거를 직접 확인합니다.
+- 300 tick 반복 발사에서 canonical/snapshot projectile 수와 ID uniqueness를 확인합니다.
+- 실제 room snapshot payload를 느린 writer의 latest-only slot에 공급해 최종 `D+30` snapshot이 expired tombstone을 보관하지 않는지 확인합니다.
+- REST/OpenAPI와 AsyncAPI schema shape는 변경하지 않고 human docs에 retention boundary와 absent-ID 경계를 기록합니다.
