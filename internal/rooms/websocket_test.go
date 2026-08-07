@@ -3521,7 +3521,7 @@ func TestTickRoomMergesHumanAndBotIntoExactlyOneStateStep(t *testing.T) {
 
 func TestBotAppearsAndActsInRealSharedGameplaySnapshot(t *testing.T) {
 	fakeClock := newFakeClock()
-	store := NewStoreWithClock(5, fakeClock)
+	store := newStore(5, fakeClock, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 	t.Cleanup(store.Close)
 	handler := debugHandler(t, store)
 	server := httptest.NewServer(handler)
@@ -3625,7 +3625,7 @@ func TestBotModesCompleteLifecycleAndDeliverGameEndOnlyToHumans(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fakeClock := newFakeClock()
-			store := NewStoreWithClock(5, fakeClock)
+			store := newStore(5, fakeClock, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 			t.Cleanup(store.Close)
 			handler := debugHandler(t, store)
 			server := httptest.NewServer(handler)

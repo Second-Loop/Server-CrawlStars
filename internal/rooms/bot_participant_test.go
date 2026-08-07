@@ -11,7 +11,7 @@ import (
 )
 
 func TestAddBotsCreatesOpaqueServerOwnedParticipantsAtomically(t *testing.T) {
-	store := NewStore(5)
+	store := NewStoreWithConfig(5, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 	t.Cleanup(store.Close)
 
 	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
@@ -77,7 +77,7 @@ func TestAddBotsUsesSelectedModeAssignments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := NewStore(5)
+			store := NewStoreWithConfig(5, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 			t.Cleanup(store.Close)
 			handler := debugHandler(t, store)
 

@@ -134,7 +134,7 @@ Player identity의 bot 표시는 transport에 따라 casing이 다릅니다.
 
 두 casing 모두 required boolean이며 human의 `false`도 생략하지 않습니다.
 
-CharacterType은 REST `Player.characterType`의 required lower camel과 Ready/Snapshot `CharacterType`의 required PascalCase로 같은 canonical identity를 전달합니다. Bot/debug participant는 Shelly `0`입니다.
+CharacterType은 REST `Player.characterType`의 required lower camel과 Ready/Snapshot `CharacterType`의 required PascalCase로 같은 canonical identity를 전달합니다. Bot은 생성 시 server가 기존 `0=Shelly`, `1=Colt`, `2=Lily`에서 균등·독립적으로 선택한 값을 사용하고, 같은 room 안의 중복을 허용합니다. 선택값은 match 동안 고정되어 REST room, Ready `Players[]`, gameplay Snapshot `Players[]`에 그대로 전달됩니다. Debug human participant의 기존 기본값과 human join 선택 정책은 바꾸지 않습니다.
 
 Bot은 room participant지만 player session이 없으므로 `sessionToken`이나 `webSocketPath`를 발급받지 않습니다. Bot을 만드는 public REST endpoint도 없습니다. `Room.players[]`에는 bot이 포함될 수 있지만 credential-bearing wrapper의 `player`는 `HumanPlayer`만 반환합니다.
 
@@ -174,6 +174,7 @@ Client IP는 immediate peer를 기본값으로 씁니다. Peer가 `TRUSTED_PROXY
 - 첫 human matchmaking join의 `0 -> 1` 전이에서만 room-owned 10초 deadline을 시작합니다. 후속 join과 partial manual bot 추가는 reset하지 않습니다.
 - deadline을 먼저 획득하면 selected mode의 남은 slot을 bot으로 원자적으로 채웁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 active-room cap이면 `room_cap_reached` 409를 반환합니다.
 - Bot ID 발급이 하나라도 실패하면 모든 예약 ID를 rollback하고 partial participant를 남기지 않으며 `bot_fill_failed`를 한 번 기록하고 retry하지 않습니다.
+- Bot character chooser가 실패해도 같은 all-or-nothing 경계를 적용합니다. Production chooser는 ID/session random stream을 사용하지 않고, test/dev는 deterministic chooser를 주입할 수 있습니다.
 - Ready ACK timeout과 participant replacement는 없습니다. Started match의 비의도적 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 사용하고, grace 중 simulation은 계속됩니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다.
 - 1명으로 디버그할 때는 인증된 debug API `POST /rooms/{roomID}/start`를 호출합니다. 이 operation은 기본 비활성화되어 있으며 활성화 후 Bearer credential이 필요합니다.
 
@@ -633,7 +634,7 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client
 
 `POST /matchmaking/join`의 optional lower-camel `characterType`은 stable ID `0=Shelly`, `1=Colt`, `2=Lily`를 받습니다. 새 client는 값을 명시하고, SL-82에서는 legacy field 생략만 Shelly `0`으로 보정하며 structured warning을 한 번 기록합니다. explicit `null`, non-integer, string/bool/object/array, 지원하지 않는 정수는 400 `invalid_character_type`이고 SL-98에서 request field를 required로 전환합니다.
 
-REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot/debug participant는 Shelly `0`입니다. Client config v3는 같은 stable numeric type과 client 표시·입력 보조값을 제공하고, server config v4의 현재 authoritative stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge, skill cooldown `360/390/330`입니다.
+REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot participant는 생성 시 선택된 canonical 값을 match 동안 유지하며, `0=Shelly`, `1=Colt`, `2=Lily` 중 균등·독립적으로 선택되고 중복될 수 있습니다. Debug human participant의 기존 기본값은 Shelly `0`입니다. Client config v3는 같은 stable numeric type과 client 표시·입력 보조값을 제공하고, server config v4의 현재 authoritative stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge, skill cooldown `360/390/330`입니다.
 
 ## 제약
 

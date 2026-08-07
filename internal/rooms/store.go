@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"sync"
 	"time"
 
@@ -29,42 +30,44 @@ const matchedAttachDeadline = 30 * time.Second
 // that closes the gameplay/countdown launch gate before shutdown waits on
 // workerWG; no core lock is acquired while workerMu is held.
 type Store struct {
-	mutationMu        sync.RWMutex
-	matchmakingMu     sync.Mutex
-	mu                sync.RWMutex
-	shutdownOnce      sync.Once
-	shutdownErrMu     sync.Mutex
-	workerMu          sync.Mutex
-	workerWG          sync.WaitGroup
-	maxActiveRooms    int
-	rooms             map[string]*room
-	activeSessions    map[*clientSession]chan struct{}
-	playerIDs         map[string]struct{}
-	random            io.Reader
-	clock             clock
-	wallNow           func() time.Time
-	gameMap           simulation.MapData
-	gameConfig        simulation.GameConfig
-	logger            *slog.Logger
-	observation       *observationState
-	heartbeatInterval time.Duration
-	heartbeatTimeout  time.Duration
-	janitorStop       chan struct{}
-	janitorDone       chan struct{}
-	shutdownDone      chan struct{}
-	shutdownErr       error
-	shutdownPanic     any
-	shutdownPanicked  bool
-	workersClosing    bool
-	closed            bool
+	mutationMu         sync.RWMutex
+	matchmakingMu      sync.Mutex
+	mu                 sync.RWMutex
+	shutdownOnce       sync.Once
+	shutdownErrMu      sync.Mutex
+	workerMu           sync.Mutex
+	workerWG           sync.WaitGroup
+	maxActiveRooms     int
+	rooms              map[string]*room
+	activeSessions     map[*clientSession]chan struct{}
+	playerIDs          map[string]struct{}
+	random             io.Reader
+	chooseBotCharacter func() (simulation.CharacterType, error)
+	clock              clock
+	wallNow            func() time.Time
+	gameMap            simulation.MapData
+	gameConfig         simulation.GameConfig
+	logger             *slog.Logger
+	observation        *observationState
+	heartbeatInterval  time.Duration
+	heartbeatTimeout   time.Duration
+	janitorStop        chan struct{}
+	janitorDone        chan struct{}
+	shutdownDone       chan struct{}
+	shutdownErr        error
+	shutdownPanic      any
+	shutdownPanicked   bool
+	workersClosing     bool
+	closed             bool
 }
 
 type StoreConfig struct {
-	Map               simulation.MapData
-	GameConfig        simulation.GameConfig
-	Random            io.Reader
-	HeartbeatInterval time.Duration
-	HeartbeatTimeout  time.Duration
+	Map                 simulation.MapData
+	GameConfig          simulation.GameConfig
+	Random              io.Reader
+	BotCharacterChooser func() (simulation.CharacterType, error)
+	HeartbeatInterval   time.Duration
+	HeartbeatTimeout    time.Duration
 	// Logger and Observer handlers run synchronously as bounded pure sinks after
 	// core locks are released. They must not call Store methods. Lifecycle
 	// mutators wait for their log and Observer publication before returning.
@@ -173,22 +176,26 @@ func newStore(maxActiveRooms int, clock clock, config StoreConfig) *Store {
 	}
 
 	store := &Store{
-		maxActiveRooms:    maxActiveRooms,
-		rooms:             make(map[string]*room),
-		activeSessions:    make(map[*clientSession]chan struct{}),
-		playerIDs:         make(map[string]struct{}),
-		random:            random,
-		clock:             clock,
-		wallNow:           time.Now,
-		gameMap:           resolvedConfig.Map,
-		gameConfig:        resolvedConfig,
-		logger:            normalizeLogger(config.Logger),
-		observation:       newObservationState(config.Observer),
-		heartbeatInterval: heartbeatInterval,
-		heartbeatTimeout:  heartbeatTimeout,
-		janitorStop:       make(chan struct{}),
-		janitorDone:       make(chan struct{}),
-		shutdownDone:      make(chan struct{}),
+		maxActiveRooms:     maxActiveRooms,
+		rooms:              make(map[string]*room),
+		activeSessions:     make(map[*clientSession]chan struct{}),
+		playerIDs:          make(map[string]struct{}),
+		random:             random,
+		chooseBotCharacter: config.BotCharacterChooser,
+		clock:              clock,
+		wallNow:            time.Now,
+		gameMap:            resolvedConfig.Map,
+		gameConfig:         resolvedConfig,
+		logger:             normalizeLogger(config.Logger),
+		observation:        newObservationState(config.Observer),
+		heartbeatInterval:  heartbeatInterval,
+		heartbeatTimeout:   heartbeatTimeout,
+		janitorStop:        make(chan struct{}),
+		janitorDone:        make(chan struct{}),
+		shutdownDone:       make(chan struct{}),
+	}
+	if store.chooseBotCharacter == nil {
+		store.chooseBotCharacter = randomBotCharacter
 	}
 	store.startJanitor()
 	return store
@@ -559,7 +566,11 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	if err := botAppendErrorLocked(room, count); err != nil {
 		return nil, err
 	}
-	bots := s.appendReservedBotsLocked(room, reservedBotIDs)
+	characters, err := s.chooseBotCharacters(count)
+	if err != nil {
+		return nil, ErrInternal
+	}
+	bots := s.appendReservedBotsLocked(room, reservedBotIDs, characters)
 	reservedBotIDs = nil
 	resources.merge(s.markRoomMatchedIfFullLocked(room))
 	matched := room.matchStatus == MatchStatusMatched
@@ -586,12 +597,50 @@ func (s *Store) addBots(roomID string, count int) ([]playerResponse, error) {
 	return bots, nil
 }
 
-func (s *Store) appendReservedBotsLocked(room *room, ids []string) []playerResponse {
+func (s *Store) appendReservedBotsLocked(room *room, ids []string, characters []simulation.CharacterType) []playerResponse {
 	bots := make([]playerResponse, 0, len(ids))
-	for _, id := range ids {
-		bots = append(bots, s.appendParticipantLocked(room, id, true, simulation.CharacterTypeShelly))
+	for index, id := range ids {
+		bots = append(bots, s.appendParticipantLocked(room, id, true, characters[index]))
 	}
 	return bots
+}
+
+var botCharacterTypes = [...]simulation.CharacterType{
+	simulation.CharacterTypeShelly,
+	simulation.CharacterTypeColt,
+	simulation.CharacterTypeLily,
+}
+
+func randomBotCharacter() (simulation.CharacterType, error) {
+	choice, err := rand.Int(rand.Reader, big.NewInt(int64(len(botCharacterTypes))))
+	if err != nil {
+		return 0, err
+	}
+	return botCharacterTypes[choice.Int64()], nil
+}
+
+func isBotCharacterType(characterType simulation.CharacterType) bool {
+	switch characterType {
+	case simulation.CharacterTypeShelly, simulation.CharacterTypeColt, simulation.CharacterTypeLily:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) chooseBotCharacters(count int) ([]simulation.CharacterType, error) {
+	characters := make([]simulation.CharacterType, 0, count)
+	for range count {
+		characterType, err := s.chooseBotCharacter()
+		if err != nil {
+			return nil, err
+		}
+		if !isBotCharacterType(characterType) {
+			return nil, fmt.Errorf("invalid bot character type %d", characterType)
+		}
+		characters = append(characters, characterType)
+	}
+	return characters, nil
 }
 
 func botAppendErrorLocked(room *room, count int) error {
@@ -858,7 +907,12 @@ func (s *Store) fillMatchmakingBots(room *room, expectedTicker ticker) {
 	if fillErr != nil || !ownedAfterReservation {
 		return
 	}
-	s.appendReservedBotsLocked(room, reservedBotIDs)
+	characters, err := s.chooseBotCharacters(len(reservedBotIDs))
+	if err != nil {
+		fillErr = ErrInternal
+		return
+	}
+	s.appendReservedBotsLocked(room, reservedBotIDs, characters)
 	reservedBotIDs = nil
 	resources.merge(s.markRoomMatchedIfFullLocked(room))
 	matched := room.matchStatus == MatchStatusMatched

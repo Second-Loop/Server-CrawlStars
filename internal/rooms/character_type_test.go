@@ -108,9 +108,9 @@ func TestCharacterTypeProjectsToReadyAndSimulationPlayers(t *testing.T) {
 	assertCharacterTypeJSONKey(t, mustMarshalTestJSON(t, players[1]), "CharacterType", "characterType", simulation.CharacterTypeShelly)
 }
 
-func TestBotAndDebugParticipantsDefaultToShelly(t *testing.T) {
+func TestInjectedShellyBotAndDebugParticipantsRemainShelly(t *testing.T) {
 	t.Run("manual bot and debug player", func(t *testing.T) {
-		store := NewStore(5)
+		store := NewStoreWithConfig(5, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 		handler := debugHandler(t, store)
 		room := createRoom(t, handler)
 		debugPlayer := createPlayer(t, handler, room.ID)
@@ -125,7 +125,7 @@ func TestBotAndDebugParticipantsDefaultToShelly(t *testing.T) {
 
 	t.Run("automatic bot fill", func(t *testing.T) {
 		clock := newFakeClock()
-		store := NewStoreWithClock(5, clock)
+		store := newStore(5, clock, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 		t.Cleanup(store.Close)
 		joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
 		if err != nil {
