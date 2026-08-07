@@ -30,7 +30,7 @@
 Bot character contract:
 
 - 수동 bot 추가와 첫 human join 뒤 10초 deadline fill은 각 bot마다 Shelly/Colt/Lily를 균등하게 독립 추출합니다. 같은 room 안에서 같은 CharacterType이 반복될 수 있습니다.
-- 선택한 `CharacterType`은 participant 생성 시 고정하고, 같은 값이 REST room, Ready `Players[]`, gameplay Snapshot `Players[]`에 전달됩니다. Bot controller나 simulation이 match 중 캐릭터를 다시 선택하지 않습니다.
+- 선택한 `CharacterType`은 participant 생성 시 정하고 match 동안 고정하며, 같은 값이 REST room, Ready `Players[]`, gameplay Snapshot `Players[]`에 전달됩니다. Bot controller나 simulation이 match 중 캐릭터를 다시 선택하지 않습니다.
 - Production chooser는 player ID/session token 발급에 쓰는 Store identity random stream과 분리합니다. 테스트는 deterministic chooser를 주입하며, chooser 또는 ID 발급이 실패하면 partial bot 없이 예약 ID를 rollback합니다.
 - Human character 선택, 기존 세 캐릭터 catalog, basic bot AI는 이 계약으로 바꾸지 않습니다.
 
@@ -539,4 +539,4 @@ DELETE /rooms/{roomID}
 
 Join request의 optional lower-camel `characterType`은 `0=Shelly`, `1=Colt`, `2=Lily` stable numeric ID입니다. room admission은 이를 canonical participant에 저장하고, legacy missing만 Shelly `0`과 structured warning으로 처리합니다. explicit null, 잘못된 JSON type, 지원하지 않는 integer는 `invalid_character_type` 400이며 SL-98이 required 전환 경계입니다.
 
-전파는 `join -> canonical room participant -> Ready -> PlayerData` 순서입니다. REST participant는 `characterType`, Ready와 Snapshot `PlayerData`는 PascalCase `CharacterType`을 required로 사용합니다. Bot/debug participant는 Shelly `0`입니다. `starting`과 `started` control은 기존처럼 `Players: null`이며 gameplay snapshot부터 participant identity와 stats가 나타납니다.
+전파는 `join 또는 server-owned bot 생성 -> canonical room participant -> Ready -> PlayerData` 순서입니다. REST participant는 `characterType`, Ready와 Snapshot `PlayerData`는 PascalCase `CharacterType`을 required로 사용합니다. Bot은 Shelly/Colt/Lily 중 균등·독립 선택된 값을 중복 허용으로 match 동안 유지하고, debug human participant의 기본값만 Shelly `0`입니다. `starting`과 `started` control은 기존처럼 `Players: null`이며 gameplay snapshot부터 participant identity와 stats가 나타납니다.

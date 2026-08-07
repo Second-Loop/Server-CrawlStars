@@ -11,7 +11,7 @@ info:
     Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며, `now >= deadline`이면 attach를 거부하고 pre-start room 전체와 credential을 폐기합니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready ACK timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
     Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다.
     `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
-    REST join에서 선택된 CharacterType은 Ready와 gameplay Snapshot까지 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
+    Human의 REST 선택값과 bot의 server-owned CharacterType은 Ready와 gameplay Snapshot까지 같은 canonical 값으로 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Bot은 Shelly/Colt/Lily를 각 bot마다 균등·독립적으로 선택하고 같은 room의 중복을 허용하며 participant 생성 뒤 match 동안 고정합니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
     일반 공격과 skill cooldown은 server config v4가 소유합니다. 캐릭터별 cooldown tick은 Shelly/Colt/Lily 순서로 360/390/330입니다. Shelly는 normal attack activation tick에 5발을 동시에 만들고, Colt는 activation tick A부터 6 tick 간격으로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다.
     Optional `PressedSkill`은 command별 독립적인 활성화 시도입니다. 누락하면 false이고, present null이나 boolean이 아닌 값은 `invalid_input`입니다. Skill은 같은 command의 `AttackDir`을 재사용하지만 방향만으로 시도하지 않으며 cooldown 동안의 시도는 queue하지 않습니다. Skill-ready면 attack보다 우선하고 charge를 보존하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 진행합니다. 실제 skill effect와 bot skill use는 SL-85 범위입니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
@@ -180,7 +180,7 @@ components:
         $ref: "#/components/schemas/ReadyEventMessage"
       examples:
         - name: teamReadyEvent
-          summary: team mode의 human 2명과 bot 4명이 명시적 test/dev용 5x5 map에 참여하는 예시입니다. Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
+          summary: team mode의 human 2명과 server-owned bot 4명이 참여하는 예시입니다. Bot CharacterType은 균등·독립 선택이며 Colt/Lily/Shelly 중복을 허용하고 match 동안 고정됩니다. 명시적 test/dev용 5x5 map에서 Fallback spawn은 Wall과 Water를 제외하고 Ground와 Bush를 허용합니다.
           payload:
             Type: Ready
             Map:
@@ -212,13 +212,13 @@ components:
                 Team: red
                 Slot: 1
                 IsBot: true
-                CharacterType: 0
+                CharacterType: 1
                 SpawnPosition: {x: 1.2, y: 1.2}
               - Id: player_q1W2e3R4t5Y6u7I8o9P0aS
                 Team: blue
                 Slot: 1
                 IsBot: true
-                CharacterType: 0
+                CharacterType: 2
                 SpawnPosition: {x: -1.2, y: -1.2}
               - Id: player_LmNoPqRsTuVwXyZaBcDeFg
                 Team: red
@@ -269,7 +269,7 @@ components:
               Players: null
               Projectiles: null
         - name: gameplay
-          summary: started control 다음 첫 Tick 1부터 30Hz로 broadcast되는 gameplay snapshot입니다. Human Shelly는 skill 승인 pulse와 absolute ready tick 361을 보이고, Shelly bot은 bot skill use가 SL-85 범위이므로 초기 false/0을 유지합니다. 모든 player에 processed input ACK와 REST에서 선택된 CharacterType이 있습니다.
+          summary: started control 다음 첫 Tick 1부터 30Hz로 broadcast되는 gameplay snapshot입니다. Human Shelly는 skill 승인 pulse와 absolute ready tick 361을 보이고, server-owned bot은 bot skill use가 SL-85 범위이므로 초기 false/0을 유지합니다. 모든 player에 processed input ACK와 match 동안 고정된 canonical CharacterType이 있습니다.
           payload:
             Type: snapshot
             Snapshot:
@@ -625,7 +625,7 @@ components:
           description: Server-owned bot participant이면 true입니다. Bot은 session, WebSocket, ready ACK가 없습니다.
         CharacterType:
           type: integer
-          description: REST에서 확정된 stable character ID입니다. 0=Shelly, 1=Colt, 2=Lily입니다.
+          description: Human은 REST에서 선택하고 bot은 server-owned chooser가 균등·독립적으로 고른 stable character ID입니다. 0=Shelly, 1=Colt, 2=Lily이며 중복을 허용하고 match 동안 고정합니다.
           enum: [0, 1, 2]
         SpawnPosition:
           $ref: "#/components/schemas/Vector2"
@@ -646,7 +646,7 @@ components:
           description: Server-owned bot participant이면 true입니다. Human과 bot 모두 같은 gameplay snapshot에 포함됩니다.
         CharacterType:
           type: integer
-          description: Ready와 동일한 stable character ID입니다. 0=Shelly, 1=Colt, 2=Lily입니다.
+          description: Ready와 동일한 canonical stable character ID입니다. Bot은 server-owned chooser가 균등·독립적으로 선택하고 중복을 허용하며 match 동안 같은 값을 유지합니다. 0=Shelly, 1=Colt, 2=Lily입니다.
           enum: [0, 1, 2]
         Pos:
           $ref: "#/components/schemas/Vector2"
