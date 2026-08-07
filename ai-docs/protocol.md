@@ -15,6 +15,7 @@
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
 - session/credential 없는 server-owned bot participant와 결정적 basic controller
+- bot 생성 때 기존 `0=Shelly`, `1=Colt`, `2=Lily` 중 하나를 독립적으로 뽑는 server-owned character chooser
 - 첫 human join 기준 room-owned 10초 bot fill과 first-lock-wins late join
 - unmatched 연결 종료 시 deadline/credential 유지, matched/loading/starting match cancel
 - opaque room/player ID와 player session WebSocket 인증
@@ -25,6 +26,13 @@
 - Store당 30초 cleanup janitor와 cap-pressure 단일 cleanup/retry
 - client build용 shared game config artifact
 - started match의 비의도적 WebSocket disconnect에 대한 room-owned 10초 reconnect grace와 같은 tick batch expiry
+
+Bot character contract:
+
+- 수동 bot 추가와 첫 human join 뒤 10초 deadline fill은 각 bot마다 Shelly/Colt/Lily를 균등하게 독립 추출합니다. 같은 room 안에서 같은 CharacterType이 반복될 수 있습니다.
+- 선택한 `CharacterType`은 participant 생성 시 고정하고, 같은 값이 REST room, Ready `Players[]`, gameplay Snapshot `Players[]`에 전달됩니다. Bot controller나 simulation이 match 중 캐릭터를 다시 선택하지 않습니다.
+- Production chooser는 player ID/session token 발급에 쓰는 Store identity random stream과 분리합니다. 테스트는 deterministic chooser를 주입하며, chooser 또는 ID 발급이 실패하면 partial bot 없이 예약 ID를 rollback합니다.
+- Human character 선택, 기존 세 캐릭터 catalog, basic bot AI는 이 계약으로 바꾸지 않습니다.
 
 아직 구현하지 않은 것:
 

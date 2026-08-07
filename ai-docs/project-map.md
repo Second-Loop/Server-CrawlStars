@@ -30,6 +30,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 - Solo/Team 6 WebSocket, 6 human Ready ACK, 1회 countdown/start regression
 - SL-90 internal server-owned bot participant와 credential/ACK 없는 lifecycle
 - SL-91 첫 human join 기준 10초 room-owned bot fill, timer/human join first-lock-wins, failure rollback/no-retry
+- SL-110 bot마다 `0=Shelly`, `1=Colt`, `2=Lily`를 균등·독립 추출하고 room 내 중복을 허용하는 server-owned chooser
 - Full participant capacity 뒤 human-only attach/ACK, bot을 포함한 Ready/Snapshot
 - 직전 snapshot 기반 결정적 basic controller와 human/bot input의 shared one-Step 처리
 - optional `ClientTick`, positive stale/duplicate silent drop, legacy zero last-write-wins
@@ -129,7 +130,7 @@ Join quota는 store보다 먼저 실행하므로 429가 room cap 409와 `interna
 
 Participant capacity를 채워도 REST `room.status`는 `waiting`입니다. 그 뒤 room 내 human participant의 WebSocket session이 strict 30초 안에 모두 연결되면 human connection에만 같은 `Ready` event를 보내며, payload에는 bot을 포함한 full participant list를 넣습니다. Deadline 이상인 reserve/attach는 거부하고 pre-start room 전체와 credential을 폐기합니다. 새 join은 새 room/player/session identity를 받으며 replay key는 없습니다. Human participant의 ready ACK가 모두 모이면 `starting/countdown: 5`를 한 번 broadcast합니다. Duplicate ACK는 player identity별 quorum을 늘리지 않고 bot은 session이나 ACK가 없습니다. Human participant가 0명이면 attach deadline과 quorum은 성립하지 않습니다. 5초 뒤 `started`를 한 번 보내고 room-local gameplay ticker 하나를 시작합니다.
 
-SL-91 timer는 10초 deadline에 selected mode의 남은 capacity를 bot으로 원자적으로 채웁니다. Bot ID 발급이 하나라도 실패하면 participant와 ID registry를 이전 상태로 돌리고 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Public REST endpoint나 bot credential은 없습니다. Unmatched disconnect는 credential과 timer를 유지하고, matched/loading/starting 실제 disconnect는 기존 match cancel로 room과 timer resource를 정리합니다. Ready timeout과 participant replacement는 없습니다. Started match의 peer/read/write/ping/control-overflow disconnect는 10초 reconnect grace를 사용하며, grace 중 simulation은 계속되고 다음 gameplay tick에서 due player를 batch expiry합니다.
+SL-91 timer는 10초 deadline에 selected mode의 남은 capacity를 bot으로 원자적으로 채웁니다. SL-110 chooser는 manual add와 timer fill 모두에서 각 bot의 기존 character catalog를 균등·독립적으로 선택하며 duplicate를 허용하고, 선택값을 REST/Ready/Snapshot에 고정 전달합니다. Bot ID 발급이나 chooser가 하나라도 실패하면 participant와 ID registry를 이전 상태로 돌리고 `bot_fill_failed`를 한 번 기록하며 retry하지 않습니다. Production chooser는 ID/session entropy와 분리되고 test/dev는 deterministic chooser를 주입합니다. Public REST endpoint나 bot credential은 없습니다. Unmatched disconnect는 credential과 timer를 유지하고, matched/loading/starting 실제 disconnect는 기존 match cancel로 room과 timer resource를 정리합니다. Ready timeout과 participant replacement는 없습니다. Started match의 peer/read/write/ping/control-overflow disconnect는 10초 reconnect grace를 사용하며, grace 중 simulation은 계속되고 다음 gameplay tick에서 due player를 batch expiry합니다.
 
 첫 번째 player만 있는 waiting room은 WebSocket input을 받을 수 있지만 gameplay snapshot을 broadcast하지 않습니다. 1명으로 수동 검증하려면 `POST /rooms/{roomID}/start`를 호출합니다.
 
@@ -308,6 +309,7 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-90`: internal bot participant, 결정적 basic controller, human-only Ready quorum, shared one-Step integration
 - `SL-108`: server-config `normalAttack.rechargeTicks` 기반 bot attack cadence와 room/controller 회귀 검증
 - `SL-91`: first-lock-wins 10초 automatic bot fill, human-only Ready quorum, lifecycle cleanup
+- `SL-110`: server-owned uniform independent bot character chooser와 match-stable REST/Ready/Snapshot CharacterType
 - `SL-94`: optional ClientTick, monotonic processed input ACK, legacy zero compatibility, stale/duplicate silent drop
 - `SL-82`: config v2 CharacterType `0/1/2` join-to-Ready/Snapshot contract and docs drift validation
 

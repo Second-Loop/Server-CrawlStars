@@ -59,7 +59,7 @@ Join raw body가 1024 bytes를 초과하거나 JSON이 잘못되면 400 `invalid
 
 Room/player ID는 random opaque pattern으로 문서화합니다. Raw player token은 발급 응답의 `sessionToken`과 tokenized `webSocketPath` 두 곳에 같은 secret으로 나타나며 inbound query로 다시 전달됩니다. Public Room/Player/list/detail/Ready/Snapshot/GameEnd schema에는 raw token이나 digest field를 두지 않습니다.
 
-OpenAPI `Player`는 room participant schema라 required `isBot` boolean과 required lower-camel `characterType`이 있고 human과 bot을 모두 허용합니다. `Room.players[]`는 이 generic schema를 사용합니다. Credential-bearing `MatchmakingJoin.player`와 `PlayerSessionResponse.player`는 `HumanPlayer`를 사용하며, `isBot`은 `const: false`입니다. Bot은 session token과 WebSocket path가 없고 Shelly `0`입니다.
+OpenAPI `Player`는 room participant schema라 required `isBot` boolean과 required lower-camel `characterType`이 있고 human과 bot을 모두 허용합니다. `Room.players[]`는 이 generic schema를 사용합니다. Credential-bearing `MatchmakingJoin.player`와 `PlayerSessionResponse.player`는 `HumanPlayer`를 사용하며, `isBot`은 `const: false`입니다. Bot은 session token과 WebSocket path가 없고 server가 `0=Shelly`, `1=Colt`, `2=Lily` 중에서 생성 시 고른 `characterType`을 가집니다. 각 bot 선택은 균등하고 독립적이며 room 내 중복을 허용합니다.
 
 Join의 process-local per-IP token bucket은 store보다 먼저 평가합니다. OpenAPI 429에는 `rate_limited` JSON, 최소 1초 정수 `Retry-After`, 429가 409/500보다 우선하고 허용된 409/500 요청도 quota를 소비한다는 내용을 기록합니다. 같은 IP에서 6-client smoke를 실행할 때는 client가 `Retry-After` 뒤 재시도하거나 격리된 local 환경에서만 burst 6을 명시합니다.
 
@@ -270,7 +270,7 @@ Match ready ACK:
 | `solo` | 6 | Room 내 human participant 전원 |
 | `team` | 6 | Room 내 human participant 전원 |
 
-Human participant가 0명이면 attach/Ready ACK quorum은 성립하지 않습니다. Bot ID 발급이 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed` structured log event를 한 번 기록하며 retry하지 않습니다. 일반 delete/clear/cancel은 room lock 아래에서 timer resource를 detach한 뒤 모든 core lock 밖에서 ticker `Stop`과 stop channel close를 수행합니다. 일반 cleanup은 worker join을 기다리지 않고, `workerWG.Wait`는 Shutdown만 추가로 수행합니다.
+Human participant가 0명이면 attach/Ready ACK quorum은 성립하지 않습니다. Bot ID 발급이나 character chooser가 하나라도 실패하면 participant를 부분 추가하지 않고 ID 예약을 rollback한 뒤 `bot_fill_failed` structured log event를 한 번 기록하며 retry하지 않습니다. Production character chooser는 Store의 ID/session entropy와 분리되고, test/dev는 deterministic chooser를 주입할 수 있습니다. 일반 delete/clear/cancel은 room lock 아래에서 timer resource를 detach한 뒤 모든 core lock 밖에서 ticker `Stop`과 stop channel close를 수행합니다. 일반 cleanup은 worker join을 기다리지 않고, `workerWG.Wait`는 Shutdown만 추가로 수행합니다.
 
 Solo는 `solo-1`부터 `solo-6`까지 각 slot 0을 사용합니다. Team은 join 순서대로 `red/0`, `blue/0`, `red/1`, `blue/1`, `red/2`, `blue/2`를 사용합니다. Ready spawn과 첫 gameplay snapshot position은 같은 room-local `PlayerAssignments` 결과입니다. Fallback map에서는 player collision과 같은 기준으로 Wall과 Water를 spawn candidate에서 제외하고 Ground와 Bush를 허용합니다.
 

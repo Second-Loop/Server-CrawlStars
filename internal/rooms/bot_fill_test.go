@@ -19,7 +19,7 @@ import (
 
 func TestBotFillAtTenSeconds(t *testing.T) {
 	clock := newFakeClock()
-	store := NewStoreWithClock(5, clock)
+	store := newStore(5, clock, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 	t.Cleanup(store.Close)
 
 	joined, err := store.joinMatchmaking(simulation.GameModeDuel1v1)
@@ -65,7 +65,7 @@ func TestBotFillUsesEveryModeAssignment(t *testing.T) {
 		for humanCount := 1; humanCount < selected.MatchPlayerCount(); humanCount++ {
 			t.Run(mode+"/humans="+string(rune('0'+humanCount)), func(t *testing.T) {
 				clock := newFakeClock()
-				store := NewStoreWithClock(5, clock)
+				store := newStore(5, clock, StoreConfig{BotCharacterChooser: shellyBotCharacterChooser})
 				t.Cleanup(store.Close)
 
 				var roomID string

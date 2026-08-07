@@ -870,3 +870,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Bot은 initial charge를 매 tick 소진하지 않고 server config와 같은 tick 경계로 일반 공격을 요청합니다.
 - Movement/aim과 human input은 cooldown 중에도 계속 simulation에 전달되고, authoritative combat truth가 controller와 중복되지 않습니다.
 - Controller unit test와 production room integration test가 첫 activation, exact recharge boundary, cooldown 중 방향 유지, custom server recharge config를 고정합니다.
+
+## ADR-0046: SL-110 Bot CharacterType은 Server-owned Uniform Independent Choice로 고정한다
+
+상태: 승인됨
+
+맥락: SL-90/SL-91에서 server-owned bot participant와 automatic fill은 구현됐지만 모든 bot의 `CharacterType`이 Shelly `0`으로 고정되어 있었습니다. Existing client/server catalog에는 이미 Shelly `0`, Colt `1`, Lily `2`가 있고, 이번 변경은 bot fill 다양화만 다루며 human character 정책·새 캐릭터·advanced AI를 확장하지 않아야 합니다.
+
+결정:
+
+- Manual bot add와 first-human 10초 timer fill은 bot마다 기존 세 값 중 하나를 균등하고 독립적으로 선택합니다. 같은 room에서 같은 값을 여러 bot이 가져도 됩니다. Production default는 `crypto/rand.Int` rejection sampling을 사용하는 server-owned chooser입니다.
+- Bot choice는 player ID/session token 발급에 쓰는 `Store.random`과 별도 entropy source를 사용합니다. 따라서 identity/session random stream의 소비 순서와 opaque ID 계약을 바꾸지 않습니다.
+- 모든 bot character를 먼저 선택한 뒤 participant를 append합니다. ID 예약이나 chooser가 실패하면 partial participant를 남기지 않고 예약 ID를 rollback하며, automatic fill은 기존 `bot_fill_failed` one-shot/no-retry 경계를 따릅니다. Test/dev는 `StoreConfig.BotCharacterChooser`를 deterministic function으로 주입할 수 있습니다.
+- 선택된 값은 `playerResponse.CharacterType`에 match 동안 고정합니다. REST room, Ready payload, simulation player, gameplay Snapshot은 이 canonical field를 전달하며 캐릭터를 다시 고르지 않습니다.
+- Wire field/event shape는 추가하지 않습니다. Human join/default Shelly compatibility, existing three-character catalog, basic bot controller, simulation combat rules는 그대로 유지합니다.
+
+결과:
+
+- Duel/Solo/Team의 manual/timer bot participant가 같은 정책을 사용하면서도 room별 duplicate를 허용합니다.
+- Ready와 gameplay Snapshot이 같은 bot identity/character를 보장해 client가 match 중 캐릭터를 재해석할 필요가 없습니다.
+- REST/AsyncAPI/OpenAPI shape는 바뀌지 않으며, 변경 범위는 server participant creation과 human-readable ownership 문서로 제한됩니다.

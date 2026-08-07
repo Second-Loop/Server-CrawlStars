@@ -267,6 +267,7 @@ Simple matchmaking:
 - Timer worker와 human join은 `matchmakingMu`를 먼저 얻은 transition이 이깁니다. Timer-first late join은 다른 waiting room을 찾거나 만들고 cap이 차면 기존 409 `room_cap_reached`를 반환합니다.
 - Room은 생성 시 selected `GameConfig`를 고정하고 required participant 수, team/slot/spawn, Ready quorum, simulation start가 모두 이 config를 사용합니다.
 - Human과 bot을 합친 participant가 `duel_1v1`은 2명, `solo`와 `team`은 6명인 capacity를 채우면 같은-mode match를 완성합니다.
+- Bot 생성은 기존 `0=Shelly`, `1=Colt`, `2=Lily` 중 하나를 각 bot마다 균등·독립적으로 선택하며 room 내 중복을 허용합니다. Manual add와 timer fill이 같은 chooser를 사용하고, participant에 저장된 값은 match 동안 REST/Ready/Snapshot과 simulation에 고정됩니다.
 - Match가 완성된 room은 debug player 추가도 409 `room_full`로 닫아 Ready/player cardinality를 고정합니다.
 - Match 완성 시 strict 30초 room-owned human attach ticker를 arm합니다. `now >= deadline`인 reserve/attach는 callback 지연과 무관하게 거부하고, expiry는 pre-start room 전체와 player/session identity를 제거합니다.
 - 모든 human current session이 attach되면 ticker를 detach하고 Loading/Ready로 전이합니다. Bot-fill match의 human이 이미 붙어 있으면 즉시 전이하고 all-bot debug room에는 ticker를 arm하지 않습니다.
@@ -288,7 +289,7 @@ Mode/team rule:
 
 - `internal/simulation.GameConfig.ModeCatalog`가 default와 세 canonical mode를, `SelectedMode`가 해당 room의 mode id, match size, team 목록, friendly-fire/team behavior metadata를 가집니다.
 - `internal/simulation.PlayerAssignments`는 player id 순서와 resolved `GameConfig`를 받아 team/slot/spawn을 계산합니다. SpawnPoint를 먼저 쓰고 fallback candidate에서 `tileBlocksPlayer`가 true인 Wall/Water를 제외하며 Ground/Bush는 유지합니다. `ResolveMapData`는 두 후보 집합의 고유 좌표 수가 `map.maxPlayers`보다 작으면 config를 거부합니다.
-- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 `room.gameConfig`에서 읽습니다.
+- `internal/rooms`는 room lifecycle과 transport adapter로 남고, match capacity와 team/slot/spawn 발급 규칙은 `room.gameConfig`에서 읽습니다. `StoreConfig.BotCharacterChooser`로 bot 캐릭터 선택을 주입할 수 있으며 production 기본 chooser는 ID/session 발급용 `Store.random`과 분리된 `crypto/rand` source를 사용합니다.
 - `internal/simulation.State.Step`은 전달받은 `PlayerData.Team`과 `Slot`을 state data로 보존할 뿐 matchmaking이나 room 구성 제한을 적용하지 않습니다.
 - Projectile eligibility는 selected config의 server-only `friendlyFire`와 `teamBehavior`를 사용합니다. GameEnd는 selected mode ID와 configured teams로 Duel/Solo/Team 판정을 선택합니다. Room이 생성 때 고정한 config가 lifecycle 전체의 기준입니다.
 
@@ -316,7 +317,7 @@ Token credential은 room/player session이 남아 있는 동안 재사용할 수
 
 동시성 소유권은 계층으로 나눕니다. `mutationMu`는 외부 mutation과 shutdown quiescing 경계를, `matchmakingMu`는 waiting room find-or-create와 bot-fill/attach-deadline/human join 경쟁을, `Store.mu`는 room registry와 Store 전체 active client session lifecycle을, `room.mu`는 한 room의 participant, bot-fill 및 match-attach ticker/stop channel, 직전 snapshot과 applied ACK, pending/bot input, simulation state, client/countdown 및 close barrier session set을, `clientSession`은 outbox와 writer/heartbeat 종료를 보호합니다. Lock 순서는 `mutationMu -> matchmakingMu -> Store.mu -> room.mu`입니다. `room.mu` 아래 input admission은 양수 `ClientTick`을 `lastPlayers[].LastProcessedClientTick`과 positive pending에 비교해 더 큰 command만 저장합니다. Legacy `0`은 last-write-wins로 positive pending도 덮을 수 있고 음수는 invalid, stale/duplicate 양수는 ignored disposition입니다. Timer resource는 room lock 아래에서 detach만 하고 ticker `Stop`과 stop channel close는 모든 core lock을 푼 뒤 실행합니다. deadline worker join(`workerWG.Wait`)은 Shutdown에서만 추가로 수행합니다. Attach는 Store close 판정, strict deadline 판정, active session 등록, room close barrier 등록을 원자적으로 처리합니다. Session lifecycle monitor는 transport `closeDone` 뒤 room barrier에서 해당 generation을 제거하고, writer와 heartbeat 종료까지 계속 추적합니다.
 
-`addBots`는 먼저 room 상태를 빠르게 확인한 뒤 `Store.mu -> room.mu` 순서로 bot ID를 예약하고 같은 room identity, lifecycle, 남은 capacity를 다시 검증합니다. 검증이나 ID 예약이 실패하면 예약한 모든 ID를 Store registry에서 rollback하고, room에는 partial bot을 남기지 않습니다. Bot은 credential/session map을 만들지 않습니다. Room tick은 `room.mu` 아래 직전 snapshot과 input을 한 번 소비해 `State.Step`을 정확히 한 번 호출하고, simulation이 처리한 player별 ACK를 포함한 새 snapshot copy를 다시 보관합니다. Receipt나 pending 저장만으로 ACK를 앞당기지 않습니다.
+`addBots`는 먼저 room 상태를 빠르게 확인한 뒤 `Store.mu -> room.mu` 순서로 bot ID를 예약하고 같은 room identity, lifecycle, 남은 capacity를 다시 검증합니다. 그 뒤 전체 bot character batch를 선택하고 모두 성공한 경우에만 append합니다. 검증, ID 예약, chooser가 실패하면 예약한 모든 ID를 Store registry에서 rollback하고, room에는 partial bot을 남기지 않습니다. Bot은 credential/session map을 만들지 않습니다. Room tick은 `room.mu` 아래 직전 snapshot과 input을 한 번 소비해 `State.Step`을 정확히 한 번 호출하고, simulation이 처리한 player별 ACK를 포함한 새 snapshot copy를 다시 보관합니다. Receipt나 pending 저장만으로 ACK를 앞당기지 않습니다.
 
 Registry lookup의 짧은 read lock 뒤에는 Store lock을 놓고 fanout과 network I/O를 수행합니다. Logger/Observer pure sink callback도 core lock 밖에서 실행합니다. Stale room/session은 expected pointer identity가 다르면 replacement를 삭제하지 않습니다.
 
@@ -356,3 +357,11 @@ Gameplay config는 client 공유용과 server runtime용을 분리합니다. `cl
 ## SL-82 CharacterType ownership
 
 Client config v3의 `characters[].type`과 API 계약이 `0=Shelly`, `1=Colt`, `2=Lily` stable identity mapping을 공유합니다. Server config v4는 같은 ID에 대한 HP `4000/3100/4100`, `3/3/2` attack charge, runtime combat stat과 `skill.cooldownTicks`를 소유하고 simulation의 canonical `PlayerData.SkillReadyTick`으로 다음 사용 가능 시점을 공개합니다. `internal/rooms`는 join 선택을 canonical participant에 저장하고 REST/Ready/Snapshot transport casing으로 변환합니다. `internal/simulation`은 이미 저장된 type의 stat을 적용합니다. 따라서 join parsing, participant identity, simulation stat 적용을 서로 다른 owner가 다시 선택하지 않습니다.
+
+## SL-110 Bot CharacterType ownership
+
+Bot character choice는 server participant creation 책임입니다. Manual `addBots`와 first-human 10초 timer fill은 남은 bot 수만큼 chooser를 호출해 fixed catalog `Shelly/Colt/Lily`를 한 번씩 독립적으로 고릅니다. Catalog size 3에 대한 production `crypto/rand.Int` rejection sampling은 각 선택을 균등하게 만들고 duplicate를 막지 않습니다.
+
+Chooser는 ID/session token 발급 stream인 `Store.random`을 읽지 않습니다. 모든 값을 먼저 선택한 뒤 append하므로 chooser/ID 오류는 partial participant 없이 예약 ID를 rollback하고 timer fill은 기존 `bot_fill_failed` one-shot/no-retry 정책을 유지합니다. Injected test chooser는 deterministic sequence와 실패를 재현합니다.
+
+선택 결과는 `playerResponse.CharacterType`의 canonical participant state입니다. REST room response, Ready projection, `simulation.PlayerData`, gameplay Snapshot은 이 값을 복사하며 match 중 재추출하지 않습니다. Human join/default policy, existing character catalog, basic bot controller와 simulation rules는 바꾸지 않습니다.
