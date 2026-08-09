@@ -1345,7 +1345,8 @@ func (s *Store) tickRoomState(room *room) {
 	if room.nextBotAttackTicks == nil {
 		room.nextBotAttackTicks = make(map[simulation.PlayerID]simulation.Tick)
 	}
-	room.pruneBotControllerStateLocked()
+	liveBotIDs := room.pruneBotControllerStateLocked()
+	authoritativeBotIDs := botParticipantIDs(room.Players)
 	observation := botObservation{
 		roomID:          room.ID,
 		gameMap:         room.gameConfig.Map,
@@ -1353,15 +1354,18 @@ func (s *Store) tickRoomState(room *room) {
 		players:         append([]simulation.PlayerData(nil), room.lastPlayers...),
 		projectiles:     append([]simulation.ProjectileData(nil), room.lastProjectiles...),
 		currentTick:     currentTick,
-		nextAttackTicks: room.nextBotAttackTicks,
+		nextAttackTicks: cloneBotAttackTicks(room.nextBotAttackTicks),
 	}
-	inputs := mergedTickInputsAtTick(room.pendingInputs, observation, room.botControllerStates)
+	inputs := mergedTickInputsAtTick(room.pendingInputs, observation, room.botControllerStates, liveBotIDs, authoritativeBotIDs)
 	room.pendingInputs = make(map[string]simulation.InputCommand)
 	stepStarted := s.wallNow()
 	snapshot := room.state.Step(inputs)
 	stepDuration := s.wallNow().Sub(stepStarted)
 	for _, player := range snapshot.Players {
 		if !player.IsBot || !player.PressedAttack {
+			continue
+		}
+		if _, isLive := liveBotIDs[player.ID]; !isLive {
 			continue
 		}
 		playerType, ok := room.gameConfig.PlayerType(player.CharacterType)

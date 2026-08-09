@@ -42,8 +42,13 @@ func mergedTickInputsAtTick(
 	pending map[string]simulation.InputCommand,
 	observation botObservation,
 	controllerStates map[simulation.PlayerID]*botControllerState,
+	liveBotIDs map[simulation.PlayerID]struct{},
+	authoritativeBotIDs map[simulation.PlayerID]struct{},
 ) []simulation.InputCommand {
 	botIDs := make(map[simulation.PlayerID]struct{})
+	for playerID := range authoritativeBotIDs {
+		botIDs[playerID] = struct{}{}
+	}
 	for _, player := range observation.players {
 		if player.IsBot {
 			botIDs[player.ID] = struct{}{}
@@ -67,13 +72,8 @@ func mergedTickInputsAtTick(
 			continue
 		}
 		delete(byPlayer, player.ID)
-		// A zero-HP observation without a live target is already terminal for
-		// this bot. Do not turn that invalid/dead state into an explore command
-		// while a reconnect expiry is being applied to the same snapshot.
-		if player.HP <= 0 {
-			if _, hasTarget := botTargetForObservation(player, observation); !hasTarget {
-				continue
-			}
+		if _, isLive := liveBotIDs[player.ID]; !isLive {
+			continue
 		}
 		state := controllerStates[player.ID]
 		if state == nil {
@@ -101,25 +101,49 @@ func sortedTickInputs(byPlayer map[simulation.PlayerID]simulation.InputCommand) 
 	return inputs
 }
 
+// cloneBotAttackTicks returns an immutable observation view of room-owned
+// cadence state. The caller owns the returned map and may not publish changes
+// back into the room's authoritative cadence map.
+func cloneBotAttackTicks(source map[simulation.PlayerID]simulation.Tick) map[simulation.PlayerID]simulation.Tick {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[simulation.PlayerID]simulation.Tick, len(source))
+	for playerID, tick := range source {
+		cloned[playerID] = tick
+	}
+	return cloned
+}
+
+func botParticipantIDs(participants []playerResponse) map[simulation.PlayerID]struct{} {
+	botIDs := make(map[simulation.PlayerID]struct{})
+	for _, participant := range participants {
+		if participant.IsBot {
+			botIDs[simulation.PlayerID(participant.ID)] = struct{}{}
+		}
+	}
+	return botIDs
+}
+
 // pruneBotControllerStateLocked keeps room-owned controller and cadence state
-// aligned with the intersection of bot participants and the previous
-// authoritative player snapshot. The caller holds room.mu.
-func (r *room) pruneBotControllerStateLocked() {
+// aligned with authoritative live bot participants in the previous snapshot.
+// The caller holds room.mu. The returned IDs are the only bots allowed to
+// generate commands or receive snapshot-approved cadence updates for this
+// tick.
+func (r *room) pruneBotControllerStateLocked() map[simulation.PlayerID]struct{} {
 	if r.botControllerStates == nil {
 		r.botControllerStates = make(map[simulation.PlayerID]*botControllerState)
 	}
-	participantBots := make(map[simulation.PlayerID]struct{})
-	for _, participant := range r.Players {
-		if participant.IsBot {
-			participantBots[simulation.PlayerID(participant.ID)] = struct{}{}
-		}
-	}
+	participantBots := botParticipantIDs(r.Players)
 	activeBots := make(map[simulation.PlayerID]struct{}, len(participantBots))
 	for _, player := range r.lastPlayers {
 		if !player.IsBot {
 			continue
 		}
 		if _, ok := participantBots[player.ID]; !ok {
+			continue
+		}
+		if player.IsDead || player.HP <= 0 {
 			continue
 		}
 		activeBots[player.ID] = struct{}{}
@@ -134,6 +158,7 @@ func (r *room) pruneBotControllerStateLocked() {
 			delete(r.nextBotAttackTicks, playerID)
 		}
 	}
+	return activeBots
 }
 
 func nearestLiveEnemy(
