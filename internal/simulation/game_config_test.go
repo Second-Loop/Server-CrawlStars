@@ -37,8 +37,8 @@ func TestClientGameConfigSharedCollisionValuesMatchSimulation(t *testing.T) {
 func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) {
 	config := loadServerGameConfig(t)
 
-	if config.Version != ServerGameConfigVersion {
-		t.Fatalf("expected server config version %d, got %d", ServerGameConfigVersion, config.Version)
+	if config.Version != 5 {
+		t.Fatalf("expected server config version 5, got %d", config.Version)
 	}
 	if config.TickRate != TickRate {
 		t.Fatalf("expected tick rate %d, got %d", TickRate, config.TickRate)
@@ -79,6 +79,59 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 	}
 	if config.Projectile.Types[0].Speed != DefaultProjectileSpeed {
 		t.Fatalf("expected projectile speed %f, got %f", DefaultProjectileSpeed, config.Projectile.Types[0].Speed)
+	}
+	wantBot := BotConfig{15, 0.25, 0.2, 6, 8, 0.35}
+	if config.Bot != wantBot {
+		t.Fatalf("bot config=%+v want=%+v", config.Bot, wantBot)
+	}
+}
+
+func TestResolveGameConfigRejectsInvalidBotConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GameConfig)
+	}{
+		{"zero detection range", func(c *GameConfig) { c.Bot.DetectionRangeWorld = 0 }},
+		{"negative detection range", func(c *GameConfig) { c.Bot.DetectionRangeWorld = -1 }},
+		{"nan detection range", func(c *GameConfig) { c.Bot.DetectionRangeWorld = math.NaN() }},
+		{"positive infinite detection range", func(c *GameConfig) { c.Bot.DetectionRangeWorld = math.Inf(1) }},
+		{"negative infinite detection range", func(c *GameConfig) { c.Bot.DetectionRangeWorld = math.Inf(-1) }},
+		{"zero explore arrival distance", func(c *GameConfig) { c.Bot.ExploreArrivalDistanceWorld = 0 }},
+		{"negative explore arrival distance", func(c *GameConfig) { c.Bot.ExploreArrivalDistanceWorld = -1 }},
+		{"nan explore arrival distance", func(c *GameConfig) { c.Bot.ExploreArrivalDistanceWorld = math.NaN() }},
+		{"positive infinite explore arrival distance", func(c *GameConfig) { c.Bot.ExploreArrivalDistanceWorld = math.Inf(1) }},
+		{"negative infinite explore arrival distance", func(c *GameConfig) { c.Bot.ExploreArrivalDistanceWorld = math.Inf(-1) }},
+		{"zero retreat distance", func(c *GameConfig) { c.Bot.RetreatDistanceWorld = 0 }},
+		{"negative retreat distance", func(c *GameConfig) { c.Bot.RetreatDistanceWorld = -1 }},
+		{"nan retreat distance", func(c *GameConfig) { c.Bot.RetreatDistanceWorld = math.NaN() }},
+		{"positive infinite retreat distance", func(c *GameConfig) { c.Bot.RetreatDistanceWorld = math.Inf(1) }},
+		{"negative infinite retreat distance", func(c *GameConfig) { c.Bot.RetreatDistanceWorld = math.Inf(-1) }},
+		{"zero projectile look-ahead", func(c *GameConfig) { c.Bot.ProjectileLookAheadWorld = 0 }},
+		{"negative projectile look-ahead", func(c *GameConfig) { c.Bot.ProjectileLookAheadWorld = -1 }},
+		{"nan projectile look-ahead", func(c *GameConfig) { c.Bot.ProjectileLookAheadWorld = math.NaN() }},
+		{"positive infinite projectile look-ahead", func(c *GameConfig) { c.Bot.ProjectileLookAheadWorld = math.Inf(1) }},
+		{"negative infinite projectile look-ahead", func(c *GameConfig) { c.Bot.ProjectileLookAheadWorld = math.Inf(-1) }},
+		{"zero dodge margin", func(c *GameConfig) { c.Bot.DodgeMarginWorld = 0 }},
+		{"negative dodge margin", func(c *GameConfig) { c.Bot.DodgeMarginWorld = -1 }},
+		{"nan dodge margin", func(c *GameConfig) { c.Bot.DodgeMarginWorld = math.NaN() }},
+		{"positive infinite dodge margin", func(c *GameConfig) { c.Bot.DodgeMarginWorld = math.Inf(1) }},
+		{"negative infinite dodge margin", func(c *GameConfig) { c.Bot.DodgeMarginWorld = math.Inf(-1) }},
+		{"zero retreat HP ratio", func(c *GameConfig) { c.Bot.RetreatHPRatio = 0 }},
+		{"negative retreat HP ratio", func(c *GameConfig) { c.Bot.RetreatHPRatio = -0.1 }},
+		{"nan retreat HP ratio", func(c *GameConfig) { c.Bot.RetreatHPRatio = math.NaN() }},
+		{"positive infinite retreat HP ratio", func(c *GameConfig) { c.Bot.RetreatHPRatio = math.Inf(1) }},
+		{"negative infinite retreat HP ratio", func(c *GameConfig) { c.Bot.RetreatHPRatio = math.Inf(-1) }},
+		{"retreat HP ratio above one", func(c *GameConfig) { c.Bot.RetreatHPRatio = 1.01 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := StaticGameConfig()
+			tt.mutate(&config)
+			if _, err := ResolveGameConfig(config); err == nil {
+				t.Fatal("expected invalid bot config to be rejected")
+			}
+		})
 	}
 }
 
@@ -180,7 +233,7 @@ func TestGameConfigPlayerTypeLookupIsIndependentOfCatalogOrder(t *testing.T) {
 func TestResolveGameConfigRejectsUnsupportedVersion(t *testing.T) {
 	config := StaticGameConfig()
 	config.Version = 1
-	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), "version must be 4") {
+	if _, err := ResolveGameConfig(config); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("version must be %d", ServerGameConfigVersion)) {
 		t.Fatalf("ResolveGameConfig(version 1) error = %v, want exact-version rejection", err)
 	}
 }
