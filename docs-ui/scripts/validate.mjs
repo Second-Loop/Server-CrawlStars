@@ -28,7 +28,7 @@ const expectedServerBotConfig = {
   dodgeMarginWorld: 0.35,
 };
 
-const reliableSkillDeliveryMarkerGroups = [
+const currentReliableSkillDeliveryMarkerGroups = [
   ["normal snapshot latest-only", ["일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.", "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해요."]],
   ["reliable approval exception", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
   ["reliable FIFO capacity", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
@@ -50,8 +50,13 @@ const reliableSkillDeliveryMarkerGroups = [
   ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
   ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
-  ["SL-99 config boundary", ["SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요.", "SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]],
+  ["SL-99 config boundary", ["SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
+const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) =>
+  meaning === "SL-99 config boundary"
+    ? [meaning, [...markers, "SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]]
+    : [meaning, markers],
+);
 
 const requiredRESTPaths = [
   "/health",
@@ -467,6 +472,7 @@ validateClientTickACKContract();
 validateCharacterTypeContract();
 validateCharacterNormalAttackContract();
 validateCharacterSkillCooldownContract();
+validateApiDocsServerConfigV5Contract();
 validateBotBehaviorDocumentation();
 validateReliableSkillDeliveryValidatorSelfTests();
 
@@ -919,7 +925,8 @@ function validateCharacterTypeContract() {
 function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
-  for (const marker of ["server config v4", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  assert(!inputPressedAttack.includes("server config v4"), "InputMessage.PressedAttack must not document server config v4");
+  for (const marker of ["server config v5", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -1246,6 +1253,25 @@ SL-99 client config v3/server config v5 경계를 유지합니다.
     "## Current delivery",
     "## Historical note",
   );
+  const staleCurrentConfigFixture = validCurrentBlockFixture.replace(
+    "SL-99 client config v3/server config v5 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+  );
+  let rejectedStaleCurrentConfig = false;
+  try {
+    assertScopedReliableSkillDeliveryContract(
+      staleCurrentConfigFixture,
+      "synthetic stale current config contract",
+      "## Current delivery",
+      "## Historical note",
+    );
+  } catch (error) {
+    rejectedStaleCurrentConfig = error instanceof Error && error.message.includes("SL-99 config boundary");
+  }
+  assert(
+    rejectedStaleCurrentConfig,
+    "scoped reliable skill delivery validator must reject server config v4 in the current block",
+  );
   const oppositeMeaningMutations = [
     [
       "normal latest-only delivery",
@@ -1386,13 +1412,19 @@ SL-99 client config v3/server config v5 경계를 유지합니다.
 
 function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
   const block = extractDelimitedText(text, startMarker, endMarker, name);
-  assertReliableSkillDeliveryContract(block, name);
+  for (const marker of [
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지해요.",
+  ]) {
+    assert(!block.includes(marker), `${name} must not document SL-99 config boundary v4: ${marker}`);
+  }
+  assertReliableSkillDeliveryContract(block, name, currentReliableSkillDeliveryMarkerGroups);
   return block;
 }
 
-function assertReliableSkillDeliveryContract(block, name) {
+function assertReliableSkillDeliveryContract(block, name, markerGroups = historicalReliableSkillDeliveryMarkerGroups) {
   const positions = new Map();
-  for (const [meaning, allowedMarkers] of reliableSkillDeliveryMarkerGroups) {
+  for (const [meaning, allowedMarkers] of markerGroups) {
     let position = -1;
     for (const marker of allowedMarkers) {
       const candidate = block.indexOf(marker);
@@ -1415,6 +1447,31 @@ function assertReliableSkillDeliveryContract(block, name) {
       `${name} must order ${before} before ${after}`,
     );
   }
+}
+
+function validateApiDocsServerConfigV5Contract() {
+  const validationSection = extractDelimitedText(
+    apiDocsText,
+    "## Validation",
+    "\n\n### SL-82 CharacterType 문서화 기준",
+    "api docs current validation section",
+  );
+  assert(
+    validationSection.includes("server config v5 `360/390/330`"),
+    "api docs current validation must document server config v5 cooldowns",
+  );
+  assert(!validationSection.includes("server config v4"), "api docs current validation must not document server config v4");
+
+  const characterTypeSection = extractMarkdownHeadingSection(
+    apiDocsText,
+    "### SL-82 CharacterType 문서화 기준",
+    "api docs current CharacterType section",
+  );
+  assert(
+    characterTypeSection.includes("server config v5 HP `4000/3100/4100`"),
+    "api docs current CharacterType section must document server config v5 authoritative stats",
+  );
+  assert(!characterTypeSection.includes("server config v4"), "api docs current CharacterType section must not document server config v4");
 }
 
 function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
