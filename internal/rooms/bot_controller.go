@@ -31,12 +31,11 @@ type botObservation struct {
 }
 
 type botProjectileThreat struct {
-	projectile        simulation.ProjectileData
-	direction         simulation.Vector2
-	forwardDistance   float64
-	collisionDistance float64
-	awayDirection     simulation.Vector2
-	hasAway           bool
+	projectile      simulation.ProjectileData
+	direction       simulation.Vector2
+	forwardDistance float64
+	awayDirection   simulation.Vector2
+	hasAway         bool
 }
 
 func botInputForObservation(
@@ -425,26 +424,17 @@ func botProjectileThreats(bot simulation.PlayerData, observation botObservation)
 		if !finiteBotFloat(awayLength) || !finiteBotFloat(collisionRadius) || awayLength > collisionRadius {
 			continue
 		}
-		collisionHalfChordSquared := collisionRadius*collisionRadius - awayLength*awayLength
-		if collisionHalfChordSquared < 0 {
-			collisionHalfChordSquared = 0
-		}
-		collisionDistance := forwardDistance - math.Sqrt(collisionHalfChordSquared)
-		if collisionDistance < 0 {
-			collisionDistance = 0
-		}
 		awayDirection := simulation.Vector2{}
 		hasAway := awayLength > 1e-12
 		if hasAway {
 			awayDirection = cleanBotDirection(simulation.Vector2{X: awayX / awayLength, Y: awayY / awayLength})
 		}
 		threats = append(threats, botProjectileThreat{
-			projectile:        projectile,
-			direction:         direction,
-			forwardDistance:   forwardDistance,
-			collisionDistance: collisionDistance,
-			awayDirection:     awayDirection,
-			hasAway:           hasAway,
+			projectile:      projectile,
+			direction:       direction,
+			forwardDistance: forwardDistance,
+			awayDirection:   awayDirection,
+			hasAway:         hasAway,
 		})
 	}
 	sort.Slice(threats, func(i, j int) bool {

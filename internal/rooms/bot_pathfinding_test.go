@@ -227,6 +227,30 @@ func TestRetreatGoalDoesNotCrossBeyondSubTileRawTarget(t *testing.T) {
 	}
 }
 
+func TestRetreatGoalDoesNotExceedRequestedDistanceForDiagonalRawTarget(t *testing.T) {
+	gameMap := botPathTestMapWithTileSize(15, 15, 1.2, simulation.TileGround)
+	player := simulation.PlayerData{
+		Pos:    gameMap.WorldPos(7, 7),
+		Radius: 0,
+	}
+	target := simulation.Vector2{X: player.Pos.X + 1, Y: player.Pos.Y + 1}
+	const maxRetreatDistance = 6.0
+
+	got, ok := retreatGoal(gameMap, player, target, maxRetreatDistance)
+	if !ok {
+		t.Fatal("retreatGoal() failed for an open map with a diagonal raw target")
+	}
+	deltaX := got.X - player.Pos.X
+	deltaY := got.Y - player.Pos.Y
+	if distanceSquared := deltaX*deltaX + deltaY*deltaY; distanceSquared > maxRetreatDistance*maxRetreatDistance+1e-12 {
+		t.Fatalf("retreatGoal() = %+v, distance squared %v exceeds requested max %v", got, distanceSquared, maxRetreatDistance*maxRetreatDistance)
+	}
+	want := simulation.Vector2{X: -4.8, Y: -3.6}
+	if !botVectorsNear(got, want) {
+		t.Fatalf("retreatGoal() = %+v, want farthest in-cap diagonal backoff center %+v", got, want)
+	}
+}
+
 func TestRetreatGoalOrdersAsymmetricCornerCellsByDistance(t *testing.T) {
 	gameMap := botPathTestMap(8, 8, simulation.TileGround)
 	for _, blocked := range []botTile{

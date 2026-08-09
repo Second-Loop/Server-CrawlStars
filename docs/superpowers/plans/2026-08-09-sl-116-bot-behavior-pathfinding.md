@@ -157,7 +157,7 @@ git commit -m "[SL-116] refactor(simulation): 피격 가능 규칙 공유" -m "-
 
 - [ ] **Step 1: Write failing A* and retreat table tests**
 
-Include straight shortest path, symmetric obstacle expected by `F/H/y/x`, Wall/Water blocked, disconnected goal, invalid start/goal, start=goal direct direction, 6-world raw retreat, and far-to-near backoff.
+Include straight shortest path, symmetric obstacle expected by `F/H/y/x`, Wall/Water blocked, disconnected goal, invalid start/goal, start=goal direct direction, 6-world raw retreat, off-center and diagonal raw retreat endpoints whose selected tile center never exceeds the requested maximum distance, and far-to-near backoff.
 
 - [ ] **Step 2: Run the new test file**
 
@@ -176,7 +176,7 @@ func (h botOpenHeap) Less(i, j int) bool {
 }
 ```
 
-Use neighbors in a fixed four-direction array, unit G cost, Manhattan H, and reconstruct only the next tile. Retreat uses a supercover traversal and validates bot-radius map collision from farthest tile center to nearest.
+Use neighbors in a fixed four-direction array, unit G cost, Manhattan H, and reconstruct only the next tile. Retreat uses a supercover traversal, rejects candidate centers beyond the requested retreat distance, and validates bot-radius map collision from farthest tile center to nearest.
 
 - [ ] **Step 4: Run pathfinding tests repeatedly**
 

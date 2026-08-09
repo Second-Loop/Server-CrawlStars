@@ -78,7 +78,10 @@ type botRetreatCandidate struct {
 	distanceSquared float64
 }
 
-const botTraversalTieEpsilon = 1e-12
+const (
+	botTraversalTieEpsilon    = 1e-12
+	botDistanceCompareEpsilon = 1e-12
+)
 
 func worldToBotTile(gameMap simulation.MapData, position simulation.Vector2) (botTile, bool) {
 	geometry, ok := botMapGeometryFor(gameMap)
@@ -178,6 +181,7 @@ func retreatGoal(
 		X: player.Pos.X - targetDirection.X*retreatDistance,
 		Y: player.Pos.Y - targetDirection.Y*retreatDistance,
 	}
+	retreatDistanceSquared := retreatDistance * retreatDistance
 	tiles := botSupercoverTiles(geometry, gameMap, player.Pos, rawTarget)
 	candidates := make([]botRetreatCandidate, 0, len(tiles))
 	for _, tile := range tiles {
@@ -202,6 +206,9 @@ func retreatGoal(
 	})
 	for _, candidate := range candidates {
 		if candidate.tile == startTile || !botTilePassable(gameMap, candidate.tile) {
+			continue
+		}
+		if candidate.distanceSquared > retreatDistanceSquared+botDistanceCompareEpsilon {
 			continue
 		}
 		if botMapCollidesWithPlayer(geometry, gameMap, candidate.center, radius) {

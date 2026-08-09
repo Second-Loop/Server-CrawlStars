@@ -46,6 +46,46 @@ func TestBotControllerDetectionRangeIncludesBoundaryOnly(t *testing.T) {
 	}
 }
 
+func TestBotControllerNormalAttackRangeIncludesExactBoundaryOnly(t *testing.T) {
+	gameMap := botControllerOpenMap(41, 5)
+	config := botControllerConfig(gameMap)
+	playerType, ok := config.PlayerType(simulation.CharacterTypeShelly)
+	if !ok {
+		t.Fatal("missing Shelly config")
+	}
+	attackRange := playerType.NormalAttack.RangeTiles * config.Tile.Size
+	config.Bot.DetectionRangeWorld = attackRange + 1
+	bot := botControllerPlayer(config, "bot", simulation.TeamRed, gameMap.WorldPos(20, 2))
+
+	for _, test := range []struct {
+		name       string
+		distance   float64
+		wantAttack bool
+	}{
+		{name: "exact boundary", distance: attackRange, wantAttack: true},
+		{name: "just outside", distance: attackRange + 1e-9, wantAttack: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			enemy := botControllerPlayer(config, "enemy", simulation.TeamBlue, botControllerOffset(bot.Pos, test.distance, 0))
+			input, ok := botInputForObservation(bot, botObservation{
+				gameMap:     gameMap,
+				gameConfig:  config,
+				players:     []simulation.PlayerData{bot, enemy},
+				currentTick: 1,
+			}, &botControllerState{})
+			if !ok {
+				t.Fatal("live bot must produce an input")
+			}
+			if input.AttackDir == (simulation.Vector2{}) {
+				t.Fatalf("target was not detected at distance %v: input=%+v", test.distance, input)
+			}
+			if input.PressedAttack != test.wantAttack {
+				t.Fatalf("PressedAttack=%t at distance %v, want %t; input=%+v", input.PressedAttack, test.distance, test.wantAttack, input)
+			}
+		})
+	}
+}
+
 func TestBotControllerTargetTieUsesPlayerIDRegardlessOfPermutation(t *testing.T) {
 	gameMap := botControllerOpenMap(9, 9)
 	config := botControllerConfig(gameMap)
@@ -251,6 +291,16 @@ func TestBotControllerExploreSeedIsCanonicalAndPermutationIndependent(t *testing
 	permuted, ok := selectBotExploreTile("room", "bot", reversed, current, 7)
 	if !ok || got != permuted {
 		t.Fatalf("candidate permutation changed selected tile: original=%+v reversed=%+v", got, permuted)
+	}
+	otherID, ok := selectBotExploreTile("room", "bot-other", candidates, current, 7)
+	if !ok {
+		t.Fatal("bot ID variation selection failed")
+	}
+	if otherID != (botTile{x: 0, y: 0}) {
+		t.Fatalf("same-epoch bot ID selected tile=%+v, want hand-derived (0,0)", otherID)
+	}
+	if otherID == got {
+		t.Fatalf("same-epoch bot ID did not affect explore seed: bot=%+v bot-other=%+v", got, otherID)
 	}
 }
 
