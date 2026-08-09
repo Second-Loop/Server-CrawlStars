@@ -161,7 +161,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
 		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
 		"SL-85 effect는 이번 범위에서 제외합니다.",
-		"SL-99 client config v3/server config v4 경계를 유지합니다.",
+		"SL-99 client config v3/server config v5 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
 	}
@@ -186,7 +186,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하지 않고 gameplay entity를 넣습니다.",
 		"SL-85 effect는 이번 범위에서 제외하지 않습니다.",
-		"SL-99 client config v3/server config v4 경계를 유지하지 않습니다.",
+		"SL-99 client config v3/server config v5 경계를 유지하지 않습니다.",
 	})
 	for _, marker := range []string{
 		"일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.",
@@ -206,7 +206,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
 		"SL-85 effect는 이번 범위에서 제외합니다.",
-		"SL-99 client config v3/server config v4 경계를 유지합니다.",
+		"SL-99 client config v3/server config v5 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)
 	}

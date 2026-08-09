@@ -1917,6 +1917,124 @@ func TestStepProjectileCollisionMatrix(t *testing.T) {
 	}
 }
 
+func TestCanPlayerDamageMatchesProjectileHitRules(t *testing.T) {
+	start := StaticMapFixture().WorldPos(1, 1)
+	targetPosition := Vector2{
+		X: start.X + DefaultProjectileSpeed*TickDuration,
+		Y: start.Y,
+	}
+	type testCase struct {
+		name       string
+		modeID     string
+		rules      GameModeRulesConfig
+		owner      PlayerData
+		target     PlayerData
+		wantDamage bool
+	}
+	tests := []testCase{
+		{
+			name:       "self",
+			modeID:     GameModeSolo,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorFreeForAll},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			wantDamage: false,
+		},
+		{
+			name:       "dead target",
+			modeID:     GameModeDuel1v1,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: TeamBlue, HP: 60, IsDead: true, Pos: targetPosition},
+			wantDamage: false,
+		},
+		{
+			name:       "duel enemy",
+			modeID:     GameModeDuel1v1,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: TeamBlue, HP: DefaultPlayerHP, Pos: targetPosition},
+			wantDamage: true,
+		},
+		{
+			name:       "duel ally",
+			modeID:     GameModeDuel1v1,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: TeamRed, HP: DefaultPlayerHP, Pos: targetPosition},
+			wantDamage: false,
+		},
+		{
+			name:       "team ally friendly fire off",
+			modeID:     GameModeTeam,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams, FriendlyFire: false},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: TeamRed, HP: DefaultPlayerHP, Pos: targetPosition},
+			wantDamage: false,
+		},
+		{
+			name:       "team ally friendly fire on",
+			modeID:     GameModeTeam,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorTwoTeams, FriendlyFire: true},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: TeamRed, HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: TeamRed, HP: DefaultPlayerHP, Pos: targetPosition},
+			wantDamage: true,
+		},
+		{
+			name:       "solo player",
+			modeID:     GameModeSolo,
+			rules:      GameModeRulesConfig{TeamBehavior: TeamBehaviorFreeForAll},
+			owner:      PlayerData{ID: PlayerID("owner"), Team: Team("solo"), HP: DefaultPlayerHP, Pos: start},
+			target:     PlayerData{ID: PlayerID("target"), Team: Team("solo"), HP: DefaultPlayerHP, Pos: targetPosition},
+			wantDamage: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gameConfig, err := StaticGameConfig().SelectMode(tt.modeID)
+			if err != nil {
+				t.Fatalf("select mode %q: %v", tt.modeID, err)
+			}
+			for index := range gameConfig.ModeCatalog.Catalog {
+				if gameConfig.ModeCatalog.Catalog[index].ID != tt.modeID {
+					continue
+				}
+				gameConfig.ModeCatalog.Catalog[index].Rules = tt.rules
+				gameConfig.SelectedMode = gameConfig.ModeCatalog.Catalog[index]
+			}
+
+			pureRule := CanPlayerDamage(tt.owner, tt.target, gameConfig.SelectedMode)
+			if pureRule != tt.wantDamage {
+				t.Fatalf("CanPlayerDamage() = %t, want %t", pureRule, tt.wantDamage)
+			}
+
+			players := []PlayerData{tt.owner}
+			if tt.target.ID != tt.owner.ID {
+				players = append(players, tt.target)
+			}
+			state := newSingleProjectileTestState(players, Config{
+				Map:  StaticMapFixture(),
+				Game: gameConfig,
+			})
+			created := state.Step([]InputCommand{attackInput(tt.owner.ID)})
+			before := playerByID(t, created, tt.target.ID)
+			collided := state.Step(nil)
+			after := playerByID(t, collided, tt.target.ID)
+			actualHit := after.HP < before.HP
+			if actualHit != pureRule {
+				t.Fatalf("projectile hit = %t, CanPlayerDamage() = %t; before=%+v after=%+v", actualHit, pureRule, before, after)
+			}
+			if len(collided.Projectiles) != 1 {
+				t.Fatalf("expected one projectile, got %d", len(collided.Projectiles))
+			}
+			if collided.Projectiles[0].IsDestroyed != pureRule {
+				t.Fatalf("projectile destroyed = %t, CanPlayerDamage() = %t", collided.Projectiles[0].IsDestroyed, pureRule)
+			}
+		})
+	}
+}
+
 func TestStepNormalizesInputOrderThroughCollision(t *testing.T) {
 	step := DefaultProjectileSpeed * TickDuration
 	playerAStart := StaticMapFixture().WorldPos(1, 1)

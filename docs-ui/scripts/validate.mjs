@@ -19,8 +19,16 @@ const clientGameConfigText = clientGameConfigBytes.toString("utf8");
 const clientGameConfig = JSON.parse(clientGameConfigText);
 const serverGameConfigText = await readFile(new URL("../../server-config/game-config.json", import.meta.url), "utf8");
 const serverGameConfig = JSON.parse(serverGameConfigText);
+const expectedServerBotConfig = {
+  detectionRangeWorld: 15,
+  exploreArrivalDistanceWorld: 0.25,
+  retreatHpRatio: 0.2,
+  retreatDistanceWorld: 6,
+  projectileLookAheadWorld: 8,
+  dodgeMarginWorld: 0.35,
+};
 
-const reliableSkillDeliveryMarkerGroups = [
+const currentReliableSkillDeliveryMarkerGroups = [
   ["normal snapshot latest-only", ["일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.", "일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing해요."]],
   ["reliable approval exception", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
   ["reliable FIFO capacity", ["PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.", "PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달해요."]],
@@ -42,8 +50,13 @@ const reliableSkillDeliveryMarkerGroups = [
   ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
   ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
-  ["SL-99 config boundary", ["SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]],
+  ["SL-99 config boundary", ["SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
+const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) =>
+  meaning === "SL-99 config boundary"
+    ? [meaning, [...markers, "SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]]
+    : [meaning, markers],
+);
 
 const requiredRESTPaths = [
   "/health",
@@ -459,6 +472,8 @@ validateClientTickACKContract();
 validateCharacterTypeContract();
 validateCharacterNormalAttackContract();
 validateCharacterSkillCooldownContract();
+validateApiDocsServerConfigV5Contract();
+validateBotBehaviorDocumentation();
 validateReliableSkillDeliveryValidatorSelfTests();
 
 assert(docsBuildText.includes("?token=<player-session-token>"), "docs UI must show a redacted tokenized WebSocket path");
@@ -545,7 +560,11 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 4, "server config version must be 4");
+assert(serverGameConfig.version === 5, "server config version must be 5");
+assertOnlyKeys(serverGameConfig.bot, Object.keys(expectedServerBotConfig), "server-config/game-config.json bot");
+for (const [field, expected] of Object.entries(expectedServerBotConfig)) {
+  assert(serverGameConfig.bot[field] === expected, `server bot config ${field} must be ${expected}`);
+}
 assertOnlyKeys(clientGameConfig, ["version", "tileSize", "playerRadius", "characters", "normalAttackCoolDown", "projectileRadius"], "client-config/game-config.json");
 assert(clientGameConfig.tileSize === 1.2, "client-config/game-config.json must expose tileSize 1.2");
 assert(clientGameConfig.playerRadius === 0.5, "client-config/game-config.json must expose playerRadius 0.5");
@@ -906,7 +925,8 @@ function validateCharacterTypeContract() {
 function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
-  for (const marker of ["server config v4", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  assert(!inputPressedAttack.includes("server config v4"), "InputMessage.PressedAttack must not document server config v4");
+  for (const marker of ["server config v5", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -952,9 +972,9 @@ function validateCharacterNormalAttackContract() {
 
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v4가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [architectureText, "architecture", ["server config v5가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
     [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
-    [apiReferenceText, "api reference", ["server config v4의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [apiReferenceText, "api reference", ["server config v5의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
   ]) {
     for (const marker of markers) {
@@ -985,7 +1005,7 @@ function validateCharacterSkillCooldownContract() {
     assert(readyTick.includes(marker), `PlayerData.SkillReadyTick must document ${marker}`);
   }
 
-  assert(serverGameConfig.version === 4, "server config must be version 4");
+  assert(serverGameConfig.version === 5, "server config must be version 5");
   const cooldowns = new Map([[0, 360], [1, 390], [2, 330]]);
   for (const playerType of serverGameConfig.player.types) {
     assert(playerType.skill?.cooldownTicks === cooldowns.get(playerType.characterType),
@@ -1027,7 +1047,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## SL-82 CharacterType ownership",
     "architecture current config summary",
   );
-  for (const marker of ["server-config/game-config.json` v4", "skill.cooldownTicks", "SkillReadyTick"]) {
+  for (const marker of ["server-config/game-config.json` v5", "skill.cooldownTicks", "SkillReadyTick"]) {
     assert(architectureConfigSummary.includes(marker), `architecture current config summary must document ${marker}`);
   }
 
@@ -1037,7 +1057,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## 기본 duel 2인 수동 검증 시나리오",
     "api reference current config summary",
   );
-  for (const marker of ["server-only v4 config", "skill.cooldownTicks", "SkillReadyTick"]) {
+  for (const marker of ["server-only v5 config", "skill.cooldownTicks", "SkillReadyTick"]) {
     assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
   }
 
@@ -1045,7 +1065,11 @@ function validateCharacterSkillCooldownContract() {
   assertScopedReliableSkillDeliveryContract(asyncAPIInfo, "AsyncAPI info current delivery", "일반 non-terminal gameplay snapshot은", "\n    duel_1v1은");
 
   const docsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
-  assertReliableSkillDeliveryContract(docsUICoalescingArticle, "docs UI Snapshot coalescing article");
+  assertReliableSkillDeliveryContract(
+    docsUICoalescingArticle,
+    "docs UI Snapshot coalescing article",
+    currentReliableSkillDeliveryMarkerGroups,
+  );
 
   for (const [text, name, startMarker, endMarker] of [
     [apiReferenceText, "api reference current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
@@ -1058,7 +1082,11 @@ function validateCharacterSkillCooldownContract() {
   }
 
   const skillCooldownDesignDelivery = extractMarkdownHeadingSection(skillCooldownDesignText, "### 2.4 승인 snapshot 전달 경계", "skill cooldown design current delivery");
-  assertReliableSkillDeliveryContract(skillCooldownDesignDelivery, "skill cooldown design current delivery");
+  assertReliableSkillDeliveryContract(
+    skillCooldownDesignDelivery,
+    "skill cooldown design historical delivery",
+    historicalReliableSkillDeliveryMarkerGroups,
+  );
 
   const adr0024 = extractMarkdownHeadingSection(decisionsText, "## ADR-0024: SL-81 Room/Session 동시성과 WebSocket 전달 경계", "ADR-0024");
   const adr0024FollowUp = extractDelimitedText(adr0024, "후속 상태:", "\n\n맥락:", "ADR-0024 follow-up");
@@ -1067,10 +1095,123 @@ function validateCharacterSkillCooldownContract() {
   }
 
   const adr0038 = extractMarkdownHeadingSection(decisionsText, "## ADR-0038: SL-84 Skill cooldown은 canonical PlayerData와 Server Config v4가 소유", "ADR-0038");
-  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 current delivery");
+  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 historical delivery", historicalReliableSkillDeliveryMarkerGroups);
+}
+
+function validateBotBehaviorDocumentation() {
+  const sections = [
+    [architectureText, "architecture", "## SL-116 결정적 Bot controller와 A* ownership", [
+      "room-owned controller state",
+      "이전 authoritative `Players`와 `Projectiles`",
+      "all bots read the same previous snapshot",
+      "one PlayerID-sorted merged State.Step",
+      "dodge -> explore -> retreat -> chase",
+      "attack decision is independent of movement",
+      "`PressedSkill: false`",
+      "`detectionRangeWorld = 15`",
+      "`retreatHPRatio = 0.2`",
+      "`retreatDistanceWorld = 6`",
+      "`exploreArrivalDistanceWorld = 0.25`",
+      "`projectileLookAheadWorld = 8`",
+      "`dodgeMarginWorld = 0.35`",
+      "`CanPlayerDamage`",
+      "only an approved snapshot with `PressedAttack: true` updates cadence",
+      "Client config v3",
+      "REST/OpenAPI/AsyncAPI field/event shape is unchanged",
+      "AsyncAPI info version `0.7.0`",
+      "Wall과 Water",
+      "F -> H -> y -> x",
+      "path failure",
+    ]],
+    [protocolText, "protocol", "### SL-116 Bot input과 행동 계약", [
+      "dodge -> explore -> retreat -> chase",
+      "attack decision is independent of movement",
+      "`PressedSkill: false`",
+      "`detectionRangeWorld = 15`",
+      "`retreatHPRatio = 0.2`",
+      "`retreatDistanceWorld = 6`",
+      "`exploreArrivalDistanceWorld = 0.25`",
+      "canonical byte sequence",
+      "SHA-256",
+      "`projectileLookAheadWorld = 8`",
+      "`dodgeMarginWorld = 0.35`",
+      "상·하·좌·우",
+      "Wall과 Water",
+      "F -> H -> y -> x",
+      "path failure",
+      "`CanPlayerDamage`",
+      "Client config v3",
+      "REST/OpenAPI/AsyncAPI field/event shape is unchanged",
+      "AsyncAPI info version `0.7.0`",
+    ]],
+    [apiReferenceText, "api reference", "## SL-116 Bot 행동과 server-only config", [
+      "server-only config v5",
+      "detectionRangeWorld: 15",
+      "exploreArrivalDistanceWorld: 0.25",
+      "retreatHpRatio: 0.2",
+      "retreatDistanceWorld: 6",
+      "projectileLookAheadWorld: 8",
+      "dodgeMarginWorld: 0.35",
+      "공개 REST에는 bot endpoint가 없습니다",
+      "Client config v3",
+      "AsyncAPI info version `0.7.0`",
+      "only an approved snapshot with `PressedAttack: true` updates cadence",
+    ]],
+    [projectMapText, "project map", "## SL-116 문서 전달과 현재 검증 경계", [
+      "server config v5",
+      "local delivery/validation",
+      "PR/merge/Done claim",
+      "room-owned controller state",
+      "one PlayerID-sorted merged State.Step",
+      "Client config v3",
+      "AsyncAPI info version `0.7.0`",
+    ]],
+    [decisionsText, "decisions", "## ADR-0047: SL-116 결정적 Bot controller와 server config v5", [
+      "room-owned controller state",
+      "all bots read the same previous snapshot",
+      "dodge -> explore -> retreat -> chase",
+      "attack decision is independent of movement",
+      "`PressedSkill: false`",
+      "`CanPlayerDamage`",
+      "only an approved snapshot with `PressedAttack: true` updates cadence",
+      "A*",
+      "Wall과 Water",
+      "F -> H -> y -> x",
+      "path failure",
+      "Client config v3",
+      "REST/OpenAPI/AsyncAPI field/event shape is unchanged",
+      "AsyncAPI info version `0.7.0`",
+    ]],
+  ];
+
+  for (const [text, name, heading, markers] of sections) {
+    const section = extractMarkdownHeadingSection(text, heading, `${name} SL-116 bot behavior section`);
+    for (const marker of markers) {
+      assert(section.includes(marker), `${name} must document SL-116 bot behavior marker ${marker}`);
+    }
+  }
+
+  assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
+  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must remain 0.7.0 for SL-116");
 }
 
 function validateReliableSkillDeliveryValidatorSelfTests() {
+  const currentDocsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
+  const staleDocsUICoalescingArticle = currentDocsUICoalescingArticle.replace(
+    "SL-99 client config v3/server config v5 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+  );
+  let rejectedStaleDocsUICoalescing = false;
+  try {
+    assertReliableSkillDeliveryContract(staleDocsUICoalescingArticle, "synthetic current docs UI stale delivery");
+  } catch (error) {
+    rejectedStaleDocsUICoalescing = error instanceof Error && error.message.includes("SL-99 config boundary");
+  }
+  assert(
+    rejectedStaleDocsUICoalescing,
+    "current docs UI Snapshot coalescing validator must reject server config v4",
+  );
+
   const movedMarkerFixture = `## Current delivery
 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
 PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
@@ -1088,7 +1229,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
 SL-85 effect는 이번 범위에서 제외합니다.
-SL-99 client config v3/server config v4 경계를 유지합니다.
+SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
 ## End`;
@@ -1127,7 +1268,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
 SL-85 effect는 이번 범위에서 제외합니다.
-SL-99 client config v3/server config v4 경계를 유지합니다.
+SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 ## End`;
   assertScopedReliableSkillDeliveryContract(
@@ -1135,6 +1276,25 @@ SL-99 client config v3/server config v4 경계를 유지합니다.
     "synthetic valid current delivery contract",
     "## Current delivery",
     "## Historical note",
+  );
+  const staleCurrentConfigFixture = validCurrentBlockFixture.replace(
+    "SL-99 client config v3/server config v5 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+  );
+  let rejectedStaleCurrentConfig = false;
+  try {
+    assertScopedReliableSkillDeliveryContract(
+      staleCurrentConfigFixture,
+      "synthetic stale current config contract",
+      "## Current delivery",
+      "## Historical note",
+    );
+  } catch (error) {
+    rejectedStaleCurrentConfig = error instanceof Error && error.message.includes("SL-99 config boundary");
+  }
+  assert(
+    rejectedStaleCurrentConfig,
+    "scoped reliable skill delivery validator must reject server config v4 in the current block",
   );
   const oppositeMeaningMutations = [
     [
@@ -1241,8 +1401,8 @@ SL-99 client config v3/server config v4 경계를 유지합니다.
     ],
     [
       "SL-99 config boundary retention",
-      "SL-99 client config v3/server config v4 경계를 유지합니다.",
-      "SL-99 client config v3/server config v4 경계를 유지하지 않습니다.",
+      "SL-99 client config v3/server config v5 경계를 유지합니다.",
+      "SL-99 client config v3/server config v5 경계를 유지하지 않습니다.",
       "SL-99 config boundary",
     ],
   ];
@@ -1276,13 +1436,19 @@ SL-99 client config v3/server config v4 경계를 유지합니다.
 
 function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endMarker) {
   const block = extractDelimitedText(text, startMarker, endMarker, name);
-  assertReliableSkillDeliveryContract(block, name);
+  for (const marker of [
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지해요.",
+  ]) {
+    assert(!block.includes(marker), `${name} must not document SL-99 config boundary v4: ${marker}`);
+  }
+  assertReliableSkillDeliveryContract(block, name, currentReliableSkillDeliveryMarkerGroups);
   return block;
 }
 
-function assertReliableSkillDeliveryContract(block, name) {
+function assertReliableSkillDeliveryContract(block, name, markerGroups = currentReliableSkillDeliveryMarkerGroups) {
   const positions = new Map();
-  for (const [meaning, allowedMarkers] of reliableSkillDeliveryMarkerGroups) {
+  for (const [meaning, allowedMarkers] of markerGroups) {
     let position = -1;
     for (const marker of allowedMarkers) {
       const candidate = block.indexOf(marker);
@@ -1305,6 +1471,31 @@ function assertReliableSkillDeliveryContract(block, name) {
       `${name} must order ${before} before ${after}`,
     );
   }
+}
+
+function validateApiDocsServerConfigV5Contract() {
+  const validationSection = extractDelimitedText(
+    apiDocsText,
+    "## Validation",
+    "\n\n### SL-82 CharacterType 문서화 기준",
+    "api docs current validation section",
+  );
+  assert(
+    validationSection.includes("server config v5 `360/390/330`"),
+    "api docs current validation must document server config v5 cooldowns",
+  );
+  assert(!validationSection.includes("server config v4"), "api docs current validation must not document server config v4");
+
+  const characterTypeSection = extractMarkdownHeadingSection(
+    apiDocsText,
+    "### SL-82 CharacterType 문서화 기준",
+    "api docs current CharacterType section",
+  );
+  assert(
+    characterTypeSection.includes("server config v5 HP `4000/3100/4100`"),
+    "api docs current CharacterType section must document server config v5 authoritative stats",
+  );
+  assert(!characterTypeSection.includes("server config v4"), "api docs current CharacterType section must not document server config v4");
 }
 
 function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {

@@ -1,8 +1,16 @@
 {
-  "version": 4,
+  "version": 5,
   "tickRate": 30,
   "tile": {
     "size": 1.2
+  },
+  "bot": {
+    "detectionRangeWorld": 15,
+    "exploreArrivalDistanceWorld": 0.25,
+    "retreatHpRatio": 0.2,
+    "retreatDistanceWorld": 6,
+    "projectileLookAheadWorld": 8,
+    "dodgeMarginWorld": 0.35
   },
   "player": {
     "types": [

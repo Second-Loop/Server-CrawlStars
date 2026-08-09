@@ -3472,7 +3472,7 @@ func TestTickRoomMergesHumanAndBotIntoExactlyOneStateStep(t *testing.T) {
 
 	players := []simulation.PlayerData{
 		{ID: "human", Team: simulation.TeamRed, Pos: simulation.Vector2{X: -1}},
-		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 1}, IsBot: true},
+		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 1}, HP: config.DefaultPlayerType().HP, IsBot: true},
 	}
 	returnedPlayers := append([]simulation.PlayerData(nil), players...)
 	returnedPlayers[0].Pos.Y = 1
@@ -3595,8 +3595,10 @@ func TestBotAppearsAndActsInRealSharedGameplaySnapshot(t *testing.T) {
 	if humanPlayer.IsBot || !botPlayer.IsBot {
 		t.Fatalf("unexpected participant identity human=%+v bot=%+v", humanPlayer, botPlayer)
 	}
-	if botPlayer.MoveDir == (simulation.Vector2{}) || botPlayer.MoveDir != botPlayer.AttackDir ||
+	if botPlayer.MoveDir == (simulation.Vector2{}) ||
 		math.Abs(math.Hypot(botPlayer.MoveDir.X, botPlayer.MoveDir.Y)-1) > 1e-9 ||
+		botPlayer.AttackDir == (simulation.Vector2{}) ||
+		math.Abs(math.Hypot(botPlayer.AttackDir.X, botPlayer.AttackDir.Y)-1) > 1e-9 ||
 		!botPlayer.PressedAttack {
 		t.Fatalf("bot must move, aim, and receive shared-state attack approval: %+v", botPlayer)
 	}

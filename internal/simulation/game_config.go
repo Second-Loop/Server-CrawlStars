@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-const ServerGameConfigVersion = 4
+const ServerGameConfigVersion = 5
 
 type CharacterType int
 
@@ -22,6 +22,7 @@ type GameConfig struct {
 	Version      int                     `json:"version"`
 	TickRate     int                     `json:"tickRate"`
 	Tile         TileConfig              `json:"tile"`
+	Bot          BotConfig               `json:"bot"`
 	Player       PlayerTypeSetConfig     `json:"player"`
 	Projectile   ProjectileTypeSetConfig `json:"projectile"`
 	ModeCatalog  GameModeCatalogConfig   `json:"mode"`
@@ -31,6 +32,15 @@ type GameConfig struct {
 
 type TileConfig struct {
 	Size float64 `json:"size"`
+}
+
+type BotConfig struct {
+	DetectionRangeWorld         float64 `json:"detectionRangeWorld"`
+	ExploreArrivalDistanceWorld float64 `json:"exploreArrivalDistanceWorld"`
+	RetreatHPRatio              float64 `json:"retreatHpRatio"`
+	RetreatDistanceWorld        float64 `json:"retreatDistanceWorld"`
+	ProjectileLookAheadWorld    float64 `json:"projectileLookAheadWorld"`
+	DodgeMarginWorld            float64 `json:"dodgeMarginWorld"`
 }
 
 type PlayerTypeSetConfig struct {
@@ -197,6 +207,9 @@ func ResolveGameConfig(config GameConfig) (GameConfig, error) {
 	}
 	if config.Tile.Size <= 0 {
 		return GameConfig{}, fmt.Errorf("game config tile.size must be positive")
+	}
+	if err := validateBotConfig(config.Bot); err != nil {
+		return GameConfig{}, err
 	}
 	if len(config.Projectile.Types) == 0 {
 		return GameConfig{}, fmt.Errorf("game config projectile.types must not be empty")
@@ -386,6 +399,27 @@ func isFinitePositive(value float64) bool {
 	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
+func validateBotConfig(config BotConfig) error {
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{name: "detectionRangeWorld", value: config.DetectionRangeWorld},
+		{name: "exploreArrivalDistanceWorld", value: config.ExploreArrivalDistanceWorld},
+		{name: "retreatDistanceWorld", value: config.RetreatDistanceWorld},
+		{name: "projectileLookAheadWorld", value: config.ProjectileLookAheadWorld},
+		{name: "dodgeMarginWorld", value: config.DodgeMarginWorld},
+	} {
+		if !isFinitePositive(field.value) {
+			return fmt.Errorf("game config bot.%s must be positive", field.name)
+		}
+	}
+	if !isFinitePositive(config.RetreatHPRatio) || config.RetreatHPRatio > 1 {
+		return fmt.Errorf("game config bot.retreatHpRatio must be greater than 0 and less than or equal to 1")
+	}
+	return nil
+}
+
 func validateGameModeCatalogConfig(catalog GameModeCatalogConfig) error {
 	if catalog.Default == "" {
 		return fmt.Errorf("game config mode.default must not be empty")
@@ -457,6 +491,14 @@ func StaticGameConfig() GameConfig {
 		TickRate: TickRate,
 		Tile: TileConfig{
 			Size: TileSize,
+		},
+		Bot: BotConfig{
+			DetectionRangeWorld:         15,
+			ExploreArrivalDistanceWorld: 0.25,
+			RetreatHPRatio:              0.2,
+			RetreatDistanceWorld:        6,
+			ProjectileLookAheadWorld:    8,
+			DodgeMarginWorld:            0.35,
 		},
 		Player: PlayerTypeSetConfig{
 			Types: []PlayerTypeConfig{

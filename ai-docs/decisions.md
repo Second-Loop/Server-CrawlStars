@@ -890,3 +890,27 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Duel/Solo/Team의 manual/timer bot participant가 같은 정책을 사용하면서도 room별 duplicate를 허용합니다.
 - Ready와 gameplay Snapshot이 같은 bot identity/character를 보장해 client가 match 중 캐릭터를 재해석할 필요가 없습니다.
 - REST/AsyncAPI/OpenAPI shape는 바뀌지 않으며, 변경 범위는 server participant creation과 human-readable ownership 문서로 제한됩니다.
+
+## ADR-0047: SL-116 결정적 Bot controller와 server config v5
+
+상태: 구현과 문서 계약을 함께 검증하는 중
+
+맥락: SL-90의 basic bot controller는 직전 snapshot을 사용해 공통 `InputCommand`를 만들었지만, advanced 행동을 deterministic하게 정의하고 server-only tuning과 ownership을 문서로 고정할 필요가 있었습니다. Client config와 public wire schema를 바꾸지 않으면서 room이 controller state와 cadence를 소유하고 simulation의 단일 입력 경계를 유지해야 합니다.
+
+결정:
+
+- Room이 `room-owned controller state`를 보관합니다. State에는 bot별 `exploreEpoch`, destination, `(start, goal)` A* cache와 next-attack tick이 있으며 bot 제거/room cleanup 때 함께 폐기합니다. Room은 이전 authoritative `Players`와 `Projectiles`만 observation으로 사용합니다.
+- 한 tick의 `all bots read the same previous snapshot`을 보장하고, human pending input과 bot command를 PlayerID 오름차순으로 합쳐 `one PlayerID-sorted merged State.Step`을 정확히 한 번 실행합니다. Bot command는 `ClientTick: 0`, `PressedSkill: false`이고 성공적인 이동·공격·피해는 simulation이 확정합니다.
+- 행동 priority는 `dodge -> explore -> retreat -> chase`입니다. `attack decision is independent of movement`이므로 dodge/retreat 중에도 normal attack range와 cadence가 허용되면 공격을 요청할 수 있습니다.
+- 탐지 거리는 `detectionRangeWorld = 15`, retreat 경계는 `retreatHPRatio = 0.2` 이하, retreat raw distance는 `retreatDistanceWorld = 6`입니다. Explore arrival은 `exploreArrivalDistanceWorld = 0.25`, projectile look-ahead는 `projectileLookAheadWorld = 8`, dodge margin은 `dodgeMarginWorld = 0.35`입니다.
+- Explore seed는 길이 prefix room ID·bot ID·big-endian epoch의 canonical byte sequence와 SHA-256 첫 8 bytes를 사용합니다. Passable 후보는 row-major로 정렬하고 현재 tile을 제외하며, 목적지 도착·선택·path failure마다 epoch을 갱신합니다.
+- A*는 4방향 상·하·좌·우만 사용하고 Wall과 Water를 blocked로 봅니다. G 비용은 1, Manhattan H를 사용하며 tie-break는 `F -> H -> y -> x`입니다. Invalid/blocked start·goal, disconnected map, open set 소진은 `path failure`로 처리해 explore는 재선택하고 chase/retreat는 해당 tick 이동을 zero로 둡니다.
+- Projectile owner/target eligibility는 simulation의 공통 `CanPlayerDamage`를 사용합니다. 따라서 mode별 friendly-fire 규칙과 dodge threat 판정이 실제 projectile hit 규칙과 분리되지 않습니다.
+- Room cadence는 실제 승인 snapshot만 반영합니다. only an approved snapshot with `PressedAttack: true` updates cadence; charge 부족이나 Colt burst 중 거절된 시도는 cadence를 앞당기지 않습니다.
+- `server-config/game-config.json` v5는 server-only 값 `detectionRangeWorld: 15`, `exploreArrivalDistanceWorld: 0.25`, `retreatHpRatio: 0.2`, `retreatDistanceWorld: 6`, `projectileLookAheadWorld: 8`, `dodgeMarginWorld: 0.35`를 소유합니다. Client config v3와 REST/OpenAPI/AsyncAPI field/event shape is unchanged이며 AsyncAPI info version `0.7.0`을 유지합니다.
+
+결과:
+
+- 같은 room ID, bot ID, epoch, config, previous snapshot과 controller state는 같은 입력을 만들고 PlayerID slice/map 순서에 흔들리지 않습니다.
+- Bot은 skill을 요청하지 않고, 이동·조준·공격 요청과 actual approval을 공통 `InputCommand -> State.Step -> Snapshot` 경계에서 처리합니다.
+- Public REST에는 bot endpoint나 bot tuning field를 추가하지 않으며 Client repository와 API schema migration도 만들지 않습니다.
