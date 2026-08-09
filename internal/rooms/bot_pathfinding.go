@@ -3,6 +3,7 @@ package rooms
 import (
 	"container/heap"
 	"math"
+	"sort"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
 )
@@ -70,6 +71,14 @@ type botMapGeometry struct {
 	originX  float64
 	originY  float64
 }
+
+type botRetreatCandidate struct {
+	tile            botTile
+	center          simulation.Vector2
+	distanceSquared float64
+}
+
+const botTraversalTieEpsilon = 1e-12
 
 func worldToBotTile(gameMap simulation.MapData, position simulation.Vector2) (botTile, bool) {
 	geometry, ok := botMapGeometryFor(gameMap)
@@ -169,17 +178,36 @@ func retreatGoal(
 		X: player.Pos.X - targetDirection.X*retreatDistance,
 		Y: player.Pos.Y - targetDirection.Y*retreatDistance,
 	}
-	candidates := botSupercoverTiles(geometry, gameMap, player.Pos, rawTarget)
-	for index := len(candidates) - 1; index >= 0; index-- {
-		candidate := candidates[index]
-		if candidate == startTile || !botTilePassable(gameMap, candidate) {
+	tiles := botSupercoverTiles(geometry, gameMap, player.Pos, rawTarget)
+	candidates := make([]botRetreatCandidate, 0, len(tiles))
+	for _, tile := range tiles {
+		center := botTileWorldCenter(geometry, tile)
+		deltaX := center.X - player.Pos.X
+		deltaY := center.Y - player.Pos.Y
+		candidates = append(candidates, botRetreatCandidate{
+			tile:            tile,
+			center:          center,
+			distanceSquared: deltaX*deltaX + deltaY*deltaY,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		distanceDelta := candidates[i].distanceSquared - candidates[j].distanceSquared
+		if math.Abs(distanceDelta) > 1e-12 {
+			return distanceDelta > 0
+		}
+		if candidates[i].tile.y != candidates[j].tile.y {
+			return candidates[i].tile.y < candidates[j].tile.y
+		}
+		return candidates[i].tile.x < candidates[j].tile.x
+	})
+	for _, candidate := range candidates {
+		if candidate.tile == startTile || !botTilePassable(gameMap, candidate.tile) {
 			continue
 		}
-		center := botTileWorldCenter(geometry, candidate)
-		if botMapCollidesWithPlayer(geometry, gameMap, center, radius) {
+		if botMapCollidesWithPlayer(geometry, gameMap, candidate.center, radius) {
 			continue
 		}
-		return center, true
+		return candidate.center, true
 	}
 	return simulation.Vector2{}, false
 }
@@ -288,6 +316,9 @@ func botSupercoverTiles(
 		tiles = append(tiles, tile)
 	}
 	appendUnique(startTile)
+	if startTile == endTile {
+		return tiles
+	}
 
 	deltaX := endGridX - startGridX
 	deltaY := endGridY - startGridY
@@ -315,7 +346,10 @@ func botSupercoverTiles(
 	tMaxX, tDeltaX := botGridTraversal(deltaX, startGridX, current.x, stepX)
 	tMaxY, tDeltaY := botGridTraversal(deltaY, startGridY, current.y, stepY)
 	for step := 0; step < maxSteps; step++ {
-		if stepX == 0 || (stepY != 0 && tMaxY < tMaxX) {
+		if math.Min(tMaxX, tMaxY) > 1 {
+			break
+		}
+		if stepX == 0 || (stepY != 0 && tMaxY < tMaxX-botTraversalTieEpsilon) {
 			current.y += stepY
 			tMaxY += tDeltaY
 			appendUnique(current)
@@ -324,7 +358,7 @@ func botSupercoverTiles(
 			}
 			continue
 		}
-		if stepY == 0 || tMaxX < tMaxY {
+		if stepY == 0 || tMaxX < tMaxY-botTraversalTieEpsilon {
 			current.x += stepX
 			tMaxX += tDeltaX
 			appendUnique(current)

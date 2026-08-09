@@ -57,6 +57,29 @@ func TestBotAStarWallAndWaterAreBlocked(t *testing.T) {
 	}
 }
 
+func TestBotAStarGroundSpawnPointAndBushArePassable(t *testing.T) {
+	for _, passable := range []simulation.TileType{
+		simulation.TileGround,
+		simulation.TileSpawnPoint,
+		simulation.TileBush,
+	} {
+		t.Run(tileTypeName(passable), func(t *testing.T) {
+			gameMap := botPathTestMap(3, 1, simulation.TileWall)
+			gameMap.Map[0][0] = simulation.TileGround
+			gameMap.Map[0][1] = passable
+			gameMap.Map[0][2] = simulation.TileGround
+
+			got, ok := nextBotPathDirection(gameMap, gameMap.WorldPos(0, 0), gameMap.WorldPos(2, 0))
+			if !ok {
+				t.Fatalf("nextBotPathDirection() failed through %s", tileTypeName(passable))
+			}
+			if got != (simulation.Vector2{X: 1}) {
+				t.Fatalf("nextBotPathDirection() = %+v through %s, want %+v", got, tileTypeName(passable), simulation.Vector2{X: 1})
+			}
+		})
+	}
+}
+
 func TestBotAStarDisconnectedGoal(t *testing.T) {
 	gameMap := botPathTestMap(5, 5, simulation.TileGround)
 	for y := 0; y < gameMap.Height; y++ {
@@ -191,6 +214,45 @@ func TestRetreatGoalIncludesPlayerRadiusInMapValidation(t *testing.T) {
 	}
 }
 
+func TestRetreatGoalDoesNotCrossBeyondSubTileRawTarget(t *testing.T) {
+	gameMap := botPathTestMap(7, 5, simulation.TileGround)
+	player := simulation.PlayerData{
+		Pos:    simulation.Vector2{X: 0, Y: 0},
+		Radius: 0,
+	}
+	target := simulation.Vector2{X: 0.1, Y: 0}
+
+	if _, ok := retreatGoal(gameMap, player, target, 0.1); ok {
+		t.Fatal("retreatGoal() crossed beyond a raw target that stayed in the current tile")
+	}
+}
+
+func TestRetreatGoalOrdersAsymmetricCornerCellsByDistance(t *testing.T) {
+	gameMap := botPathTestMap(8, 8, simulation.TileGround)
+	for _, blocked := range []botTile{
+		{x: 0, y: 5},
+		{x: 1, y: 5},
+		{x: 1, y: 4},
+		{x: 2, y: 4},
+	} {
+		gameMap.Map[blocked.y][blocked.x] = simulation.TileWall
+	}
+	player := simulation.PlayerData{
+		Pos:    simulation.Vector2{X: -0.25, Y: 0.5},
+		Radius: 0,
+	}
+	target := simulation.Vector2{X: 1.25, Y: 1.5}
+
+	got, ok := retreatGoal(gameMap, player, target, math.Sqrt(13))
+	if !ok {
+		t.Fatal("retreatGoal() failed at an asymmetric corner crossing")
+	}
+	want := simulation.Vector2{X: -1.5, Y: 0.5}
+	if !botVectorsNear(got, want) {
+		t.Fatalf("retreatGoal() = %+v, want farther corner side center %+v", got, want)
+	}
+}
+
 func TestRetreatGoalFailsWhenFarToNearCandidatesAreBlocked(t *testing.T) {
 	gameMap := botPathTestMapWithTileSize(7, 5, 1.2, simulation.TileGround)
 	for x := 0; x < 3; x++ {
@@ -229,10 +291,18 @@ func botPathTestMapWithTileSize(width, height int, tileSize float64, tile simula
 }
 
 func tileTypeName(tile simulation.TileType) string {
-	if tile == simulation.TileWall {
+	switch tile {
+	case simulation.TileWall:
 		return "wall"
+	case simulation.TileWater:
+		return "water"
+	case simulation.TileSpawnPoint:
+		return "spawn point"
+	case simulation.TileBush:
+		return "bush"
+	default:
+		return "ground"
 	}
-	return "water"
 }
 
 func botVectorsNear(got, want simulation.Vector2) bool {
