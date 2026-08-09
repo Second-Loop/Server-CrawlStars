@@ -94,6 +94,8 @@ type room struct {
 	countdown                int
 	state                    simulationStepper
 	lastPlayers              []simulation.PlayerData
+	lastProjectiles          []simulation.ProjectileData
+	botControllerStates      map[simulation.PlayerID]*botControllerState
 	nextBotAttackTicks       map[simulation.PlayerID]simulation.Tick
 	pendingInputs            map[string]simulation.InputCommand
 	clients                  map[string]*clientSession
@@ -1243,6 +1245,7 @@ func (s *Store) newRoomLocked(roomID string, gameConfig simulation.GameConfig) *
 		finalizedGameEndSessions: make(map[string]*clientSession),
 		gameEndCleanupDone:       make(chan struct{}),
 		gameEndCleanupWorkerDone: make(chan struct{}),
+		botControllerStates:      make(map[simulation.PlayerID]*botControllerState),
 		nextBotAttackTicks:       make(map[simulation.PlayerID]simulation.Tick),
 		createdAt:                now,
 		lastActivityAt:           now,

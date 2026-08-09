@@ -162,7 +162,13 @@ func TestBotBasicAttackCadenceLeavesSimulationChargeAuthoritative(t *testing.T) 
 	nextAttackTicks := make(map[simulation.PlayerID]simulation.Tick)
 	accepted := make([]bool, 0, 5)
 	for tick := simulation.Tick(1); tick <= 5; tick++ {
-		inputs := mergedTickInputsAtTick(nil, view, tick, nextAttackTicks)
+		inputs := mergedTickInputsAtTick(nil, botObservation{
+			gameMap:         simulation.StaticMapFixture(),
+			gameConfig:      config,
+			players:         view,
+			currentTick:     tick,
+			nextAttackTicks: nextAttackTicks,
+		}, make(map[simulation.PlayerID]*botControllerState))
 		if len(inputs) != 1 || inputs[0].PlayerID != "bot" {
 			t.Fatalf("bot input missing or replaced: %+v", inputs)
 		}
@@ -213,11 +219,16 @@ func TestRoomBotAttackCadenceUsesServerRechargeTicks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select duel mode: %v", err)
 	}
+	config.Map = roomBotIntegrationMap()
+	playerType, ok := config.PlayerType(simulation.CharacterTypeShelly)
+	if !ok {
+		t.Fatal("missing Shelly config")
+	}
 	config.Player.Types[0].NormalAttack.RechargeTicks = 3
 	config.Player.Types[0].NormalAttack.DamagePerHit = 1
 	players := []simulation.PlayerData{
-		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: -10}, IsBot: true},
-		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: 10}},
+		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(2, 4), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed, IsBot: true},
+		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(6, 4), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed},
 	}
 	room := store.newRoomLocked("room-bot-attack-cadence", config)
 	room.Status = RoomStatusStarted
@@ -255,14 +266,19 @@ func TestRoomColtBotRetriesAfterFinalBurstEmission(t *testing.T) {
 	if !ok {
 		t.Fatal("missing Colt config")
 	}
+	config.Map = roomBotIntegrationMap()
+	playerType, ok := config.PlayerType(simulation.CharacterTypeColt)
+	if !ok {
+		t.Fatal("missing Colt player config")
+	}
 	for index := range config.Player.Types {
 		if config.Player.Types[index].CharacterType == simulation.CharacterTypeColt {
 			config.Player.Types[index].NormalAttack.DamagePerHit = 1
 		}
 	}
 	players := []simulation.PlayerData{
-		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeColt, Pos: simulation.Vector2{X: -10}, IsBot: true},
-		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: 10}},
+		{ID: "bot", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeColt, Pos: config.Map.WorldPos(2, 4), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed, IsBot: true},
+		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(6, 4)},
 	}
 	room := store.newRoomLocked("room-colt-bot-attack-cadence", config)
 	room.Status = RoomStatusStarted
@@ -295,9 +311,14 @@ func TestRoomTickAppliesPlayerCollisionBetweenHumanAndBot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select duel mode: %v", err)
 	}
+	config.Map = roomBotIntegrationMap()
+	playerType, ok := config.PlayerType(simulation.CharacterTypeShelly)
+	if !ok {
+		t.Fatal("missing Shelly config")
+	}
 	players := []simulation.PlayerData{
-		{ID: "human", Team: simulation.TeamRed, Pos: simulation.Vector2{X: -0.55}},
-		{ID: "bot", Team: simulation.TeamBlue, Pos: simulation.Vector2{X: 0.55}, IsBot: true},
+		{ID: "human", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(4, 4), Radius: 0.6, HP: playerType.HP, Speed: playerType.Speed},
+		{ID: "bot", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(5, 4), Radius: 0.6, HP: playerType.HP, Speed: playerType.Speed, IsBot: true},
 	}
 	room := store.newRoomLocked("room-player-collision", config)
 	room.Status = RoomStatusStarted
@@ -322,6 +343,298 @@ func TestRoomTickAppliesPlayerCollisionBetweenHumanAndBot(t *testing.T) {
 	if human.MoveDir != (simulation.Vector2{X: 1}) || bot.MoveDir != (simulation.Vector2{X: -1}) {
 		t.Fatalf("human/bot inputs were not processed together: human=%+v bot=%+v", human.MoveDir, bot.MoveDir)
 	}
+}
+
+func TestRoomBotTickUsesOnePreviousObservationAcrossPermutations(t *testing.T) {
+	forward := newRoomBotObservationFixture(t, false)
+	reversed := newRoomBotObservationFixture(t, true)
+
+	forward.store.tickRoomState(forward.room)
+	reversed.store.tickRoomState(reversed.room)
+	if len(forward.stepper.inputs) != 1 || len(reversed.stepper.inputs) != 1 {
+		t.Fatalf("first tick input batches = %d/%d, want one each", len(forward.stepper.inputs), len(reversed.stepper.inputs))
+	}
+
+	forward.room.pendingInputs = map[string]simulation.InputCommand{}
+	reversed.room.pendingInputs = map[string]simulation.InputCommand{}
+	forward.store.tickRoomState(forward.room)
+	reversed.store.tickRoomState(reversed.room)
+	if len(forward.stepper.inputs) != 2 || len(reversed.stepper.inputs) != 2 {
+		t.Fatalf("second tick input batches = %d/%d, want two each", len(forward.stepper.inputs), len(reversed.stepper.inputs))
+	}
+
+	got := forward.stepper.inputs[1]
+	if !reflect.DeepEqual(got, reversed.stepper.inputs[1]) {
+		t.Fatalf("player/projectile permutation changed second input batch: forward=%+v reversed=%+v", got, reversed.stepper.inputs[1])
+	}
+	if want := []simulation.PlayerID{"bot-a", "bot-b"}; !reflect.DeepEqual(inputPlayerIDs(got), want) {
+		t.Fatalf("second input IDs=%v, want sorted unique IDs %v; inputs=%+v", inputPlayerIDs(got), want, got)
+	}
+	if bot := playerInputByID(t, got, "bot-a"); bot.MoveDir != (simulation.Vector2{Y: -1}) {
+		t.Fatalf("bot-a did not use the previous hostile projectile observation: %+v", bot)
+	}
+	if human := playerInputByID(t, forward.stepper.inputs[0], "human"); human.PlayerID != "human" ||
+		human.ClientTick != 11 || human.MoveDir != (simulation.Vector2{X: -1}) {
+		t.Fatalf("human pending command was not authoritative and unique: %+v", human)
+	}
+	for _, input := range got {
+		if input.PressedSkill {
+			t.Fatalf("bot batch requested skill: %+v", got)
+		}
+		if input.PlayerID == "bot-a" || input.PlayerID == "bot-b" {
+			if input.ClientTick != 0 {
+				t.Fatalf("bot ClientTick=%d, want 0: %+v", input.ClientTick, input)
+			}
+		}
+	}
+}
+
+func TestRoomBotControllerAndCadenceStatePersistsThenPrunes(t *testing.T) {
+	fixture := newRoomBotLifecycleFixture(t)
+	fixture.store.tickRoomState(fixture.room)
+
+	firstStates := roomBotControllerStatePointers(t, fixture.room)
+	if _, ok := firstStates["bot-a"]; !ok {
+		t.Fatalf("active bot controller state missing after first tick: %+v", firstStates)
+	}
+	if _, ok := fixture.room.nextBotAttackTicks["stale-bot"]; ok {
+		t.Fatalf("stale cadence state survived first generation: %+v", fixture.room.nextBotAttackTicks)
+	}
+
+	fixture.room.pendingInputs = map[string]simulation.InputCommand{}
+	fixture.store.tickRoomState(fixture.room)
+	secondStates := roomBotControllerStatePointers(t, fixture.room)
+	if firstStates["bot-a"] != secondStates["bot-a"] {
+		t.Fatalf("bot controller state pointer changed across ticks: first=%+v second=%+v", firstStates, secondStates)
+	}
+	if _, ok := fixture.room.nextBotAttackTicks["bot-a"]; !ok {
+		t.Fatalf("active bot cadence state did not persist: %+v", fixture.room.nextBotAttackTicks)
+	}
+
+	fixture.room.Players = fixture.room.Players[1:]
+	fixture.room.lastPlayers = fixture.room.lastPlayers[1:]
+	fixture.room.pendingInputs = map[string]simulation.InputCommand{}
+	fixture.store.tickRoomState(fixture.room)
+	if got := roomBotControllerStatePointers(t, fixture.room); len(got) != 0 {
+		t.Fatalf("controller state for absent participant survived cleanup: %+v", got)
+	}
+	if _, ok := fixture.room.nextBotAttackTicks["bot-a"]; ok {
+		t.Fatalf("cadence state for absent player survived cleanup: %+v", fixture.room.nextBotAttackTicks)
+	}
+}
+
+func TestRoomBotTickClonesReturnedPlayersAndProjectiles(t *testing.T) {
+	fixture := newRoomBotObservationFixture(t, false)
+	fixture.store.tickRoomState(fixture.room)
+
+	if len(fixture.room.lastPlayers) == 0 {
+		t.Fatal("room did not retain returned players")
+	}
+	returnedPlayerPosition := fixture.room.lastPlayers[0].Pos
+	returnedProjectilePosition := fixture.stepper.snapshots[0].Projectiles[0].Pos
+	fixture.stepper.snapshots[0].Players[0].Pos.X = 999
+	fixture.stepper.snapshots[0].Projectiles[0].Pos.X = 999
+	if fixture.room.lastPlayers[0].Pos != returnedPlayerPosition {
+		t.Fatalf("room lastPlayers aliases returned snapshot: got=%+v want=%+v", fixture.room.lastPlayers[0].Pos, returnedPlayerPosition)
+	}
+	storedProjectiles := roomLastProjectiles(t, fixture.room)
+	if len(storedProjectiles) != 1 || storedProjectiles[0].Pos != returnedProjectilePosition {
+		t.Fatalf("room lastProjectiles=%+v, want cloned projectile %+v", storedProjectiles, returnedProjectilePosition)
+	}
+}
+
+func TestRoomBotAttackCadenceUsesSimulationApprovalOnly(t *testing.T) {
+	fixture := newRoomBotObservationFixture(t, false)
+	for index := range fixture.stepper.snapshots {
+		fixture.stepper.snapshots[index].Players[0].PressedAttack = false
+	}
+
+	fixture.store.tickRoomState(fixture.room)
+	fixture.room.pendingInputs = map[string]simulation.InputCommand{}
+	fixture.store.tickRoomState(fixture.room)
+	if len(fixture.stepper.inputs) != 2 {
+		t.Fatalf("recorded input batches=%d, want 2", len(fixture.stepper.inputs))
+	}
+	for index, inputs := range fixture.stepper.inputs {
+		if bot := playerInputByID(t, inputs, "bot-a"); !bot.PressedAttack {
+			t.Fatalf("tick %d bot attack request=%+v, want retry because simulation approved no attack", index+1, bot)
+		}
+	}
+}
+
+func TestRoomBotCleanupDropsRoomRegistryOwnership(t *testing.T) {
+	fixture := newRoomBotObservationFixture(t, false)
+	fixture.store.mu.Lock()
+	fixture.store.rooms[fixture.room.ID] = fixture.room
+	fixture.store.mu.Unlock()
+	fixture.store.tickRoomState(fixture.room)
+
+	var resources roomResources
+	fixture.room.mu.Lock()
+	_, removed := resources.removeRoomLockedWithCause(fixture.room, websocketCloseCauseDebugDelete)
+	fixture.room.mu.Unlock()
+	if !removed {
+		t.Fatal("room cleanup did not remove room-owned resources")
+	}
+	if !fixture.store.deleteRoomIfSame(fixture.room.ID, fixture.room) {
+		t.Fatal("room cleanup did not release registry ownership")
+	}
+	if fixture.store.lookupRoom(fixture.room.ID) != nil {
+		t.Fatal("cleaned room remained reachable from the store")
+	}
+}
+
+type roomBotTickStepper struct {
+	inputs    [][]simulation.InputCommand
+	snapshots []simulation.Snapshot
+}
+
+func (s *roomBotTickStepper) EliminatePlayers([]simulation.PlayerID) {}
+
+func (s *roomBotTickStepper) Step(inputs []simulation.InputCommand) simulation.Snapshot {
+	s.inputs = append(s.inputs, append([]simulation.InputCommand(nil), inputs...))
+	index := len(s.inputs) - 1
+	if index >= len(s.snapshots) {
+		index = len(s.snapshots) - 1
+	}
+	if index < 0 {
+		return simulation.Snapshot{}
+	}
+	return s.snapshots[index]
+}
+
+type roomBotObservationFixture struct {
+	store   *Store
+	room    *room
+	stepper *roomBotTickStepper
+}
+
+func newRoomBotObservationFixture(t *testing.T, reverse bool) roomBotObservationFixture {
+	t.Helper()
+	store := NewStoreWithClock(5, newFakeClock())
+	t.Cleanup(store.Close)
+	config, err := store.gameConfig.SelectMode(simulation.GameModeSolo)
+	if err != nil {
+		t.Fatalf("select solo mode: %v", err)
+	}
+	config.Map = roomBotIntegrationMap()
+	playerType, ok := config.PlayerType(simulation.CharacterTypeShelly)
+	if !ok {
+		t.Fatal("missing Shelly config")
+	}
+	players := []simulation.PlayerData{
+		{ID: "bot-a", Team: simulation.TeamRed, IsBot: true, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(4, 4), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed},
+		{ID: "bot-b", Team: simulation.TeamRed, IsBot: true, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(4, 5), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed},
+		{ID: "enemy", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(6, 4), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed},
+		{ID: "human", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, Pos: config.Map.WorldPos(6, 5), Radius: playerType.Radius, HP: playerType.HP, Speed: playerType.Speed},
+	}
+	projectiles := []simulation.ProjectileData{{
+		ID:      "threat-a",
+		OwnerID: "enemy",
+		Pos:     simulation.Vector2{X: -2, Y: 0.2},
+		Dir:     simulation.Vector2{X: 1},
+		Radius:  0.1,
+	}}
+	firstPlayers := append([]simulation.PlayerData(nil), players...)
+	if reverse {
+		reversePlayerData(firstPlayers)
+	}
+	secondPlayers := append([]simulation.PlayerData(nil), firstPlayers...)
+	firstSnapshot := simulation.Snapshot{Tick: 1, Players: firstPlayers, Projectiles: projectiles}
+	secondSnapshot := simulation.Snapshot{Tick: 2, Players: secondPlayers, Projectiles: append([]simulation.ProjectileData(nil), projectiles...)}
+	stepper := &roomBotTickStepper{snapshots: []simulation.Snapshot{firstSnapshot, secondSnapshot}}
+	room := store.newRoomLocked("room-bot-observation", config)
+	room.Status = RoomStatusStarted
+	room.matchStatus = MatchStatusStarted
+	room.Players = roomBotPlayerResponses(players)
+	room.lastPlayers = append([]simulation.PlayerData(nil), firstPlayers...)
+	room.pendingInputs = map[string]simulation.InputCommand{
+		"human": {PlayerID: "spoof", ClientTick: 11, MoveDir: simulation.Vector2{X: -1}},
+		"bot-a": {PlayerID: "human", MoveDir: simulation.Vector2{X: 99}},
+	}
+	room.state = stepper
+	return roomBotObservationFixture{store: store, room: room, stepper: stepper}
+}
+
+func newRoomBotLifecycleFixture(t *testing.T) roomBotObservationFixture {
+	fixture := newRoomBotObservationFixture(t, false)
+	fixture.room.Players = fixture.room.Players[:2]
+	fixture.room.Players[1].ID = "enemy"
+	fixture.room.lastPlayers = fixture.room.lastPlayers[:2]
+	fixture.room.lastPlayers[1].ID = "enemy"
+	fixture.room.lastPlayers[1].IsBot = false
+	fixture.room.nextBotAttackTicks["stale-bot"] = 99
+	fixture.stepper.snapshots = []simulation.Snapshot{
+		{Tick: 1, Players: append([]simulation.PlayerData(nil), fixture.room.lastPlayers...), Projectiles: nil},
+		{Tick: 2, Players: append([]simulation.PlayerData(nil), fixture.room.lastPlayers...), Projectiles: nil},
+		{Tick: 3, Players: []simulation.PlayerData{fixture.room.lastPlayers[1]}, Projectiles: nil},
+	}
+	fixture.stepper.snapshots[0].Players[0].PressedAttack = true
+	fixture.stepper.snapshots[1].Players[0].PressedAttack = false
+	return fixture
+}
+
+func roomBotIntegrationMap() simulation.MapData {
+	const width = 9
+	const height = 9
+	grid := make([][]simulation.TileType, height)
+	for y := range grid {
+		grid[y] = make([]simulation.TileType, width)
+		for x := range grid[y] {
+			if x == 0 || y == 0 || x == width-1 || y == height-1 {
+				grid[y][x] = simulation.TileWall
+			} else {
+				grid[y][x] = simulation.TileGround
+			}
+		}
+	}
+	return simulation.MapData{Width: width, Height: height, MaxPlayers: 6, TileSize: simulation.TileSize, Map: grid}
+}
+
+func roomBotPlayerResponses(players []simulation.PlayerData) []playerResponse {
+	responses := make([]playerResponse, 0, len(players))
+	for index, player := range players {
+		responses = append(responses, playerResponse{
+			ID:            string(player.ID),
+			Team:          string(player.Team),
+			Slot:          index,
+			IsBot:         player.IsBot,
+			CharacterType: player.CharacterType,
+		})
+	}
+	return responses
+}
+
+func reversePlayerData(players []simulation.PlayerData) {
+	for left, right := 0, len(players)-1; left < right; left, right = left+1, right-1 {
+		players[left], players[right] = players[right], players[left]
+	}
+}
+
+func roomBotControllerStatePointers(t *testing.T, room *room) map[simulation.PlayerID]uintptr {
+	t.Helper()
+	field := reflect.ValueOf(room).Elem().FieldByName("botControllerStates")
+	if !field.IsValid() {
+		t.Fatalf("room is missing botControllerStates")
+	}
+	if field.Kind() != reflect.Map {
+		t.Fatalf("botControllerStates kind=%s, want map", field.Kind())
+	}
+	got := make(map[simulation.PlayerID]uintptr, field.Len())
+	for _, key := range field.MapKeys() {
+		value := field.MapIndex(key)
+		if value.IsNil() {
+			got[simulation.PlayerID(key.String())] = 0
+			continue
+		}
+		got[simulation.PlayerID(key.String())] = value.Pointer()
+	}
+	return got
+}
+
+func roomLastProjectiles(t *testing.T, room *room) []simulation.ProjectileData {
+	t.Helper()
+	return append([]simulation.ProjectileData(nil), room.lastProjectiles...)
 }
 
 func inputPlayerIDs(inputs []simulation.InputCommand) []simulation.PlayerID {
