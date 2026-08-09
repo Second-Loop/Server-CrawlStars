@@ -360,8 +360,8 @@ func botDodgeDirection(bot simulation.PlayerData, observation botObservation) (s
 
 	selected := threats[0]
 	for _, threat := range threats[1:] {
-		if threat.collisionDistance < selected.collisionDistance ||
-			(threat.collisionDistance == selected.collisionDistance && threat.projectile.ID < selected.projectile.ID) {
+		if threat.forwardDistance < selected.forwardDistance ||
+			(threat.forwardDistance == selected.forwardDistance && threat.projectile.ID < selected.projectile.ID) {
 			selected = threat
 		}
 	}

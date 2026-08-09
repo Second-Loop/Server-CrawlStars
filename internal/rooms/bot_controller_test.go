@@ -455,6 +455,31 @@ func TestBotControllerDodgeCancellationUsesEarliestThenProjectileID(t *testing.T
 	}
 }
 
+func TestBotControllerDodgeCancellationUsesForwardDistanceBeforeCollisionBoundary(t *testing.T) {
+	gameMap := botControllerOpenMap(11, 11)
+	config := botControllerConfig(gameMap)
+	bot := botControllerPlayer(config, "bot", simulation.TeamRed, gameMap.WorldPos(5, 5))
+	enemy := botControllerPlayer(config, "enemy", simulation.TeamBlue, botControllerOffset(bot.Pos, 2, 0))
+	projectiles := []simulation.ProjectileData{
+		// This threat is closer along its ray (d=3), but its larger lateral
+		// offset makes its collision boundary farther than the second threat.
+		{ID: "forward-first", OwnerID: enemy.ID, Pos: botControllerOffset(bot.Pos, -3, -0.9), Dir: simulation.Vector2{X: 1}, Radius: 0.1},
+		// Its centerline distance is farther (d=3.2), while its collision
+		// boundary is earlier. The binding requires choosing forward-first.
+		{ID: "collision-first", OwnerID: enemy.ID, Pos: botControllerOffset(bot.Pos, 3.2, 0.5), Dir: simulation.Vector2{X: -1}, Radius: 0.1},
+	}
+
+	got, ok := botDodgeDirection(bot, botObservation{
+		gameMap:     gameMap,
+		gameConfig:  config,
+		players:     []simulation.PlayerData{bot, enemy},
+		projectiles: projectiles,
+	})
+	if !ok || got != (simulation.Vector2{Y: 1}) {
+		t.Fatalf("forward-distance fallback=%+v ok=%t, want +90 of forward-first threat (+Y)", got, ok)
+	}
+}
+
 func TestBotControllerDodgeFallbackChecksPlusAndMinusNinetyAndBothBlocked(t *testing.T) {
 	baseMap := simulation.MapData{
 		Width: 3, Height: 3, TileSize: 0.3,
