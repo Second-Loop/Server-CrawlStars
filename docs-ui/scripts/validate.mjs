@@ -1065,7 +1065,11 @@ function validateCharacterSkillCooldownContract() {
   assertScopedReliableSkillDeliveryContract(asyncAPIInfo, "AsyncAPI info current delivery", "일반 non-terminal gameplay snapshot은", "\n    duel_1v1은");
 
   const docsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
-  assertReliableSkillDeliveryContract(docsUICoalescingArticle, "docs UI Snapshot coalescing article");
+  assertReliableSkillDeliveryContract(
+    docsUICoalescingArticle,
+    "docs UI Snapshot coalescing article",
+    currentReliableSkillDeliveryMarkerGroups,
+  );
 
   for (const [text, name, startMarker, endMarker] of [
     [apiReferenceText, "api reference current delivery", "일반 non-terminal gameplay snapshot은", "\n\nClient input:"],
@@ -1078,7 +1082,11 @@ function validateCharacterSkillCooldownContract() {
   }
 
   const skillCooldownDesignDelivery = extractMarkdownHeadingSection(skillCooldownDesignText, "### 2.4 승인 snapshot 전달 경계", "skill cooldown design current delivery");
-  assertReliableSkillDeliveryContract(skillCooldownDesignDelivery, "skill cooldown design current delivery");
+  assertReliableSkillDeliveryContract(
+    skillCooldownDesignDelivery,
+    "skill cooldown design historical delivery",
+    historicalReliableSkillDeliveryMarkerGroups,
+  );
 
   const adr0024 = extractMarkdownHeadingSection(decisionsText, "## ADR-0024: SL-81 Room/Session 동시성과 WebSocket 전달 경계", "ADR-0024");
   const adr0024FollowUp = extractDelimitedText(adr0024, "후속 상태:", "\n\n맥락:", "ADR-0024 follow-up");
@@ -1087,7 +1095,7 @@ function validateCharacterSkillCooldownContract() {
   }
 
   const adr0038 = extractMarkdownHeadingSection(decisionsText, "## ADR-0038: SL-84 Skill cooldown은 canonical PlayerData와 Server Config v4가 소유", "ADR-0038");
-  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 current delivery");
+  assertReliableSkillDeliveryContract(adr0038, "ADR-0038 historical delivery", historicalReliableSkillDeliveryMarkerGroups);
 }
 
 function validateBotBehaviorDocumentation() {
@@ -1188,6 +1196,22 @@ function validateBotBehaviorDocumentation() {
 }
 
 function validateReliableSkillDeliveryValidatorSelfTests() {
+  const currentDocsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
+  const staleDocsUICoalescingArticle = currentDocsUICoalescingArticle.replace(
+    "SL-99 client config v3/server config v5 경계를 유지합니다.",
+    "SL-99 client config v3/server config v4 경계를 유지합니다.",
+  );
+  let rejectedStaleDocsUICoalescing = false;
+  try {
+    assertReliableSkillDeliveryContract(staleDocsUICoalescingArticle, "synthetic current docs UI stale delivery");
+  } catch (error) {
+    rejectedStaleDocsUICoalescing = error instanceof Error && error.message.includes("SL-99 config boundary");
+  }
+  assert(
+    rejectedStaleDocsUICoalescing,
+    "current docs UI Snapshot coalescing validator must reject server config v4",
+  );
+
   const movedMarkerFixture = `## Current delivery
 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다.
 PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다.
@@ -1422,7 +1446,7 @@ function assertScopedReliableSkillDeliveryContract(text, name, startMarker, endM
   return block;
 }
 
-function assertReliableSkillDeliveryContract(block, name, markerGroups = historicalReliableSkillDeliveryMarkerGroups) {
+function assertReliableSkillDeliveryContract(block, name, markerGroups = currentReliableSkillDeliveryMarkerGroups) {
   const positions = new Map();
   for (const [meaning, allowedMarkers] of markerGroups) {
     let position = -1;
