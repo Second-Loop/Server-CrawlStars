@@ -647,32 +647,11 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 }
 
 func (s *State) canOwnerHit(ownerID PlayerID, target PlayerData) bool {
-	if target.ID == ownerID || target.IsDead {
+	owner, ok := s.playerByID(ownerID)
+	if !ok {
 		return false
 	}
-
-	rules := s.gameConfig.SelectedMode.Rules
-	switch rules.TeamBehavior {
-	case TeamBehaviorFreeForAll:
-		return true
-	case TeamBehaviorTwoTeams:
-		if rules.FriendlyFire {
-			return true
-		}
-		ownerTeam, ok := s.playerTeam(ownerID)
-		return ok && ownerTeam != target.Team
-	default:
-		return false
-	}
-}
-
-func (s *State) playerTeam(playerID PlayerID) (Team, bool) {
-	for i := range s.players {
-		if s.players[i].ID == playerID {
-			return s.players[i].Team, true
-		}
-	}
-	return "", false
+	return CanPlayerDamage(owner, target, s.gameConfig.SelectedMode)
 }
 
 func (s *State) tickDuration() float64 {
