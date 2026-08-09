@@ -319,7 +319,7 @@ Token은 일회용 credential이 아니며 room/player session이 존재하는 �
 
 Server는 연결마다 snapshot fanout과 독립적인 heartbeat를 30초마다 실행하고, 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 idempotent close 경로로 현재 session만 한 번 해제합니다. Reconnect grace expiry는 per-player timer/goroutine 없이 room gameplay tick에서 처리하며, 같은 tick에 만료된 player는 한 번에 기존 evaluator로 판정합니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 기존 cancel 정책을 적용하며, started room의 마지막 client가 사라지면 5분 disconnected TTL을 시작합니다. Bot replacement는 없습니다.
 
-일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v4 경계를 유지합니다.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v5 경계를 유지합니다.
 
 Client input:
 
@@ -337,11 +337,11 @@ Client input:
 
 서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Shelly/Colt/Lily는 server-only `3/3/2` attack charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. `PressedAttack: true`여도 player가 사망했거나 방향이 zero이거나 charge가 소진됐으면 공격을 거부합니다. Live player의 유한한 양수 input은 Wall 충돌, zero attack 방향, charge 소진처럼 눈에 보이는 효과가 없어도 처리한 것으로 ACK합니다. Unknown/dead player, non-finite, 음수, stale/duplicate input은 ACK하지 않습니다.
 
-Input `PressedAttack`은 server config v4의 캐릭터별 일반 공격 activation 요청입니다. Shelly는 같은 tick에 5발, Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발, Lily는 2.2 tile centerline melee를 실행합니다. Colt의 후속 emission은 새 activation이 아니므로 snapshot `PressedAttack`은 activation tick에만 `true`입니다.
+Input `PressedAttack`은 server config v5의 캐릭터별 일반 공격 activation 요청입니다. Shelly는 같은 tick에 5발, Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발, Lily는 2.2 tile centerline melee를 실행합니다. Colt의 후속 emission은 새 activation이 아니므로 snapshot `PressedAttack`은 activation tick에만 `true`입니다.
 
 Input `PressedSkill`은 optional boolean이며 누락하면 `false`입니다. Present `null`이나 boolean이 아닌 값은 `invalid_input`이고 기존 pending command를 보존합니다. `PressedSkill: true`는 command마다 독립적인 시도이며 같은 command의 `AttackDir`을 재사용하지만, `AttackDir` 자체가 skill을 trigger하지 않습니다. Cooldown에 막힌 시도는 queue하지 않고 유효한 양수 command의 `LastProcessedClientTick` ACK는 진행합니다.
 
-Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Snapshot `PlayerData.PressedSkill`은 해당 tick의 transient server approval pulse이고, `SkillReadyTick`은 persistent canonical absolute ready tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A` 승인에 cooldown `C`를 적용하면 `A + C`를 기록해 exact `A + C` tick도 허용합니다. Server config v4 cooldown은 Shelly/Colt/Lily 순서로 `360/390/330` tick입니다. SL-99 client config v3 artifact 변경, 실제 skill effect, bot skill use는 SL-84 범위 밖이며 SL-85로 남습니다. AsyncAPI는 `0.7.0`이고 REST OpenAPI는 변경하지 않습니다.
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다. Snapshot `PlayerData.PressedSkill`은 해당 tick의 transient server approval pulse이고, `SkillReadyTick`은 persistent canonical absolute ready tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A` 승인에 cooldown `C`를 적용하면 `A + C`를 기록해 exact `A + C` tick도 허용합니다. Server config v5 cooldown은 Shelly/Colt/Lily 순서로 `360/390/330` tick입니다. SL-99 client config v3 artifact 변경, 실제 skill effect, bot skill use는 SL-84 범위 밖이며 SL-85로 남습니다. AsyncAPI는 `0.7.0`이고 REST OpenAPI는 변경하지 않습니다.
 
 같은 gameplay `State.Step`의 input은 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이 순서는 room의 pending input map 순회 순서와 무관한 input 결정성 기준이며 projectile hit target의 순서와는 별개입니다.
 
@@ -607,9 +607,26 @@ Room TTL은 Store당 하나의 30초 janitor가 검사하며, create/matchmaking
 Gameplay config artifact는 client 공유용과 server runtime용을 분리합니다.
 
 - `client-config/game-config.json`: client build가 sparse checkout해서 가져가는 client config v3입니다. `characters[].type`은 `0=Shelly`, `1=Colt`, `2=Lily`이고 `normalAttackDistance`·`skillAttackDistance`는 Unity world unit, `normalAttackCoolDown`·`skillAttackCoolDown`은 초, `maxBullets`는 client charge 표현값입니다. Server의 Go parser가 artifact를 검증하며 Client 소비 계약은 필수 field와 exact version을 build/runtime parser에서 거부하도록 요구합니다.
-- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v4 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`과 `skill.cooldownTicks`, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`이고 skill cooldown은 `360/390/330`입니다.
+- `server-config/game-config.json`: server binary가 embed해서 room store와 simulation 기본값으로 쓰는 server-only v5 config입니다. `tickRate`, `tile.size`, player type별 `normalAttack`과 `skill.cooldownTicks`, server-only bot tuning, player/projectile type별 runtime 값, `mode.default`와 `mode.catalog`, `map`을 포함합니다. Charge/recharge는 Shelly `3/30`, Colt `3/30`, Lily `2/30`이고 skill cooldown은 `360/390/330`입니다.
 
 Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client의 `normalAttackDistance`, `skillAttackCoolDown`, `maxBullets`는 cooldown UI와 로컬 bot 입력 판단용이며 `HP`, speed, damage, 실제 range/charge/skill 승인 결과는 server-only config/state나 Ready/snapshot message가 소유하는 server-authoritative truth입니다. Skill cooldown의 public canonical state는 gameplay `PlayerData.SkillReadyTick`입니다.
+
+## SL-116 Bot 행동과 server-only config
+
+SL-116의 `server-only config v5`는 client artifact나 REST/WebSocket payload가 아니라 server binary가 읽는 행동 tuning입니다.
+
+```yaml
+detectionRangeWorld: 15
+exploreArrivalDistanceWorld: 0.25
+retreatHpRatio: 0.2
+retreatDistanceWorld: 6
+projectileLookAheadWorld: 8
+dodgeMarginWorld: 0.35
+```
+
+Room은 이전 authoritative `Players`와 `Projectiles`를 한 번 관측해 모든 bot input을 만들고 PlayerID 오름차순으로 합쳐 `State.Step`을 한 번 실행합니다. 행동 priority는 dodge → explore → retreat → chase이고, 공격 판단은 이동과 독립입니다. Bot은 `PressedSkill: false`만 요청하며, only an approved snapshot with `PressedAttack: true` updates cadence입니다.
+
+Client config v3와 public REST/OpenAPI/AsyncAPI field/event shape는 unchanged입니다. 공개 REST에는 bot endpoint가 없습니다. AsyncAPI info version `0.7.0`도 유지되므로 bot tuning은 API response나 WebSocket schema에서 찾지 않습니다.
 
 ## 기본 duel 2인 수동 검증 시나리오
 
@@ -634,7 +651,7 @@ Client는 gameplay state를 여전히 서버 snapshot에서 받습니다. Client
 
 `POST /matchmaking/join`의 optional lower-camel `characterType`은 stable ID `0=Shelly`, `1=Colt`, `2=Lily`를 받습니다. 새 client는 값을 명시하고, SL-82에서는 legacy field 생략만 Shelly `0`으로 보정하며 structured warning을 한 번 기록합니다. explicit `null`, non-integer, string/bool/object/array, 지원하지 않는 정수는 400 `invalid_character_type`이고 SL-98에서 request field를 required로 전환합니다.
 
-REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot participant는 생성 시 선택된 canonical 값을 match 동안 유지하며, `0=Shelly`, `1=Colt`, `2=Lily` 중 균등·독립적으로 선택되고 중복될 수 있습니다. Debug human participant의 기존 기본값은 Shelly `0`입니다. Client config v3는 같은 stable numeric type과 client 표시·입력 보조값을 제공하고, server config v4의 현재 authoritative stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge, skill cooldown `360/390/330`입니다.
+REST `Player.characterType`은 required이며 top-level `player`와 nested `room.players[]`가 같은 값을 반환합니다. WebSocket Ready와 gameplay Snapshot은 required PascalCase `CharacterType`으로 canonical participant identity를 보존합니다. Bot participant는 생성 시 선택된 canonical 값을 match 동안 유지하며, `0=Shelly`, `1=Colt`, `2=Lily` 중 균등·독립적으로 선택되고 중복될 수 있습니다. Debug human participant의 기존 기본값은 Shelly `0`입니다. Client config v3는 같은 stable numeric type과 client 표시·입력 보조값을 제공하고, server config v5의 현재 authoritative stats는 Shelly `4000`, Colt `3100`, Lily `4100` HP와 `3/3/2` attack charge, 공통 30 tick recharge, skill cooldown `360/390/330`입니다.
 
 ## 제약
 

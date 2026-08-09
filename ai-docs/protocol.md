@@ -11,7 +11,7 @@
 - player Wall/Water/boundary collision과 projectile Wall/boundary destroy
 - Bush는 둘 다 통과하고 projectile은 Water도 통과
 - selected mode rules를 따르는 projectile hit, 결정적 target 선택, HP, death snapshot
-- server config v4 기반 Shelly spread, Colt burst, Lily centerline melee 일반 공격과 캐릭터별 skill cooldown
+- server config v5 기반 Shelly spread, Colt burst, Lily centerline melee 일반 공격과 캐릭터별 skill cooldown
 - GameEnd Win/Lose/Draw event와 종료 room 정리
 - matchmaking Ready event/ready ACK/countdown/start
 - session/credential 없는 server-owned bot participant와 결정적 basic controller
@@ -37,7 +37,6 @@ Bot character contract:
 아직 구현하지 않은 것:
 
 - bot replacement
-- pathfinding, 회피, 시야 판정 같은 advanced bot AI
 - respawn, score
 - production matchmaking queue
 
@@ -119,7 +118,7 @@ Attack charge와 recharge 진행도는 server-only state입니다. Skill cooldow
 
 ### SL-83 캐릭터 일반 공격
 
-server config v4 `normalAttack`이 일반 공격의 source of truth입니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
+server config v5 `normalAttack`이 일반 공격의 source of truth입니다. Client config v3는 조준·cooldown UI와 로컬 bot 입력 보조값만 제공하며 authoritative combat stat을 대체하지 않습니다.
 
 - Shelly는 activation tick에 5발을 동시에 만들고 조준 방향 기준 `-12,-6,0,6,12`도 spread를 적용합니다.
 - Colt는 activation tick `A` 기준 `A+[0,6,12,18,24,30]`에 6발을 생성합니다. 마지막 emission tick에는 새 activation을 겹치지 않고 `A+31`부터 다음 공격을 승인합니다. Burst 방향은 activation 때 고정되며 owner가 사망하면 남은 emission을 취소합니다.
@@ -133,9 +132,23 @@ Projectile은 남은 configured range까지 이동량을 먼저 clamp한 뒤 map
 
 Input `PressedSkill`은 optional boolean입니다. 누락은 `false`, present `null`이나 wrong type은 `invalid_input`이며 기존 pending input을 보존합니다. `PressedSkill: true`는 command별 독립 시도이고 같은 command의 `AttackDir`을 재사용하지만 `AttackDir` 자체는 skill을 trigger하지 않습니다. Cooldown에 막힌 시도는 queue하지 않으며 유효한 양수 command의 `LastProcessedClientTick` ACK는 진행합니다.
 
-Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 attack으로 fall through합니다. Gameplay `PlayerData.PressedSkill`은 승인 tick에만 `true`인 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A`에서 승인하면 server config v4의 cooldown `C`를 더해 `A + C`를 기록하며 exact `A + C`도 허용합니다. 초기 state는 `false/0`입니다.
+Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인하고 attack charge를 보존합니다. Cooldown 또는 zero direction이면 기존 attack으로 fall through합니다. Gameplay `PlayerData.PressedSkill`은 승인 tick에만 `true`인 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A`에서 승인하면 server config v5의 cooldown `C`를 더해 `A + C`를 기록하며 exact `A + C`도 허용합니다. 초기 state는 `false/0`입니다.
 
-Server config v4의 Shelly/Colt/Lily cooldown은 `360/390/330` tick입니다. SL-84는 SL-99의 Client config v3를 바꾸지 않고 AsyncAPI만 `0.7.0`으로 올리며 REST OpenAPI는 유지합니다. SL-84는 승인과 cooldown까지만 구현하고 실제 skill effect와 bot skill use는 SL-85 범위입니다.
+Server config v5의 Shelly/Colt/Lily cooldown은 `360/390/330` tick입니다. SL-84는 SL-99의 Client config v3를 바꾸지 않고 AsyncAPI만 `0.7.0`으로 올리며 REST OpenAPI는 유지합니다. SL-84는 승인과 cooldown까지만 구현하고 실제 skill effect와 bot skill use는 SL-85 범위입니다.
+
+### SL-116 Bot input과 행동 계약
+
+Room은 `room-owned controller state`와 bot별 cadence를 보관하고, 직전 authoritative `Players`와 `Projectiles`만 읽어 입력을 만듭니다. 한 tick에서 `all bots read the same previous snapshot`을 사용하고 human pending input과 합친 뒤 `one PlayerID-sorted merged State.Step`을 정확히 한 번 실행합니다. Bot command는 `ClientTick: 0`, `PressedSkill: false`이며 movement/attack 승인 성공은 simulation이 결정합니다.
+
+행동 priority는 `dodge -> explore -> retreat -> chase`이고, `attack decision is independent of movement`입니다. 따라서 dodge나 retreat 중에도 target이 normal attack range 안에 있고 room cadence가 허용하면 `PressedAttack`을 요청할 수 있습니다. 탐지 경계는 `detectionRangeWorld = 15`(15 world-unit 이하 포함), retreat 경계는 `retreatHPRatio = 0.2` 이하, raw 후퇴 거리는 `retreatDistanceWorld = 6`입니다.
+
+Explore 목적지는 `exploreArrivalDistanceWorld = 0.25` world-unit 안에 도착하면 다음 tick에 갱신합니다. Passable Ground/SpawnPoint/Bush 후보를 row-major로 정렬하고 현재 tile을 제외하며, 길이 prefix room ID·bot PlayerID·big-endian `exploreEpoch`을 붙인 `canonical byte sequence`의 `SHA-256` 첫 8 bytes를 후보 index로 사용합니다. 목적지 선택·도달·path failure마다 epoch을 증가시키고, 후보나 경로가 없으면 다음 tick에 재선택합니다.
+
+Dodge는 self-owned/destroyed/ally가 아닌 hostile projectile만 봅니다. Projectile ray의 전방 거리가 `projectileLookAheadWorld = 8` 이하이고 bot radius + projectile radius + `dodgeMarginWorld = 0.35` 안이면 threat로 삼아 `ProjectileID` 오름차순으로 합성합니다. 합이 상쇄되거나 중심이 ray 위면 가장 가까운 threat의 `+90°`, `-90°` 순서로 clear 후보를 시도하고 양쪽이 막히면 zero movement입니다. Hit eligibility는 simulation의 공통 `CanPlayerDamage`를 사용합니다.
+
+A*는 상·하·좌·우 4방향만 탐색하고 Wall과 Water를 blocked로 봅니다. Tile cost `G=1`, Manhattan `H`, open-set tie-break는 `F -> H -> y -> x` 오름차순입니다. Invalid/blocked start·goal, disconnected map, open set 소진은 `path failure`입니다. Explore는 목적지를 버리고 다시 고르며 chase/retreat는 그 tick `MoveDir`을 zero로 둡니다.
+
+Room cadence는 실제 승인 결과로만 갱신합니다: only an approved snapshot with `PressedAttack: true` updates cadence. Charge 부족이나 Colt burst 진행 중 거절된 요청은 cadence를 앞당기지 않습니다. `server-config/game-config.json` v5의 bot 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`이며 Client config v3와 REST/OpenAPI/AsyncAPI field/event shape is unchanged합니다. AsyncAPI info version `0.7.0`을 유지하고 public bot endpoint는 추가하지 않습니다.
 
 Bot도 별도 gameplay state를 만들지 않고 같은 `InputCommand -> State.Step -> Snapshot` 계약을 사용합니다. Room은 직전 authoritative snapshot의 `PlayerData`를 bot controller에 읽기 전용으로 전달합니다. Controller는 가장 가까운 살아 있는 enemy를 고르고, 거리가 같으면 `PlayerID` 오름차순으로 결정하며, 같은 좌표에서는 `+X`를 사용합니다. 첫 gameplay tick의 attack 요청은 즉시 허용하지만, bot activation이 snapshot tick `A`에서 승인되면 다음 요청은 해당 player type의 server config `normalAttack.rechargeTicks`를 더한 `A + rechargeTicks`부터만 생성합니다. Cooldown 동안에도 이동/조준 command는 유지하고 `PressedAttack`만 `false`이며, 실제 charge 소비와 승인 여부는 계속 `State.Step`이 판정합니다. Human pending input은 map key를 authoritative `PlayerID`로 사용하고 bot key의 외부 input은 버립니다. Human command의 `ClientTick`은 merge 뒤에도 유지하고 bot command는 `ClientTick: 0`을 사용합니다. Bot input과 human input을 합쳐 `PlayerID`로 정렬한 뒤 room tick마다 `State.Step`을 정확히 한 번 호출하므로 movement, projectile, hit, HP, attack charge와 최종 processed input ACK는 계속 `internal/simulation`이 판정합니다.
 
@@ -163,7 +176,7 @@ Token은 일회용 credential이 아니며 room/player session이 존재하는 �
 
 Server는 각 connection에 snapshot writer와 독립적인 30초 heartbeat ticker를 둡니다. 각 Ping은 90초 context로 제한하며 error/timeout은 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 최초 close cause는 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`, `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete` 중 하나로 고정합니다. 종료 publication은 이 cause와 connection generation, 종료 시 match phase, session duration, 마지막 전송 gameplay tick을 정확히 한 번 log/metric에 반영하며 raw close reason, transport error, room/player ID는 metric label로 쓰지 않습니다. 오래된 heartbeat가 늦게 실패해도 expected-session identity가 다르면 reconnect된 connection을 제거하지 않고, 그 종료 관측도 이전 generation에 귀속됩니다. Reconnect 전에 current map에서 빠진 이전 connection도 transport `closeDone`까지 room-owned close barrier에 남습니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 match cancel을 적용하며, started room에서 마지막 client가 사라지면 disconnected TTL을 시작합니다. Started grace expiry는 per-player timer/goroutine 없이 room gameplay tick에서 batch 처리합니다. Bot replacement는 만들지 않습니다.
 
-일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v4 경계를 유지합니다.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v5 경계를 유지합니다.
 
 Client input:
 
