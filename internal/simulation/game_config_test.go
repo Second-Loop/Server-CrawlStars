@@ -130,8 +130,15 @@ func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 		t.Fatalf("Colt skill projectile=%+v found=%t, want speed/radius 13/0.3", coltSkillProjectile, ok)
 	}
 	lily, _ := config.PlayerType(CharacterTypeLily)
-	if lily.Skill.Kind != SkillTeleportProjectile || lily.Skill.TeleportProjectile == nil || lily.Skill.TeleportProjectile.RangeTiles != 10.4 {
-		t.Fatalf("Lily skill=%+v, want teleport_projectile range 10.4", lily.Skill)
+	if lily.Skill.Kind != SkillTeleportProjectile || lily.Skill.TeleportProjectile == nil {
+		t.Fatalf("Lily skill=%+v, want teleport_projectile", lily.Skill)
+	}
+	if skill := lily.Skill.TeleportProjectile; skill.DamagePerHit != 400 || skill.RangeTiles != 10.4 || skill.BehindDistanceTiles != 1 || skill.Projectile.Type != "lily_seed" {
+		t.Fatalf("Lily skill=%+v, want damage/range/behind/type 400/10.4/1/lily_seed", skill)
+	}
+	lilySeedProjectile, ok := config.ProjectileType("lily_seed")
+	if !ok || lilySeedProjectile.Speed != 13 || lilySeedProjectile.Radius != 0.3 {
+		t.Fatalf("Lily seed projectile=%+v found=%t, want speed/radius 13/0.3", lilySeedProjectile, ok)
 	}
 	for _, id := range []ProjectileType{"default", "colt_skill", "lily_seed"} {
 		if _, ok := config.ProjectileType(id); !ok {

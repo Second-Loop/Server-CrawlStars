@@ -162,9 +162,10 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
-		"현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+		"현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.",
 		"S+[0,2,4,6,7,9,11,13,14,16,18,20]",
 		"damage 320, range 11 tile, speed 13 world/s, radius 0.3, type colt_skill",
+		"damage 400, range 10.4 tile, speed 13 world/s, radius 0.3, type lily_seed",
 		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
@@ -189,7 +190,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 wire field/event를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하지 않고 gameplay entity를 넣습니다.",
-		"현재 Shelly <code>reload_dash</code>만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+		"현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>만 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
 		"SL-99 client config v3/server config v5 경계를 유지하지 않습니다.",
 	})
 	for _, marker := range []string{
@@ -209,7 +210,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
-		"현재 Shelly <code>reload_dash</code>와 Colt <code>burst_projectile</code>을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+		"현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다.",
 		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)

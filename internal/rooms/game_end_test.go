@@ -371,6 +371,35 @@ func TestColtSkillApprovalCommitsProjectileBeforeSameTickMeleeGameEnd(t *testing
 	assertGameEndResult(t, results, "lily", gameEndResultWin)
 }
 
+func TestLilySeedLethalHitTeleportsBeforeGameEnd(t *testing.T) {
+	gameConfig := simulation.StaticGameConfig()
+	gameConfig.Map = simulation.MapData{}
+	state := simulation.NewStateWithConfig([]simulation.PlayerData{
+		{ID: "lily", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeLily, Pos: simulation.Vector2{X: -2}},
+		{ID: "target", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeShelly, HP: 400},
+	}, simulation.Config{Game: gameConfig})
+
+	snapshot := state.Step([]simulation.InputCommand{{
+		PlayerID: "lily", AttackDir: simulation.Vector2{X: 1}, PressedSkill: true,
+	}})
+	for step := 0; step < 10 && !snapshot.Players[1].IsDead; step++ {
+		snapshot = state.Step(nil)
+	}
+
+	lily := snapshot.Players[0]
+	target := snapshot.Players[1]
+	if lily.ID != "lily" || math.Abs(lily.Pos.X-simulation.TileSize) > 1e-9 || math.Abs(lily.Pos.Y) > 1e-9 {
+		t.Fatalf("terminal Lily snapshot=%+v, want teleport to pre-hit target behind position", lily)
+	}
+	if target.ID != "target" || !target.IsDead || target.HP != 0 {
+		t.Fatalf("terminal target snapshot=%+v, want lethal seed damage", target)
+	}
+
+	results := calculateGameEndResults(gameConfig, snapshot)
+	assertGameEndResult(t, results, "lily", gameEndResultWin)
+	assertGameEndResult(t, results, "target", gameEndResultLose)
+}
+
 func TestGameEndUsesRoomConfig(t *testing.T) {
 	mode := simulation.GameModeConfig{
 		ID:              "custom_survival",

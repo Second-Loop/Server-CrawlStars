@@ -7,14 +7,16 @@ import (
 )
 
 type projectileRuntime struct {
-	maxDistance float64
-	moved       float64
+	maxDistance            float64
+	moved                  float64
+	teleportBehindDistance float64
 }
 
 type projectileAttackSpec struct {
-	damagePerHit float64
-	rangeTiles   float64
-	projectile   ProjectileAttackConfig
+	damagePerHit                float64
+	rangeTiles                  float64
+	projectile                  ProjectileAttackConfig
+	teleportBehindDistanceTiles float64
 }
 
 type projectileEmissionPhase uint8
@@ -89,6 +91,15 @@ func skillProjectileAttackSpec(skill BurstProjectileSkillConfig) projectileAttac
 		damagePerHit: skill.DamagePerHit,
 		rangeTiles:   skill.RangeTiles,
 		projectile:   skill.Projectile,
+	}
+}
+
+func skillTeleportProjectileAttackSpec(skill TeleportProjectileSkillConfig) projectileAttackSpec {
+	return projectileAttackSpec{
+		damagePerHit:                skill.DamagePerHit,
+		rangeTiles:                  skill.RangeTiles,
+		projectile:                  skill.Projectile,
+		teleportBehindDistanceTiles: skill.BehindDistanceTiles,
 	}
 }
 
@@ -255,7 +266,8 @@ func (s *State) emitProjectiles(emissions []projectileEmission) {
 			Type:    emission.projectileType,
 		})
 		s.projectileRuntime[projectileID] = projectileRuntime{
-			maxDistance: emission.attack.rangeTiles * s.resolvedTileSize(),
+			maxDistance:            emission.attack.rangeTiles * s.resolvedTileSize(),
+			teleportBehindDistance: emission.attack.teleportBehindDistanceTiles * s.resolvedTileSize(),
 		}
 	}
 }
