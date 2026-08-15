@@ -14,7 +14,7 @@ SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`�
 
 이 체크아웃의 SL-116 문서 작업은 local delivery/validation 범위입니다. 이 문서는 PR/merge/Done claim을 하지 않으며, Linear와 GitHub의 실제 상태를 대신하지 않습니다.
 
-SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`입니다. Room은 `room-owned controller state`와 cadence를 보유하고, 모든 bot이 같은 이전 snapshot을 읽어 `one PlayerID-sorted merged State.Step`을 한 tick에 한 번 실행합니다. Client config v3, public REST/OpenAPI/AsyncAPI field/event shape는 그대로이고 AsyncAPI info version `0.7.0`도 유지합니다. 세부 priority, A*, projectile dodge, explore seed와 실패 규칙은 `ai-docs/architecture.md`와 `ai-docs/protocol.md`를 기준으로 합니다.
+SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`입니다. Room은 `room-owned controller state`와 cadence를 보유하고, 모든 bot이 같은 이전 snapshot을 읽어 `one PlayerID-sorted merged State.Step`을 한 tick에 한 번 실행합니다. SL-121은 first-step tile cache, 회전 전 tile-axis centering, 결정적 player 우회로 production Map_0의 영구 정지를 막습니다. Client config v3, public REST/OpenAPI/AsyncAPI field/event shape는 그대로이고 AsyncAPI info version `0.7.0`도 유지합니다. 세부 priority, A*, projectile dodge, explore seed와 실패 규칙은 `ai-docs/architecture.md`와 `ai-docs/protocol.md`를 기준으로 합니다.
 
 되는 것:
 
@@ -40,6 +40,7 @@ SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 d
 - Full participant capacity 뒤 human-only attach/ACK, bot을 포함한 Ready/Snapshot
 - 직전 snapshot 기반 결정적 basic controller와 human/bot input의 shared one-Step 처리
 - SL-116 deterministic dodge → explore → retreat → chase controller, four-way A*와 server-only config v5 tuning
+- SL-121 first-step tile centering과 결정적 player 우회로 Wall/Water corner 및 정면 player collision 영구 정지 방지
 - optional `ClientTick`, positive stale/duplicate silent drop, legacy zero last-write-wins
 - gameplay `PlayerData.LastProcessedClientTick`의 player별 monotonic processed input ACK와 bot ACK `0`
 - room-local mode config 기반 team/slot/spawn과 Wall/Water-safe fallback assignment

@@ -16,7 +16,7 @@ type botControllerState struct {
 	exploreDestination    simulation.Vector2
 	cachedPathStart       botTile
 	cachedPathGoal        botTile
-	cachedNextDirection   simulation.Vector2
+	cachedPathNext        botTile
 	hasCachedPath         bool
 }
 
@@ -59,8 +59,15 @@ func botInputForObservation(
 	} else if botShouldRetreat(bot, observation.gameConfig) {
 		moveDirection = botRetreatDirection(bot, target, observation, state)
 	} else {
-		moveDirection = cachedBotPathDirectionOrZero(botObservationMap(observation), bot.Pos, target.Pos, state)
+		moveDirection = cachedBotPathDirectionOrZero(
+			botObservationMap(observation),
+			bot.Pos,
+			target.Pos,
+			botMovementStepWorld(bot, observation.gameConfig),
+			state,
+		)
 	}
+	moveDirection = botAvoidPlayerCollisionDirection(bot, moveDirection, observation)
 
 	input := simulation.InputCommand{
 		PlayerID:     bot.ID,
@@ -180,7 +187,13 @@ func botExploreDirection(bot simulation.PlayerData, observation botObservation, 
 		}
 	}
 
-	direction, ok := cachedBotPathDirection(gameMap, bot.Pos, state.exploreDestination, state)
+	direction, ok := cachedBotPathDirection(
+		gameMap,
+		bot.Pos,
+		state.exploreDestination,
+		botMovementStepWorld(bot, observation.gameConfig),
+		state,
+	)
 	if !ok {
 		state.hasExploreDestination = false
 		invalidateBotPathCache(state)
@@ -276,16 +289,23 @@ func botRetreatDirection(
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}
 	}
-	return cachedBotPathDirectionOrZero(gameMap, bot.Pos, goal, state)
+	return cachedBotPathDirectionOrZero(
+		gameMap,
+		bot.Pos,
+		goal,
+		botMovementStepWorld(bot, observation.gameConfig),
+		state,
+	)
 }
 
 func cachedBotPathDirectionOrZero(
 	gameMap simulation.MapData,
 	startPosition simulation.Vector2,
 	goalPosition simulation.Vector2,
+	maxMovementWorld float64,
 	state *botControllerState,
 ) simulation.Vector2 {
-	direction, ok := cachedBotPathDirection(gameMap, startPosition, goalPosition, state)
+	direction, ok := cachedBotPathDirection(gameMap, startPosition, goalPosition, maxMovementWorld, state)
 	if !ok {
 		return simulation.Vector2{}
 	}
@@ -296,34 +316,115 @@ func cachedBotPathDirection(
 	gameMap simulation.MapData,
 	startPosition simulation.Vector2,
 	goalPosition simulation.Vector2,
+	maxMovementWorld float64,
 	state *botControllerState,
 ) (simulation.Vector2, bool) {
 	if state == nil {
-		return nextBotPathDirection(gameMap, startPosition, goalPosition)
+		return nextBotPathDirectionWithStep(gameMap, startPosition, goalPosition, maxMovementWorld)
 	}
 	start, startOK := worldToBotTile(gameMap, startPosition)
 	goal, goalOK := worldToBotTile(gameMap, goalPosition)
-	if !startOK || !goalOK {
+	geometry, geometryOK := botMapGeometryFor(gameMap)
+	if !startOK || !goalOK || !geometryOK || !botTilePassable(gameMap, start) || !botTilePassable(gameMap, goal) {
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}, false
 	}
 	if start != goal && state.hasCachedPath && state.cachedPathStart == start && state.cachedPathGoal == goal {
-		return state.cachedNextDirection, true
+		return botPathStepDirection(geometry, startPosition, start, state.cachedPathNext, maxMovementWorld), true
 	}
 	if start == goal {
 		invalidateBotPathCache(state)
-		return nextBotPathDirection(gameMap, startPosition, goalPosition)
+		return botUnitDirection(startPosition, goalPosition), true
 	}
-	direction, ok := nextBotPathDirection(gameMap, startPosition, goalPosition)
+	next, ok := firstBotPathStep(gameMap, start, goal)
 	if !ok {
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}, false
 	}
 	state.cachedPathStart = start
 	state.cachedPathGoal = goal
-	state.cachedNextDirection = direction
+	state.cachedPathNext = next
 	state.hasCachedPath = true
-	return direction, true
+	return botPathStepDirection(geometry, startPosition, start, next, maxMovementWorld), true
+}
+
+func botMovementStepWorld(bot simulation.PlayerData, gameConfig simulation.GameConfig) float64 {
+	tickRate := gameConfig.TickRate
+	if tickRate <= 0 {
+		tickRate = simulation.TickRate
+	}
+	if !finiteBotFloat(bot.Speed) || bot.Speed <= 0 {
+		return simulation.DefaultPlayerSpeed / float64(tickRate)
+	}
+	return bot.Speed / float64(tickRate)
+}
+
+func botAvoidPlayerCollisionDirection(
+	bot simulation.PlayerData,
+	desired simulation.Vector2,
+	observation botObservation,
+) simulation.Vector2 {
+	if desired == (simulation.Vector2{}) || !finiteBotVector(desired) {
+		return desired
+	}
+	step := botMovementStepWorld(bot, observation.gameConfig)
+	if !botMovementCollidesWithLivePlayer(bot, desired, step, observation.players) {
+		return desired
+	}
+
+	length := math.Hypot(desired.X, desired.Y)
+	if length == 0 || !finiteBotFloat(length) {
+		return simulation.Vector2{}
+	}
+	unit := simulation.Vector2{X: desired.X / length, Y: desired.Y / length}
+	for _, candidate := range []simulation.Vector2{
+		{X: -unit.Y, Y: unit.X},
+		{X: unit.Y, Y: -unit.X},
+	} {
+		if botMovementCollidesWithMap(bot, candidate, step, observation) {
+			continue
+		}
+		if botMovementCollidesWithLivePlayer(bot, candidate, step, observation.players) {
+			continue
+		}
+		return candidate
+	}
+	return simulation.Vector2{}
+}
+
+func botMovementCollidesWithMap(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	observation botObservation,
+) bool {
+	geometry, ok := botMapGeometryFor(botObservationMap(observation))
+	if !ok {
+		return true
+	}
+	next := simulation.Vector2{X: bot.Pos.X + direction.X*step, Y: bot.Pos.Y + direction.Y*step}
+	return botMapCollidesWithPlayer(geometry, botObservationMap(observation), next, math.Max(bot.Radius, 0))
+}
+
+func botMovementCollidesWithLivePlayer(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	players []simulation.PlayerData,
+) bool {
+	next := simulation.Vector2{X: bot.Pos.X + direction.X*step, Y: bot.Pos.Y + direction.Y*step}
+	for _, other := range players {
+		if other.ID == bot.ID || other.IsDead {
+			continue
+		}
+		radiusSum := math.Max(bot.Radius, 0) + math.Max(other.Radius, 0)
+		deltaX := next.X - other.Pos.X
+		deltaY := next.Y - other.Pos.Y
+		if deltaX*deltaX+deltaY*deltaY <= radiusSum*radiusSum+botDistanceCompareEpsilon {
+			return true
+		}
+	}
+	return false
 }
 
 func invalidateBotPathCache(state *botControllerState) {
@@ -332,7 +433,7 @@ func invalidateBotPathCache(state *botControllerState) {
 	}
 	state.cachedPathStart = botTile{}
 	state.cachedPathGoal = botTile{}
-	state.cachedNextDirection = simulation.Vector2{}
+	state.cachedPathNext = botTile{}
 	state.hasCachedPath = false
 }
 

@@ -91,7 +91,7 @@ Threat는 `ProjectileID` 오름차순으로 정렬해 각 ray에서 멀어지는
 4. Player radius를 포함한 map collision이 없는 첫 방향을 선택해요.
 5. 양쪽이 모두 막히면 `MoveDir`은 zero예요.
 
-Projectile owner의 hit eligibility는 실제 projectile collision과 drift하지 않도록 simulation의 mode rule을 재사용하는 순수 helper로 한 번만 정의해요. Dodge는 player-player collision을 미리 예측하지 않고 기존 Step resolution에 맡겨요.
+Projectile owner의 hit eligibility는 실제 projectile collision과 drift하지 않도록 simulation의 mode rule을 재사용하는 순수 helper로 한 번만 정의해요. Dodge를 포함한 최종 movement 후보는 SL-121의 one-tick live-player avoidance를 통과해요. 충돌 예상 시 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 고르고, authoritative 충돌과 위치는 기존 Step resolution이 확정해요.
 
 ## 3. 책임과 상태 소유권
 
@@ -106,7 +106,7 @@ botControllerState
   exploreDestination
   cachedPathStart
   cachedPathGoal
-  cachedNextDirection
+  cachedPathNext
 ```
 
 - Bot fill 또는 debug bot 생성 후 첫 gameplay tick에 lazy initialize해요.
@@ -114,6 +114,7 @@ botControllerState
 - Bot이 participant에서 제거되거나 room이 cleanup되면 controller state와 attack cadence state를 함께 제거해요.
 - Goroutine, timer, global controller singleton은 추가하지 않아요.
 - `room.lastPlayers`와 projectile snapshot이 authoritative observation이에요. Client listener나 이전 Client projectile position cache를 사용하지 않아요.
+- A* cache는 first-step tile을 보존하고, 현재 tile 안의 authoritative world position으로 매 tick steering을 다시 계산해요. 경로가 꺾일 때는 현재 tile의 수직축 중앙을 먼저 맞춰 player radius가 blocked corner를 자르지 않아요.
 
 ### 3.2 Simulation은 공통 입력 경계를 유지해요
 

@@ -103,7 +103,22 @@ func nextBotPathDirection(
 	startPosition simulation.Vector2,
 	goalPosition simulation.Vector2,
 ) (simulation.Vector2, bool) {
-	if _, ok := botMapGeometryFor(gameMap); !ok {
+	return nextBotPathDirectionWithStep(
+		gameMap,
+		startPosition,
+		goalPosition,
+		simulation.DefaultPlayerSpeed*simulation.TickDuration,
+	)
+}
+
+func nextBotPathDirectionWithStep(
+	gameMap simulation.MapData,
+	startPosition simulation.Vector2,
+	goalPosition simulation.Vector2,
+	maxMovementWorld float64,
+) (simulation.Vector2, bool) {
+	geometry, ok := botMapGeometryFor(gameMap)
+	if !ok {
 		return simulation.Vector2{}, false
 	}
 	start, ok := worldToBotTile(gameMap, startPosition)
@@ -117,7 +132,14 @@ func nextBotPathDirection(
 	if start == goal {
 		return botUnitDirection(startPosition, goalPosition), true
 	}
+	next, ok := firstBotPathStep(gameMap, start, goal)
+	if !ok {
+		return simulation.Vector2{}, false
+	}
+	return botPathStepDirection(geometry, startPosition, start, next, maxMovementWorld), true
+}
 
+func firstBotPathStep(gameMap simulation.MapData, start, goal botTile) (botTile, bool) {
 	open := botOpenHeap{{tile: start, g: 0, h: botManhattan(start, goal), f: botManhattan(start, goal)}}
 	heap.Init(&open)
 	gScore := map[botTile]int{start: 0}
@@ -130,7 +152,7 @@ func nextBotPathDirection(
 			continue
 		}
 		if current.tile == goal {
-			return botFirstStepDirection(start, goal, cameFrom)
+			return botFirstStepTile(start, goal, cameFrom)
 		}
 
 		for _, delta := range botNeighborDeltas {
@@ -150,7 +172,7 @@ func nextBotPathDirection(
 		}
 	}
 
-	return simulation.Vector2{}, false
+	return botTile{}, false
 }
 
 func retreatGoal(
@@ -263,21 +285,57 @@ func botManhattan(a, b botTile) int {
 	return absBotInt(a.x-b.x) + absBotInt(a.y-b.y)
 }
 
-func botFirstStepDirection(start, goal botTile, cameFrom map[botTile]botTile) (simulation.Vector2, bool) {
+func botFirstStepTile(start, goal botTile, cameFrom map[botTile]botTile) (botTile, bool) {
 	step := goal
 	for {
 		parent, ok := cameFrom[step]
 		if !ok {
-			return simulation.Vector2{}, false
+			return botTile{}, false
 		}
 		if parent == start {
-			return simulation.Vector2{
-				X: float64(step.x - start.x),
-				Y: float64(start.y - step.y),
-			}, true
+			return step, true
 		}
 		step = parent
 	}
+}
+
+func botPathStepDirection(
+	geometry botMapGeometry,
+	position simulation.Vector2,
+	start botTile,
+	next botTile,
+	maxMovementWorld float64,
+) simulation.Vector2 {
+	if !finiteBotFloat(maxMovementWorld) || maxMovementWorld <= 0 {
+		maxMovementWorld = simulation.DefaultPlayerSpeed * simulation.TickDuration
+	}
+	center := botTileWorldCenter(geometry, start)
+	if next.y != start.y {
+		if direction := botAxisCenteringDirection(position.X, center.X, true, maxMovementWorld); direction != (simulation.Vector2{}) {
+			return direction
+		}
+	} else if next.x != start.x {
+		if direction := botAxisCenteringDirection(position.Y, center.Y, false, maxMovementWorld); direction != (simulation.Vector2{}) {
+			return direction
+		}
+	}
+	return simulation.Vector2{
+		X: float64(next.x - start.x),
+		Y: float64(start.y - next.y),
+	}
+}
+
+func botAxisCenteringDirection(current, center float64, xAxis bool, maxMovementWorld float64) simulation.Vector2 {
+	delta := center - current
+	if math.Abs(delta) <= botDistanceCompareEpsilon {
+		return simulation.Vector2{}
+	}
+	component := delta / maxMovementWorld
+	component = botClamp(component, -1, 1)
+	if xAxis {
+		return simulation.Vector2{X: component}
+	}
+	return simulation.Vector2{Y: component}
 }
 
 func botUnitDirection(from, to simulation.Vector2) simulation.Vector2 {

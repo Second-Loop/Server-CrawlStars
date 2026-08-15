@@ -914,3 +914,22 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 같은 room ID, bot ID, epoch, config, previous snapshot과 controller state는 같은 입력을 만들고 PlayerID slice/map 순서에 흔들리지 않습니다.
 - Bot은 skill을 요청하지 않고, 이동·조준·공격 요청과 actual approval을 공통 `InputCommand -> State.Step -> Snapshot` 경계에서 처리합니다.
 - Public REST에는 bot endpoint나 bot tuning field를 추가하지 않으며 Client repository와 API schema migration도 만들지 않습니다.
+
+## ADR-0048: SL-121 Bot 경로 회전과 player 접근은 controller에서 결정적으로 우회한다
+
+상태: 구현과 회귀 검증 중
+
+맥락: SL-116의 A*는 passable tile만 올바르게 선택했지만 first-step cardinal direction을 같은 tile에서 고정했습니다. Bot point가 새 tile에 막 들어온 뒤 경로가 꺾이면 player circle이 이전 축에 치우친 채 Wall/Water 모서리를 긁어 모든 candidate가 취소됐습니다. 이 경계를 고친 뒤에는 반경 합계 바로 앞에서 서로 정면 접근하는 bot 둘의 candidate를 player collision resolver가 매 tick 모두 취소하는 두 번째 영구 정지가 드러났습니다.
+
+결정:
+
+- A*의 search와 `F -> H -> y -> x` tie-break는 유지하되 cache result를 direction에서 first-step tile로 바꿉니다.
+- First-step이 현재 진행축과 다르면 현재 tile의 수직축 중앙을 한 tick 이동량 이내까지 정확히 맞춘 뒤 cardinal step을 수행합니다. 따라서 tile path는 그대로이면서 player radius가 inside corner를 자르지 않습니다.
+- Controller의 최종 candidate가 다른 live player와 다음 tick에 접촉·겹침을 만들면 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 선택합니다. 같은 snapshot의 정면 접근 bot은 같은 handedness를 적용해 서로 반대 world 방향으로 분리됩니다.
+- 양쪽 우회가 모두 막히면 zero movement를 사용합니다. Simulation의 player-player axis collision, public Input/Snapshot schema, bot priority와 attack decision은 변경하지 않습니다.
+
+결과:
+
+- Production Map_0의 Solo/Team 900-tick fixture에서 live bot이 입력 종류와 무관하게 90 tick 연속 같은 authoritative position에 머물지 않습니다.
+- 3x3 blocked-corner fixture와 head-on two-bot fixture가 각각 static map cancellation과 dynamic player cancellation 경계를 고정합니다.
+- Client 변경, API schema/version 변경, 새 runtime tuning은 없습니다.
