@@ -132,6 +132,30 @@ func TestBotAStarStartEqualsGoalUsesDirectDirection(t *testing.T) {
 	}
 }
 
+func TestBotAStarSteersToNextTileCenterBeforeTurningPastBlockedCorner(t *testing.T) {
+	gameMap := botPathTestMapWithTileSize(3, 3, 1.2, simulation.TileGround)
+	gameMap.Map[0][2] = simulation.TileWater
+	start := simulation.Vector2{X: 0.5333333333333333, Y: 0.06666666666666667}
+	goal := gameMap.WorldPos(1, 0)
+
+	got, ok := nextBotPathDirection(gameMap, start, goal)
+	if !ok {
+		t.Fatal("nextBotPathDirection() failed for a passable next tile beside a blocked corner")
+	}
+	if got.X >= 0 || got.Y != 0 {
+		t.Fatalf("nextBotPathDirection() = %+v, want left-only centering before the upward turn", got)
+	}
+	geometry, ok := botMapGeometryFor(gameMap)
+	if !ok {
+		t.Fatal("botMapGeometryFor() rejected the test map")
+	}
+	step := simulation.DefaultPlayerSpeed * simulation.TickDuration
+	next := simulation.Vector2{X: start.X + got.X*step, Y: start.Y + got.Y*step}
+	if botMapCollidesWithPlayer(geometry, gameMap, next, simulation.DefaultPlayerRadius) {
+		t.Fatalf("center-steered next position %+v collides with the blocked corner", next)
+	}
+}
+
 func TestBotWorldToTileRejectsMalformedAndOutsidePositions(t *testing.T) {
 	gameMap := botPathTestMap(5, 5, simulation.TileGround)
 	valid := gameMap.WorldPos(2, 2)

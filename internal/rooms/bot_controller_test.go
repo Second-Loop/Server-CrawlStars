@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
@@ -398,25 +399,81 @@ func TestBotControllerPathCacheReusesAndInvalidatesOnStartOrGoal(t *testing.T) {
 	start := gameMap.WorldPos(1, 2)
 	goal := gameMap.WorldPos(3, 2)
 	state := botControllerState{}
+	step := simulation.DefaultPlayerSpeed * simulation.TickDuration
 
-	first, ok := cachedBotPathDirection(gameMap, start, goal, &state)
+	first, ok := cachedBotPathDirection(gameMap, start, goal, step, &state)
 	if !ok || first != (simulation.Vector2{X: 1}) {
 		t.Fatalf("first cached path=%+v ok=%t, want +X", first, ok)
 	}
-	state.cachedNextDirection = simulation.Vector2{Y: 99}
-	reused, ok := cachedBotPathDirection(gameMap, start, goal, &state)
-	if !ok || reused != (simulation.Vector2{Y: 99}) {
-		t.Fatalf("same start/goal did not reuse cache: %+v ok=%t", reused, ok)
+	if state.cachedPathNext != (botTile{x: 2, y: 2}) {
+		t.Fatalf("cached next tile=%+v, want (2,2)", state.cachedPathNext)
+	}
+	offsetWithinStartTile := simulation.Vector2{X: start.X, Y: start.Y + 0.2}
+	reused, ok := cachedBotPathDirection(gameMap, offsetWithinStartTile, goal, step, &state)
+	if !ok || reused.X != 0 || reused.Y >= 0 {
+		t.Fatalf("same start/goal cache steering=%+v ok=%t, want fresh perpendicular centering toward the cached tile step", reused, ok)
+	}
+	if state.cachedPathNext != (botTile{x: 2, y: 2}) {
+		t.Fatalf("same start/goal replaced cached next tile: %+v", state.cachedPathNext)
 	}
 	newStart := gameMap.WorldPos(1, 1)
-	invalidatedStart, ok := cachedBotPathDirection(gameMap, newStart, goal, &state)
-	if !ok || invalidatedStart == (simulation.Vector2{Y: 99}) {
-		t.Fatalf("start change did not invalidate cache: %+v ok=%t", invalidatedStart, ok)
+	invalidatedStart, ok := cachedBotPathDirection(gameMap, newStart, goal, step, &state)
+	if !ok || state.cachedPathStart != (botTile{x: 1, y: 1}) {
+		t.Fatalf("start change did not replace cache: direction=%+v state=%+v ok=%t", invalidatedStart, state, ok)
 	}
 	newGoal := gameMap.WorldPos(3, 1)
-	invalidatedGoal, ok := cachedBotPathDirection(gameMap, newStart, newGoal, &state)
-	if !ok || invalidatedGoal == (simulation.Vector2{Y: 99}) {
-		t.Fatalf("goal change did not invalidate cache: %+v ok=%t", invalidatedGoal, ok)
+	invalidatedGoal, ok := cachedBotPathDirection(gameMap, newStart, newGoal, step, &state)
+	if !ok || state.cachedPathGoal != (botTile{x: 3, y: 1}) {
+		t.Fatalf("goal change did not replace cache: direction=%+v state=%+v ok=%t", invalidatedGoal, state, ok)
+	}
+}
+
+func TestBotControllerAvoidsHeadOnPlayerMovementDeadlock(t *testing.T) {
+	for _, distance := range []float64{1.0666666666666667, 1.10} {
+		t.Run(fmt.Sprintf("distance-%.3f", distance), func(t *testing.T) {
+			gameMap := botControllerOpenMap(7, 7)
+			gameMap.MaxPlayers = 6
+			config := botControllerConfig(gameMap)
+			center := gameMap.WorldPos(3, 3)
+			botA := botControllerPlayer(config, "bot-a", simulation.TeamRed, botControllerOffset(center, 0, distance/2))
+			botB := botControllerPlayer(config, "bot-b", simulation.TeamBlue, botControllerOffset(center, 0, -distance/2))
+			botA.IsBot = true
+			botB.IsBot = true
+			observation := botObservation{
+				roomID:      "head-on",
+				gameMap:     gameMap,
+				gameConfig:  config,
+				players:     []simulation.PlayerData{botA, botB},
+				currentTick: 1,
+				nextAttackTicks: map[simulation.PlayerID]simulation.Tick{
+					botA.ID: 2,
+					botB.ID: 2,
+				},
+			}
+			botIDs := map[simulation.PlayerID]struct{}{botA.ID: {}, botB.ID: {}}
+			inputs := mergedTickInputsAtTick(
+				nil,
+				observation,
+				map[simulation.PlayerID]*botControllerState{},
+				botIDs,
+				botIDs,
+			)
+			if len(inputs) != 2 {
+				t.Fatalf("head-on bot inputs=%+v, want two", inputs)
+			}
+			state := simulation.NewStateWithConfig(
+				[]simulation.PlayerData{botA, botB},
+				simulation.Config{Map: gameMap, Game: config},
+			)
+			snapshot := state.Step(inputs)
+			if snapshot.Players[0].Pos == botA.Pos || snapshot.Players[1].Pos == botB.Pos {
+				t.Fatalf(
+					"head-on bot positions remained blocked: inputs=%+v players=%+v",
+					inputs,
+					snapshot.Players,
+				)
+			}
+		})
 	}
 }
 

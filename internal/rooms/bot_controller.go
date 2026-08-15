@@ -16,7 +16,7 @@ type botControllerState struct {
 	exploreDestination    simulation.Vector2
 	cachedPathStart       botTile
 	cachedPathGoal        botTile
-	cachedNextDirection   simulation.Vector2
+	cachedPathNext        botTile
 	hasCachedPath         bool
 }
 
@@ -59,9 +59,14 @@ func botInputForObservation(
 	} else if botShouldRetreat(bot, observation.gameConfig) {
 		moveDirection = botRetreatDirection(bot, target, observation, state)
 	} else {
-		moveDirection = cachedBotPathDirectionOrZero(botObservationMap(observation), bot.Pos, target.Pos, state)
+		moveDirection = cachedBotPathDirectionOrZero(
+			botObservationMap(observation),
+			bot.Pos,
+			target.Pos,
+			botMovementStepWorld(bot, observation.gameConfig),
+			state,
+		)
 	}
-
 	input := simulation.InputCommand{
 		PlayerID:     bot.ID,
 		ClientTick:   0,
@@ -180,7 +185,13 @@ func botExploreDirection(bot simulation.PlayerData, observation botObservation, 
 		}
 	}
 
-	direction, ok := cachedBotPathDirection(gameMap, bot.Pos, state.exploreDestination, state)
+	direction, ok := cachedBotPathDirection(
+		gameMap,
+		bot.Pos,
+		state.exploreDestination,
+		botMovementStepWorld(bot, observation.gameConfig),
+		state,
+	)
 	if !ok {
 		state.hasExploreDestination = false
 		invalidateBotPathCache(state)
@@ -276,16 +287,23 @@ func botRetreatDirection(
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}
 	}
-	return cachedBotPathDirectionOrZero(gameMap, bot.Pos, goal, state)
+	return cachedBotPathDirectionOrZero(
+		gameMap,
+		bot.Pos,
+		goal,
+		botMovementStepWorld(bot, observation.gameConfig),
+		state,
+	)
 }
 
 func cachedBotPathDirectionOrZero(
 	gameMap simulation.MapData,
 	startPosition simulation.Vector2,
 	goalPosition simulation.Vector2,
+	maxMovementWorld float64,
 	state *botControllerState,
 ) simulation.Vector2 {
-	direction, ok := cachedBotPathDirection(gameMap, startPosition, goalPosition, state)
+	direction, ok := cachedBotPathDirection(gameMap, startPosition, goalPosition, maxMovementWorld, state)
 	if !ok {
 		return simulation.Vector2{}
 	}
@@ -296,34 +314,221 @@ func cachedBotPathDirection(
 	gameMap simulation.MapData,
 	startPosition simulation.Vector2,
 	goalPosition simulation.Vector2,
+	maxMovementWorld float64,
 	state *botControllerState,
 ) (simulation.Vector2, bool) {
 	if state == nil {
-		return nextBotPathDirection(gameMap, startPosition, goalPosition)
+		return nextBotPathDirectionWithStep(gameMap, startPosition, goalPosition, maxMovementWorld)
 	}
 	start, startOK := worldToBotTile(gameMap, startPosition)
 	goal, goalOK := worldToBotTile(gameMap, goalPosition)
-	if !startOK || !goalOK {
+	geometry, geometryOK := botMapGeometryFor(gameMap)
+	if !startOK || !goalOK || !geometryOK || !botTilePassable(gameMap, start) || !botTilePassable(gameMap, goal) {
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}, false
 	}
 	if start != goal && state.hasCachedPath && state.cachedPathStart == start && state.cachedPathGoal == goal {
-		return state.cachedNextDirection, true
+		return botPathStepDirection(geometry, startPosition, start, state.cachedPathNext, maxMovementWorld), true
 	}
 	if start == goal {
 		invalidateBotPathCache(state)
-		return nextBotPathDirection(gameMap, startPosition, goalPosition)
+		return botUnitDirection(startPosition, goalPosition), true
 	}
-	direction, ok := nextBotPathDirection(gameMap, startPosition, goalPosition)
+	next, ok := firstBotPathStep(gameMap, start, goal)
 	if !ok {
 		invalidateBotPathCache(state)
 		return simulation.Vector2{}, false
 	}
 	state.cachedPathStart = start
 	state.cachedPathGoal = goal
-	state.cachedNextDirection = direction
+	state.cachedPathNext = next
 	state.hasCachedPath = true
-	return direction, true
+	return botPathStepDirection(geometry, startPosition, start, next, maxMovementWorld), true
+}
+
+func botMovementStepWorld(bot simulation.PlayerData, gameConfig simulation.GameConfig) float64 {
+	tickRate := gameConfig.TickRate
+	if tickRate <= 0 {
+		tickRate = simulation.TickRate
+	}
+	if !finiteBotFloat(bot.Speed) || bot.Speed <= 0 {
+		return simulation.DefaultPlayerSpeed / float64(tickRate)
+	}
+	return bot.Speed / float64(tickRate)
+}
+
+func botAvoidPlayerCollisionDirection(
+	bot simulation.PlayerData,
+	desired simulation.Vector2,
+	observation botObservation,
+	intendedDirections map[simulation.PlayerID]simulation.Vector2,
+) simulation.Vector2 {
+	if desired == (simulation.Vector2{}) || !finiteBotVector(desired) {
+		return desired
+	}
+	step := botMovementStepWorld(bot, observation.gameConfig)
+	if !botDesiredMovementCollidesWithLivePlayer(bot, desired, step, observation, intendedDirections) {
+		return desired
+	}
+
+	length := math.Hypot(desired.X, desired.Y)
+	if length == 0 || !finiteBotFloat(length) {
+		return simulation.Vector2{}
+	}
+	unit := simulation.Vector2{X: desired.X / length, Y: desired.Y / length}
+	for _, candidate := range []simulation.Vector2{
+		{X: -unit.Y, Y: unit.X},
+		{X: unit.Y, Y: -unit.X},
+	} {
+		if botMovementCollidesWithMap(bot, candidate, step, observation) {
+			continue
+		}
+		if botMovementCollidesWithLivePlayer(bot, candidate, step, observation.players) {
+			continue
+		}
+		return candidate
+	}
+	return simulation.Vector2{}
+}
+
+func avoidBotPlayerCollisions(
+	byPlayer map[simulation.PlayerID]simulation.InputCommand,
+	observation botObservation,
+) {
+	intendedDirections := make(map[simulation.PlayerID]simulation.Vector2, len(byPlayer))
+	for playerID, input := range byPlayer {
+		intendedDirections[playerID] = botClampedDirection(input.MoveDir)
+	}
+	for _, player := range observation.players {
+		if !player.IsBot || player.IsDead {
+			continue
+		}
+		input, ok := byPlayer[player.ID]
+		if !ok {
+			continue
+		}
+		input.MoveDir = botAvoidPlayerCollisionDirection(
+			player,
+			intendedDirections[player.ID],
+			observation,
+			intendedDirections,
+		)
+		byPlayer[player.ID] = input
+	}
+}
+
+func botClampedDirection(direction simulation.Vector2) simulation.Vector2 {
+	if !finiteBotVector(direction) {
+		return simulation.Vector2{}
+	}
+	length := math.Hypot(direction.X, direction.Y)
+	if length <= 1 {
+		return direction
+	}
+	return simulation.Vector2{X: direction.X / length, Y: direction.Y / length}
+}
+
+func botMovementCollidesWithMap(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	observation botObservation,
+) bool {
+	geometry, ok := botMapGeometryFor(botObservationMap(observation))
+	if !ok {
+		return true
+	}
+	next := simulation.Vector2{X: bot.Pos.X + direction.X*step, Y: bot.Pos.Y + direction.Y*step}
+	return botMapCollidesWithPlayer(geometry, botObservationMap(observation), next, math.Max(bot.Radius, 0))
+}
+
+func botMovementCollidesWithLivePlayer(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	players []simulation.PlayerData,
+) bool {
+	next := simulation.Vector2{X: bot.Pos.X + direction.X*step, Y: bot.Pos.Y + direction.Y*step}
+	for _, other := range players {
+		if other.ID == bot.ID || other.IsDead {
+			continue
+		}
+		radiusSum := math.Max(bot.Radius, 0) + math.Max(other.Radius, 0)
+		deltaX := next.X - other.Pos.X
+		deltaY := next.Y - other.Pos.Y
+		if deltaX*deltaX+deltaY*deltaY <= radiusSum*radiusSum+botDistanceCompareEpsilon {
+			return true
+		}
+	}
+	return false
+}
+
+func botDesiredMovementCollidesWithLivePlayer(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	observation botObservation,
+	intendedDirections map[simulation.PlayerID]simulation.Vector2,
+) bool {
+	botMovement := simulation.Vector2{X: direction.X * step, Y: direction.Y * step}
+	for _, other := range observation.players {
+		if other.ID == bot.ID || other.IsDead {
+			continue
+		}
+		otherDirection := intendedDirections[other.ID]
+		otherStep := botPossibleMovementStepWorld(other, observation.gameConfig)
+		otherMovement := simulation.Vector2{X: otherDirection.X * otherStep, Y: otherDirection.Y * otherStep}
+		if botSweptPlayerMovementsCollide(bot, botMovement, other, otherMovement) {
+			return true
+		}
+	}
+	return false
+}
+
+func botSweptPlayerMovementsCollide(
+	bot simulation.PlayerData,
+	botMovement simulation.Vector2,
+	other simulation.PlayerData,
+	otherMovement simulation.Vector2,
+) bool {
+	relativeStart := simulation.Vector2{X: bot.Pos.X - other.Pos.X, Y: bot.Pos.Y - other.Pos.Y}
+	relativeDelta := simulation.Vector2{X: botMovement.X - otherMovement.X, Y: botMovement.Y - otherMovement.Y}
+	initialDistanceSquared := relativeStart.X*relativeStart.X + relativeStart.Y*relativeStart.Y
+	final := simulation.Vector2{X: relativeStart.X + relativeDelta.X, Y: relativeStart.Y + relativeDelta.Y}
+	finalDistanceSquared := final.X*final.X + final.Y*final.Y
+	minimumDistanceSquared := initialDistanceSquared
+	relativeSpeedSquared := relativeDelta.X*relativeDelta.X + relativeDelta.Y*relativeDelta.Y
+	if relativeSpeedSquared > 0 {
+		closestT := botClamp(
+			-(relativeStart.X*relativeDelta.X+relativeStart.Y*relativeDelta.Y)/relativeSpeedSquared,
+			0,
+			1,
+		)
+		closest := simulation.Vector2{
+			X: relativeStart.X + relativeDelta.X*closestT,
+			Y: relativeStart.Y + relativeDelta.Y*closestT,
+		}
+		minimumDistanceSquared = closest.X*closest.X + closest.Y*closest.Y
+	}
+	radiusSum := math.Max(bot.Radius, 0) + math.Max(other.Radius, 0)
+	contactDistanceSquared := radiusSum * radiusSum
+	if initialDistanceSquared <= contactDistanceSquared+botDistanceCompareEpsilon &&
+		finalDistanceSquared > initialDistanceSquared+botDistanceCompareEpsilon &&
+		minimumDistanceSquared >= initialDistanceSquared-botDistanceCompareEpsilon {
+		return false
+	}
+	return minimumDistanceSquared <= contactDistanceSquared+botDistanceCompareEpsilon
+}
+
+func botPossibleMovementStepWorld(player simulation.PlayerData, gameConfig simulation.GameConfig) float64 {
+	if !finiteBotFloat(player.Speed) || player.Speed <= 0 {
+		return 0
+	}
+	tickRate := gameConfig.TickRate
+	if tickRate <= 0 {
+		tickRate = simulation.TickRate
+	}
+	return player.Speed / float64(tickRate)
 }
 
 func invalidateBotPathCache(state *botControllerState) {
@@ -332,7 +537,7 @@ func invalidateBotPathCache(state *botControllerState) {
 	}
 	state.cachedPathStart = botTile{}
 	state.cachedPathGoal = botTile{}
-	state.cachedNextDirection = simulation.Vector2{}
+	state.cachedPathNext = botTile{}
 	state.hasCachedPath = false
 }
 

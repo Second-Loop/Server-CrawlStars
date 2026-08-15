@@ -146,7 +146,7 @@ func TestRoomColtBotRetriesAfterFinalBurstEmission(t *testing.T) {
 	}
 }
 
-func TestRoomTickAppliesPlayerCollisionBetweenHumanAndBot(t *testing.T) {
+func TestRoomTickBotAvoidsPlayerCollisionWithoutBypassingSimulation(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
 	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
@@ -179,11 +179,15 @@ func TestRoomTickAppliesPlayerCollisionBetweenHumanAndBot(t *testing.T) {
 
 	human := playerByID(t, room.lastPlayers, "human")
 	bot := playerByID(t, room.lastPlayers, "bot")
-	if human.Pos != players[0].Pos || bot.Pos != players[1].Pos {
-		t.Fatalf("human/bot collision positions human=%+v bot=%+v, want %+v/%+v", human.Pos, bot.Pos, players[0].Pos, players[1].Pos)
+	wantBotPosition := simulation.Vector2{
+		X: players[1].Pos.X,
+		Y: players[1].Pos.Y - playerType.Speed/float64(config.TickRate),
 	}
-	if human.MoveDir != (simulation.Vector2{X: 1}) || bot.MoveDir != (simulation.Vector2{X: -1}) {
-		t.Fatalf("human/bot inputs were not processed together: human=%+v bot=%+v", human.MoveDir, bot.MoveDir)
+	if human.Pos != players[0].Pos || bot.Pos != wantBotPosition {
+		t.Fatalf("human/bot avoidance positions human=%+v bot=%+v, want %+v/%+v", human.Pos, bot.Pos, players[0].Pos, wantBotPosition)
+	}
+	if human.MoveDir != (simulation.Vector2{X: 1}) || bot.MoveDir != (simulation.Vector2{Y: -1}) {
+		t.Fatalf("human input and bot avoidance were not processed together: human=%+v bot=%+v", human.MoveDir, bot.MoveDir)
 	}
 }
 

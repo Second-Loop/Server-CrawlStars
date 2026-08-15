@@ -54,6 +54,7 @@ func mergedTickInputsAtTick(
 			byPlayer[player.ID] = input
 		}
 	}
+	avoidBotPlayerCollisions(byPlayer, observation)
 
 	return sortedTickInputs(byPlayer)
 }

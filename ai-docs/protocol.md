@@ -146,7 +146,9 @@ Explore 목적지는 `exploreArrivalDistanceWorld = 0.25` world-unit 안에 도�
 
 Dodge는 self-owned/destroyed/ally가 아닌 hostile projectile만 봅니다. Projectile ray의 전방 거리가 `projectileLookAheadWorld = 8` 이하이고 bot radius + projectile radius + `dodgeMarginWorld = 0.35` 안이면 threat로 삼아 `ProjectileID` 오름차순으로 합성합니다. 합이 상쇄되거나 중심이 ray 위면 가장 가까운 threat의 `+90°`, `-90°` 순서로 clear 후보를 시도하고 양쪽이 막히면 zero movement입니다. Hit eligibility는 simulation의 공통 `CanPlayerDamage`를 사용합니다.
 
-A*는 상·하·좌·우 4방향만 탐색하고 Wall과 Water를 blocked로 봅니다. Tile cost `G=1`, Manhattan `H`, open-set tie-break는 `F -> H -> y -> x` 오름차순입니다. Invalid/blocked start·goal, disconnected map, open set 소진은 `path failure`입니다. Explore는 목적지를 버리고 다시 고르며 chase/retreat는 그 tick `MoveDir`을 zero로 둡니다.
+A*는 상·하·좌·우 4방향만 탐색하고 Wall과 Water를 blocked로 봅니다. Tile cost `G=1`, Manhattan `H`, open-set tie-break는 `F -> H -> y -> x` 오름차순입니다. `(start tile, goal tile)` cache는 first-step tile을 저장하고 매 tick 현재 world position으로 이동 방향을 다시 계산합니다. 새 축으로 꺾기 전에는 현재 tile의 수직축 중앙까지 먼저 이동해 player radius가 blocked corner를 긁지 않게 합니다. Invalid/blocked start·goal, disconnected map, open set 소진은 `path failure`입니다. Explore는 목적지를 버리고 다시 고르며 chase/retreat는 그 tick `MoveDir`을 zero로 둡니다.
+
+Human pending input과 모든 bot raw input을 먼저 모은 뒤 이번 tick의 상대 이동을 swept collision으로 비교합니다. 최종 이동 후보끼리 접촉·겹침이 예상되면 현재 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 우회를 선택합니다. 정면에서 서로 접근하는 bot은 같은 handedness 규칙으로 서로 반대 world 방향에 비켜납니다. 두 후보가 모두 막히면 zero movement를 사용하며, authoritative player collision과 최종 위치는 계속 같은 `State.Step`이 판정합니다.
 
 Room cadence는 실제 승인 결과로만 갱신합니다: only an approved snapshot with `PressedAttack: true` updates cadence. Charge 부족이나 Colt burst 진행 중 거절된 요청은 cadence를 앞당기지 않습니다. `server-config/game-config.json` v5의 bot 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`이며 Client config v3와 REST/OpenAPI/AsyncAPI field/event shape is unchanged합니다. AsyncAPI info version `0.7.0`을 유지하고 public bot endpoint는 추가하지 않습니다.
 
