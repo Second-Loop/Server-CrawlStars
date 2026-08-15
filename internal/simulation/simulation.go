@@ -59,6 +59,8 @@ type PlayerData struct {
 	HP                      float64       `json:"HP"`
 	PressedAttack           bool          `json:"PressedAttack"`
 	PressedSkill            bool          `json:"PressedSkill"`
+	AttackCharges           int           `json:"AttackCharges"`
+	NextAttackChargeTick    Tick          `json:"NextAttackChargeTick"`
 	IsDead                  bool          `json:"IsDead"`
 	SkillReadyTick          Tick          `json:"SkillReadyTick"`
 	LastProcessedClientTick int64         `json:"LastProcessedClientTick"`
@@ -230,11 +232,33 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 
 	s.tick++
 	s.pruneExpiredProjectileTombstones()
+	s.projectAttackStateToPlayers(s.tick)
 
 	return Snapshot{
 		Tick:        s.tick,
 		Players:     clonePlayers(s.players),
 		Projectiles: cloneProjectiles(s.projectiles),
+	}
+}
+
+func (s *State) projectAttackStateToPlayers(snapshotTick Tick) {
+	for index := range s.players {
+		player := &s.players[index]
+		state, ok := s.attackStates[player.ID]
+		if !ok {
+			continue
+		}
+		attack, ok := s.normalAttackConfig(player.ID)
+		if !ok {
+			continue
+		}
+		player.AttackCharges = state.charges
+		if state.charges >= attack.MaxCharges {
+			player.NextAttackChargeTick = 0
+			continue
+		}
+		remaining := attack.RechargeTicks - state.rechargeTicks
+		player.NextAttackChargeTick = snapshotTick + Tick(remaining)
 	}
 }
 
@@ -412,9 +436,11 @@ func (s *State) prepareInput(input InputCommand) (preparedInput, bool) {
 }
 
 func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool) {
-	if input.input.PressedSkill && input.attackDir != (Vector2{}) &&
-		s.tryApproveSkill(input.playerIndex, activationTick) {
-		return attackIntent{}, false
+	if input.input.PressedSkill && input.attackDir != (Vector2{}) {
+		if skill, approved := s.tryApproveSkill(input.playerIndex, activationTick); approved {
+			s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill)
+			return attackIntent{}, false
+		}
 	}
 	if !input.input.PressedAttack || input.attackDir == (Vector2{}) {
 		return attackIntent{}, false

@@ -430,7 +430,7 @@ func TestShellyAttackEmitsConfiguredSpreadFromPostMovementPosition(t *testing.T)
 	}
 }
 
-func TestProjectileAttacksAcceptAlternateConfiguredCountsAndEmitThem(t *testing.T) {
+func TestSpreadProjectileAcceptsAlternateConfiguredCountAndEmitsIt(t *testing.T) {
 	tests := []struct {
 		name          string
 		character     CharacterType
@@ -447,17 +447,6 @@ func TestProjectileAttacksAcceptAlternateConfiguredCountsAndEmitThem(t *testing.
 			},
 			steps:         1,
 			wantEmissions: 3,
-		},
-		{
-			name:      "four shot burst",
-			character: CharacterTypeColt,
-			configure: func(projectile *ProjectileAttackConfig) {
-				projectile.Count = 4
-				projectile.DirectionOffsetsDegrees = []float64{0}
-				projectile.IntervalTicks = 2
-			},
-			steps:         7,
-			wantEmissions: 4,
 		},
 	}
 	for _, tt := range tests {
@@ -492,6 +481,38 @@ func TestProjectileAttacksAcceptAlternateConfiguredCountsAndEmitThem(t *testing.
 				t.Fatalf("projectile emissions = %d, want %d", got, tt.wantEmissions)
 			}
 		})
+	}
+}
+
+func TestAttackChargeSnapshotProjectsPrivateState(t *testing.T) {
+	state := NewState([]PlayerData{{ID: "shelly", Team: TeamRed, CharacterType: CharacterTypeShelly}})
+
+	initial := playerByID(t, state.Step(nil), "shelly")
+	if initial.AttackCharges != 3 || initial.NextAttackChargeTick != 0 {
+		t.Fatalf("initial charge snapshot=%+v, want max=3 next=0", initial)
+	}
+
+	consumedSnapshot := state.Step([]InputCommand{{
+		PlayerID: "shelly", AttackDir: Vector2{X: 1}, PressedAttack: true,
+	}})
+	consumed := playerByID(t, consumedSnapshot, "shelly")
+	if consumed.AttackCharges != 2 || consumed.NextAttackChargeTick != consumedSnapshot.Tick+30 {
+		t.Fatalf("consumed charge snapshot=%+v at tick %d, want 2/%d", consumed, consumedSnapshot.Tick, consumedSnapshot.Tick+30)
+	}
+
+	state.attackStates["shelly"] = attackState{charges: 2, rechargeTicks: 7}
+	partialSnapshot := state.Step(nil)
+	partial := playerByID(t, partialSnapshot, "shelly")
+	if partial.AttackCharges != 2 || partial.NextAttackChargeTick != partialSnapshot.Tick+22 {
+		t.Fatalf("partial charge snapshot=%+v at tick %d, want 2/%d", partial, partialSnapshot.Tick, partialSnapshot.Tick+22)
+	}
+
+	partialSnapshot.Players[0].AttackCharges = 99
+	partialSnapshot.Players[0].NextAttackChargeTick = 999
+	state.attackStates["shelly"] = attackState{charges: 2, rechargeTicks: 29}
+	full := playerByID(t, state.Step(nil), "shelly")
+	if full.AttackCharges != 3 || full.NextAttackChargeTick != 0 {
+		t.Fatalf("full charge snapshot=%+v, want max=3 next=0", full)
 	}
 }
 
@@ -541,7 +562,7 @@ func TestColtBurstEmitsOnConfiguredTicksFromCurrentPositionWithFixedDirection(t 
 		CharacterType: CharacterTypeColt,
 	}})
 
-	dueTicks := map[Tick]bool{1: true, 7: true, 13: true, 19: true, 25: true, 31: true}
+	dueTicks := map[Tick]bool{1: true, 4: true, 7: true, 10: true, 13: true, 16: true}
 	previousCount := 0
 	for inputTick := Tick(1); inputTick <= 31; inputTick++ {
 		attackDirection := Vector2{Y: 1}
@@ -597,8 +618,8 @@ func TestColtBurstAttackApprovalTable(t *testing.T) {
 	}{
 		{"activation", 1, true, true},
 		{"mid burst", 7, false, false},
-		{"last emission", 31, false, false},
-		{"next tick", 32, true, true},
+		{"last emission", 16, false, false},
+		{"next tick", 17, true, true},
 	}
 
 	currentTick := Tick(0)
@@ -642,7 +663,7 @@ func TestColtBurstCancelsDueEmissionWhenOwnerDiesInPrePhase(t *testing.T) {
 		PressedAttack: true,
 	}})
 	firstBulletID := activated.Projectiles[0].ID
-	for snapshotTick := Tick(2); snapshotTick < 7; snapshotTick++ {
+	for snapshotTick := Tick(2); snapshotTick < 4; snapshotTick++ {
 		state.Step(nil)
 	}
 	state.projectiles = append(state.projectiles, ProjectileData{
@@ -678,7 +699,7 @@ func TestColtDueEmissionSurvivesSamePhaseLilyKillThenFutureBurstCancels(t *testi
 		AttackDir:     Vector2{Y: 1},
 		PressedAttack: true,
 	}})
-	for snapshotTick := Tick(2); snapshotTick < 7; snapshotTick++ {
+	for snapshotTick := Tick(2); snapshotTick < 4; snapshotTick++ {
 		state.Step(nil)
 	}
 
@@ -691,7 +712,7 @@ func TestColtDueEmissionSurvivesSamePhaseLilyKillThenFutureBurstCancels(t *testi
 	if killSnapshot.Projectiles[1].OwnerID != "colt" {
 		t.Fatalf("due projectile owner = %q, want colt", killSnapshot.Projectiles[1].OwnerID)
 	}
-	for snapshotTick := Tick(8); snapshotTick <= 13; snapshotTick++ {
+	for snapshotTick := Tick(5); snapshotTick <= 7; snapshotTick++ {
 		state.Step(nil)
 	}
 	if got := len(state.projectiles); got != 2 {

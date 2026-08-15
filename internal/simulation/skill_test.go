@@ -25,6 +25,18 @@ func TestStepSkillCooldownAllowsInclusiveReadyTick(t *testing.T) {
 	assertSkillState(t, third, "player", true, 5, 2)
 }
 
+func TestTryApproveSkillReturnsTypedCharacterConfig(t *testing.T) {
+	state := newSkillTestState(t, CharacterTypeColt, 390)
+
+	skill, approved := state.tryApproveSkill(0, 1)
+	if !approved || skill.Kind != SkillBurstProjectile || skill.BurstProjectile == nil {
+		t.Fatalf("tryApproveSkill()=(%+v,%t), want typed Colt burst config", skill, approved)
+	}
+	if got, want := skill.BurstProjectile.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("approved skill offsets=%v, want %v", got, want)
+	}
+}
+
 func TestStepDoesNotQueueCooldownBlockedSkill(t *testing.T) {
 	state := newSkillTestState(t, CharacterTypeShelly, 3)
 
@@ -251,8 +263,8 @@ func TestStepSkillDoesNotCancelExistingColtBurst(t *testing.T) {
 	if due.Tick != 7 {
 		t.Fatalf("due snapshot tick = %d, want 7", due.Tick)
 	}
-	if len(due.Projectiles) != 2 {
-		t.Fatalf("projectiles at activation tick A+6 = %d, want 2", len(due.Projectiles))
+	if len(due.Projectiles) != 3 {
+		t.Fatalf("projectiles at activation tick A+6 = %d, want 3", len(due.Projectiles))
 	}
 }
 

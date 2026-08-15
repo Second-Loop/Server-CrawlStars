@@ -37,8 +37,8 @@ func TestClientGameConfigSharedCollisionValuesMatchSimulation(t *testing.T) {
 func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) {
 	config := loadServerGameConfig(t)
 
-	if config.Version != 5 {
-		t.Fatalf("expected server config version 5, got %d", config.Version)
+	if config.Version != 6 {
+		t.Fatalf("expected server config version 6, got %d", config.Version)
 	}
 	if config.TickRate != TickRate {
 		t.Fatalf("expected tick rate %d, got %d", TickRate, config.TickRate)
@@ -68,8 +68,8 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 			t.Fatalf("player %q speed = %f, want %f", player.ID, player.Speed, DefaultPlayerSpeed)
 		}
 	}
-	if len(config.Projectile.Types) != 1 {
-		t.Fatalf("expected one projectile type, got %+v", config.Projectile.Types)
+	if len(config.Projectile.Types) != 3 {
+		t.Fatalf("expected three projectile types, got %+v", config.Projectile.Types)
 	}
 	if config.Projectile.Types[0].ID != "default" {
 		t.Fatalf("expected default projectile type, got %+v", config.Projectile.Types[0])
@@ -83,6 +83,53 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 	wantBot := BotConfig{15, 0.25, 0.2, 6, 8, 0.35}
 	if config.Bot != wantBot {
 		t.Fatalf("bot config=%+v want=%+v", config.Bot, wantBot)
+	}
+}
+
+func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
+	config := loadServerGameConfig(t)
+	wants := map[CharacterType]SkillConfig{
+		CharacterTypeShelly: {Kind: SkillReloadDash, CooldownTicks: 360, ReloadDash: &ReloadDashSkillConfig{DashDistanceTiles: 5.4}},
+		CharacterTypeColt: {
+			Kind: SkillBurstProjectile, CooldownTicks: 390,
+			BurstProjectile: &BurstProjectileSkillConfig{DamagePerHit: 320, RangeTiles: 11, Projectile: ProjectileAttackConfig{
+				Type: "colt_skill", Count: 12, DirectionOffsetsDegrees: []float64{0}, EmissionOffsetsTicks: []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20},
+			}},
+		},
+		CharacterTypeLily: {
+			Kind: SkillTeleportProjectile, CooldownTicks: 330,
+			TeleportProjectile: &TeleportProjectileSkillConfig{DamagePerHit: 400, RangeTiles: 10.4, BehindDistanceTiles: 1, Projectile: ProjectileAttackConfig{Type: "lily_seed"}},
+		},
+	}
+	for characterType, want := range wants {
+		playerType, ok := config.PlayerType(characterType)
+		if !ok || !reflect.DeepEqual(playerType.Skill, want) {
+			t.Fatalf("character type %d skill=%#v, want %#v", characterType, playerType.Skill, want)
+		}
+	}
+
+	shelly, _ := config.PlayerType(CharacterTypeShelly)
+	if shelly.Skill.Kind != SkillReloadDash || shelly.Skill.ReloadDash == nil || shelly.Skill.ReloadDash.DashDistanceTiles != 5.4 {
+		t.Fatalf("Shelly skill=%+v, want reload_dash 5.4 tiles", shelly.Skill)
+	}
+	colt, _ := config.PlayerType(CharacterTypeColt)
+	if colt.Skill.Kind != SkillBurstProjectile || colt.Skill.BurstProjectile == nil {
+		t.Fatalf("Colt skill=%+v, want burst_projectile", colt.Skill)
+	}
+	if got, want := colt.NormalAttack.Projectile.EmissionOffsetsTicks, []int{0, 3, 6, 9, 12, 15}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Colt normal offsets=%v, want %v", got, want)
+	}
+	if got, want := colt.Skill.BurstProjectile.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Colt skill offsets=%v, want %v", got, want)
+	}
+	lily, _ := config.PlayerType(CharacterTypeLily)
+	if lily.Skill.Kind != SkillTeleportProjectile || lily.Skill.TeleportProjectile == nil || lily.Skill.TeleportProjectile.RangeTiles != 10.4 {
+		t.Fatalf("Lily skill=%+v, want teleport_projectile range 10.4", lily.Skill)
+	}
+	for _, id := range []ProjectileType{"default", "colt_skill", "lily_seed"} {
+		if _, ok := config.ProjectileType(id); !ok {
+			t.Fatalf("missing projectile type %q", id)
+		}
 	}
 }
 
@@ -142,7 +189,7 @@ func TestLoadServerGameConfigIncludesCharacterNormalAttacks(t *testing.T) {
 	}
 	wants := map[CharacterType]NormalAttackConfig{
 		CharacterTypeShelly: {Kind: NormalAttackSpreadProjectile, DamagePerHit: 280, RangeTiles: 7.2, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 5, DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12}}},
-		CharacterTypeColt:   {Kind: NormalAttackBurstProjectile, DamagePerHit: 340, RangeTiles: 9, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 6, DirectionOffsetsDegrees: []float64{0}, IntervalTicks: 6}},
+		CharacterTypeColt:   {Kind: NormalAttackBurstProjectile, DamagePerHit: 340, RangeTiles: 9, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 6, DirectionOffsetsDegrees: []float64{0}, EmissionOffsetsTicks: []int{0, 3, 6, 9, 12, 15}}},
 		CharacterTypeLily:   {Kind: NormalAttackMelee, DamagePerHit: 1100, RangeTiles: 2.2, MaxCharges: 2, RechargeTicks: 30},
 	}
 	for characterType, want := range wants {
@@ -281,6 +328,68 @@ func TestResolveGameConfigRejectsInvalidSkillCooldown(t *testing.T) {
 	}
 }
 
+func TestResolveGameConfigRejectsInvalidTypedSkillCombinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GameConfig)
+	}{
+		{"unknown kind", func(c *GameConfig) { c.Player.Types[0].Skill.Kind = "unknown" }},
+		{"missing reload payload", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash = nil }},
+		{"reload forbidden burst payload", func(c *GameConfig) { c.Player.Types[0].Skill.BurstProjectile = c.Player.Types[1].Skill.BurstProjectile }},
+		{"zero dash", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDistanceTiles = 0 }},
+		{"noncanonical dash", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDistanceTiles = 5.3 }},
+		{"wrong character kind", func(c *GameConfig) { c.Player.Types[0].Skill = c.Player.Types[1].Skill }},
+		{"zero burst damage", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.DamagePerHit = 0 }},
+		{"zero burst range", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.RangeTiles = 0 }},
+		{"missing burst offsets", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.EmissionOffsetsTicks = nil }},
+		{"burst count mismatch", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.Count = 11 }},
+		{"burst mixed interval", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.IntervalTicks = 1 }},
+		{"burst duplicate offset", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.EmissionOffsetsTicks[2] = 2 }},
+		{"burst noncanonical increasing offsets", func(c *GameConfig) {
+			c.Player.Types[1].Skill.BurstProjectile.Projectile.EmissionOffsetsTicks = []int{0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22}
+		}},
+		{"burst direction offset", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.DirectionOffsetsDegrees[0] = 1 }},
+		{"burst unknown projectile", func(c *GameConfig) { c.Player.Types[1].Skill.BurstProjectile.Projectile.Type = "missing" }},
+		{"zero teleport damage", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.DamagePerHit = 0 }},
+		{"zero teleport range", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.RangeTiles = 0 }},
+		{"noncanonical teleport range", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.RangeTiles = 10.3 }},
+		{"zero behind distance", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.BehindDistanceTiles = 0 }},
+		{"teleport unknown projectile", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.Projectile.Type = "missing" }},
+		{"teleport forbidden schedule", func(c *GameConfig) { c.Player.Types[2].Skill.TeleportProjectile.Projectile.Count = 1 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := StaticGameConfig()
+			tt.mutate(&config)
+			if _, err := ResolveGameConfig(config); err == nil {
+				t.Fatal("expected invalid typed skill config to be rejected")
+			}
+		})
+	}
+}
+
+func TestSkillConfigJSONRejectsUnknownKindAndKindSpecificFieldMixes(t *testing.T) {
+	tests := map[string]string{
+		"unknown kind":                     `{"kind":"unknown","cooldownTicks":1}`,
+		"reload forbidden damage":          `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"damagePerHit":1}`,
+		"reload forbidden damage null":     `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"damagePerHit":null}`,
+		"reload forbidden projectile null": `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"projectile":null}`,
+		"burst missing damage":             `{"kind":"burst_projectile","cooldownTicks":1,"rangeTiles":11,"projectile":{"type":"colt_skill"}}`,
+		"burst forbidden dash null":        `{"kind":"burst_projectile","cooldownTicks":1,"damagePerHit":320,"rangeTiles":11,"dashDistanceTiles":null,"projectile":{"type":"colt_skill"}}`,
+		"teleport forbidden dash":          `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":10.4,"behindDistanceTiles":1,"dashDistanceTiles":5.4,"projectile":{"type":"lily_seed"}}`,
+		"teleport forbidden dash null":     `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":10.4,"behindDistanceTiles":1,"dashDistanceTiles":null,"projectile":{"type":"lily_seed"}}`,
+		"unknown field":                    `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"script":"unsafe"}`,
+	}
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			var skill SkillConfig
+			if err := json.Unmarshal([]byte(payload), &skill); err == nil {
+				t.Fatalf("json.Unmarshal(%s) skill=%+v error=nil, want rejection", payload, skill)
+			}
+		})
+	}
+}
+
 func TestPlayerTypeConfigRejectsMissingOrNullCharacterType(t *testing.T) {
 	for name, payload := range map[string]string{
 		"missing": `{"id":"shelly","radius":0.5,"hp":4000,"speed":2,"maxAttackCharges":4,"attackRechargeTicks":30}`,
@@ -348,6 +457,9 @@ func TestResolveGameConfigRejectsInvalidNormalAttackCombinations(t *testing.T) {
 			c.Player.Types[0].NormalAttack.Projectile.DirectionOffsetsDegrees[2] = math.Inf(-1)
 		}},
 		{"spread interval", func(c *GameConfig) { c.Player.Types[0].NormalAttack.Projectile.IntervalTicks = 1 }},
+		{"spread emission offsets", func(c *GameConfig) {
+			c.Player.Types[0].NormalAttack.Projectile.EmissionOffsetsTicks = []int{0, 1, 2, 3, 4}
+		}},
 		{"burst count", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.Count = 1 }},
 		{"burst offset", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{1} }},
 		{"burst nan offset", func(c *GameConfig) {
@@ -356,7 +468,13 @@ func TestResolveGameConfigRejectsInvalidNormalAttackCombinations(t *testing.T) {
 		{"burst infinite offset", func(c *GameConfig) {
 			c.Player.Types[1].NormalAttack.Projectile.DirectionOffsetsDegrees = []float64{math.Inf(1)}
 		}},
-		{"burst interval", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.IntervalTicks = 0 }},
+		{"burst interval mixed with offsets", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.IntervalTicks = 1 }},
+		{"burst offset count mismatch", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.Count = 7 }},
+		{"burst offset does not start at zero", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.EmissionOffsetsTicks[0] = 1 }},
+		{"burst offset duplicate", func(c *GameConfig) { c.Player.Types[1].NormalAttack.Projectile.EmissionOffsetsTicks[2] = 3 }},
+		{"burst noncanonical increasing offsets", func(c *GameConfig) {
+			c.Player.Types[1].NormalAttack.Projectile.EmissionOffsetsTicks = []int{0, 4, 8, 12, 16, 20}
+		}},
 	}
 
 	for _, tt := range tests {

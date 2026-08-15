@@ -97,7 +97,7 @@ func TestRoomBotAttackCadenceUsesServerRechargeTicks(t *testing.T) {
 	}
 }
 
-func TestRoomColtBotRetriesAfterFinalBurstEmission(t *testing.T) {
+func TestRoomColtBotRetriesAtRechargeTickAfterBurstCompletes(t *testing.T) {
 	store := NewStoreWithClock(5, newFakeClock())
 	t.Cleanup(store.Close)
 	config, err := store.gameConfig.SelectMode(simulation.GameModeDuel1v1)
@@ -133,14 +133,14 @@ func TestRoomColtBotRetriesAfterFinalBurstEmission(t *testing.T) {
 	room.state = simulation.NewStateWithConfig(players, simulation.Config{Game: config})
 
 	approvedTicks := make([]simulation.Tick, 0, 2)
-	lastBurstTick := simulation.Tick(1 + colt.NormalAttack.RechargeTicks)
-	for tick := simulation.Tick(1); tick <= lastBurstTick+1; tick++ {
+	nextReadyTick := simulation.Tick(1 + colt.NormalAttack.RechargeTicks)
+	for tick := simulation.Tick(1); tick <= nextReadyTick; tick++ {
 		store.tickRoomState(room)
 		if playerByID(t, room.lastPlayers, "bot").PressedAttack {
 			approvedTicks = append(approvedTicks, tick)
 		}
 	}
-	want := []simulation.Tick{1, lastBurstTick + 1}
+	want := []simulation.Tick{1, nextReadyTick}
 	if !reflect.DeepEqual(approvedTicks, want) {
 		t.Fatalf("Colt bot approved ticks=%v, want %v", approvedTicks, want)
 	}
