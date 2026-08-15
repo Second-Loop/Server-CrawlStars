@@ -974,3 +974,25 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Unobstructed 축/대각선 dash는 정확히 `6.48 world`를 이동하고 blocked 결과도 authoritative snapshot 하나로 확인할 수 있습니다.
 - 서로 마주보는 dash, wall에 먼저 멈춘 player와의 후속 접촉, ordinary movement가 섞인 입력도 순서 독립적으로 정산됩니다.
 - AsyncAPI info `0.8.0`, REST OpenAPI, Client config v3와 control snapshot null 계약은 유지됩니다.
+
+## ADR-0051: SL-119 Colt skill burst는 normal scheduler를 교체하고 committed emission을 보존한다
+
+상태: 구현과 계약 검증 중
+
+맥락: Colt 일반 공격과 스킬은 모두 approval 방향을 고정하고 exact integer tick에 projectile을 생성합니다. 별도 worker를 만들면 death/GameEnd cancellation과 deterministic ID 순서를 이중으로 관리해야 하고, skill 승인 tick에 이미 due인 normal emission의 처리 순서도 모호해집니다.
+
+결정:
+
+- Normal/skill burst는 하나의 `burstState` tick scheduler와 공통 projectile attack spec을 사용합니다. Goroutine, timer, 범용 scripting engine은 만들지 않습니다.
+- 일반 공격은 `A+[0,3,6,9,12,15]`, 스킬은 `S+[0,2,4,6,7,9,11,13,14,16,18,20]`에 생성합니다. 스킬 projectile은 server config v6의 damage `320`, range `11 tile`, type `colt_skill`, catalog speed `13`, radius `0.3`을 사용합니다.
+- Skill 승인 시 active normal burst를 skill burst로 교체합니다. Step pre-phase에서 이미 due로 수집한 same-tick normal emission은 committed 결과로 유지하고, 그 뒤 ordinal만 취소합니다.
+- Skill burst가 active인 동안 normal attack은 charge를 소비하거나 queue하지 않습니다. 마지막 emission tick에도 새 attack을 겹치지 않고 `S+21`부터 승인합니다.
+- 각 emission은 그 tick의 post-movement owner 위치에서 생성되고 approval 방향을 유지합니다. Projectile ID 순서는 owner ID, scheduled-before-activation phase, ordinal로 정규화합니다.
+- Projectile pre-phase에서 owner가 죽으면 current/future due emission과 scheduler state를 제거합니다. Approval 또는 due 수집 뒤 same-tick melee로 죽으면 이미 committed된 emission만 생성하고 다음 tick에 미래분을 제거합니다.
+- 기존 projectile collision, mode hit eligibility, tombstone, HP/death와 room GameEnd 계산기를 재사용합니다. 새 wire field/event, REST/OpenAPI, Client config v3, bot skill use는 추가하지 않습니다.
+
+결과:
+
+- Client는 기존 `PressedSkill`, `SkillReadyTick`, `Projectiles[].Type`, `Damage`, `Pos`로 approval과 일반/스킬 projectile을 구분합니다.
+- Input 순서와 map iteration에 무관한 12발 cadence를 simulation state 하나로 검증할 수 있습니다.
+- Lily `teleport_projectile` effect와 bot skill use는 후속 티켓 범위입니다.

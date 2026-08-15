@@ -11,12 +11,26 @@ type projectileRuntime struct {
 	moved       float64
 }
 
+type projectileAttackSpec struct {
+	damagePerHit float64
+	rangeTiles   float64
+	projectile   ProjectileAttackConfig
+}
+
+type projectileEmissionPhase uint8
+
+const (
+	projectileEmissionScheduled projectileEmissionPhase = iota
+	projectileEmissionActivation
+)
+
 type projectileEmission struct {
 	ownerID        PlayerID
 	direction      Vector2
-	attack         NormalAttackConfig
+	attack         projectileAttackSpec
 	projectile     ProjectileTypeConfig
 	projectileType ProjectileType
+	phase          projectileEmissionPhase
 	ordinal        int
 	snapshotTick   Tick
 }
@@ -30,7 +44,7 @@ type attackIntent struct {
 
 type burstState struct {
 	direction      Vector2
-	attack         NormalAttackConfig
+	attack         projectileAttackSpec
 	activationTick Tick
 	nextOrdinal    int
 }
@@ -59,11 +73,27 @@ func (s *State) normalAttackConfig(playerID PlayerID) (NormalAttackConfig, bool)
 	return NormalAttackConfig{}, false
 }
 
-func (s *State) newProjectileEmission(ownerID PlayerID, direction Vector2, attack NormalAttackConfig, ordinal int, snapshotTick Tick) (projectileEmission, bool) {
+func normalProjectileAttackSpec(attack NormalAttackConfig) (projectileAttackSpec, bool) {
 	if attack.Projectile == nil {
-		return projectileEmission{}, false
+		return projectileAttackSpec{}, false
 	}
-	projectileType, ok := s.gameConfig.ProjectileType(attack.Projectile.Type)
+	return projectileAttackSpec{
+		damagePerHit: attack.DamagePerHit,
+		rangeTiles:   attack.RangeTiles,
+		projectile:   *attack.Projectile,
+	}, true
+}
+
+func skillProjectileAttackSpec(skill BurstProjectileSkillConfig) projectileAttackSpec {
+	return projectileAttackSpec{
+		damagePerHit: skill.DamagePerHit,
+		rangeTiles:   skill.RangeTiles,
+		projectile:   skill.Projectile,
+	}
+}
+
+func (s *State) newProjectileEmission(ownerID PlayerID, direction Vector2, attack projectileAttackSpec, phase projectileEmissionPhase, ordinal int, snapshotTick Tick) (projectileEmission, bool) {
+	projectileType, ok := s.gameConfig.ProjectileType(attack.projectile.Type)
 	if !ok {
 		return projectileEmission{}, false
 	}
@@ -72,7 +102,8 @@ func (s *State) newProjectileEmission(ownerID PlayerID, direction Vector2, attac
 		direction:      direction,
 		attack:         attack,
 		projectile:     projectileType,
-		projectileType: attack.Projectile.Type,
+		projectileType: attack.projectile.Type,
+		phase:          phase,
 		ordinal:        ordinal,
 		snapshotTick:   snapshotTick,
 	}, true
@@ -88,17 +119,18 @@ func (s *State) approveProjectileAttack(intent attackIntent, snapshotTick Tick) 
 		return nil
 	}
 	s.players[intent.playerIndex].PressedAttack = true
+	attack, ok := normalProjectileAttackSpec(intent.attack)
+	if !ok {
+		return nil
+	}
 
 	switch intent.attack.Kind {
 	case NormalAttackSpreadProjectile:
-		projectile := intent.attack.Projectile
-		if projectile == nil {
-			return nil
-		}
+		projectile := &attack.projectile
 		emissions := make([]projectileEmission, 0, len(projectile.DirectionOffsetsDegrees))
 		for ordinal, offset := range projectile.DirectionOffsetsDegrees {
 			direction := rotateDirection(intent.direction, offset)
-			if emission, ok := s.newProjectileEmission(intent.owner.ID, direction, intent.attack, ordinal, snapshotTick); ok {
+			if emission, ok := s.newProjectileEmission(intent.owner.ID, direction, attack, projectileEmissionActivation, ordinal, snapshotTick); ok {
 				emissions = append(emissions, emission)
 			}
 		}
@@ -106,11 +138,11 @@ func (s *State) approveProjectileAttack(intent attackIntent, snapshotTick Tick) 
 	case NormalAttackBurstProjectile:
 		s.burstStates[intent.owner.ID] = burstState{
 			direction:      intent.direction,
-			attack:         intent.attack,
+			attack:         attack,
 			activationTick: snapshotTick,
 			nextOrdinal:    1,
 		}
-		emission, ok := s.newProjectileEmission(intent.owner.ID, intent.direction, intent.attack, 0, snapshotTick)
+		emission, ok := s.newProjectileEmission(intent.owner.ID, intent.direction, attack, projectileEmissionActivation, 0, snapshotTick)
 		if !ok {
 			return nil
 		}
@@ -143,8 +175,8 @@ func (s *State) collectDueBurstEmissions(snapshotTick Tick) []projectileEmission
 			delete(s.burstStates, ownerID)
 			continue
 		}
-		projectile := burst.attack.Projectile
-		if projectile == nil || burst.nextOrdinal >= projectile.Count {
+		projectile := burst.attack.projectile
+		if burst.nextOrdinal >= projectile.Count {
 			continue
 		}
 		offset := burst.nextOrdinal * projectile.IntervalTicks
@@ -155,7 +187,7 @@ func (s *State) collectDueBurstEmissions(snapshotTick Tick) []projectileEmission
 		if snapshotTick != dueTick {
 			continue
 		}
-		if emission, ok := s.newProjectileEmission(ownerID, burst.direction, burst.attack, burst.nextOrdinal, snapshotTick); ok {
+		if emission, ok := s.newProjectileEmission(ownerID, burst.direction, burst.attack, projectileEmissionScheduled, burst.nextOrdinal, snapshotTick); ok {
 			emissions = append(emissions, emission)
 		}
 		burst.nextOrdinal++
@@ -167,7 +199,7 @@ func (s *State) collectDueBurstEmissions(snapshotTick Tick) []projectileEmission
 func (s *State) finishCompletedBursts() {
 	for _, ownerID := range s.orderedBurstOwnerIDs() {
 		burst := s.burstStates[ownerID]
-		if burst.attack.Projectile != nil && burst.nextOrdinal >= burst.attack.Projectile.Count {
+		if burst.nextOrdinal >= burst.attack.projectile.Count {
 			delete(s.burstStates, ownerID)
 		}
 	}
@@ -200,6 +232,9 @@ func (s *State) emitProjectiles(emissions []projectileEmission) {
 		if ordered[i].ownerID != ordered[j].ownerID {
 			return ordered[i].ownerID < ordered[j].ownerID
 		}
+		if ordered[i].phase != ordered[j].phase {
+			return ordered[i].phase < ordered[j].phase
+		}
 		return ordered[i].ordinal < ordered[j].ordinal
 	})
 	for _, emission := range ordered {
@@ -215,12 +250,12 @@ func (s *State) emitProjectiles(emissions []projectileEmission) {
 			Pos:     owner.Pos,
 			Dir:     emission.direction,
 			Speed:   emission.projectile.Speed,
-			Damage:  emission.attack.DamagePerHit,
+			Damage:  emission.attack.damagePerHit,
 			Radius:  emission.projectile.Radius,
 			Type:    emission.projectileType,
 		})
 		s.projectileRuntime[projectileID] = projectileRuntime{
-			maxDistance: emission.attack.RangeTiles * s.resolvedTileSize(),
+			maxDistance: emission.attack.rangeTiles * s.resolvedTileSize(),
 		}
 	}
 }

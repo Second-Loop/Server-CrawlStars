@@ -217,10 +217,11 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.applyPlayerMovement(prepared)
 
 	for _, input := range prepared {
-		intent, attackApproved, dash, dashApproved := s.applyPreparedInput(input, snapshotTick)
-		if dashApproved {
-			dashIntents = append(dashIntents, dash)
+		intent, attackApproved, skillEffect := s.applyPreparedInput(input, snapshotTick)
+		if skillEffect.hasDash {
+			dashIntents = append(dashIntents, skillEffect.dash)
 		}
+		emissions = append(emissions, skillEffect.emissions...)
 		if attackApproved {
 			if intent.attack.Kind == NormalAttackMelee {
 				if melee, approved := s.approveMeleeAttack(intent); approved {
@@ -441,26 +442,25 @@ func (s *State) prepareInput(input InputCommand) (preparedInput, bool) {
 	return preparedInput{}, false
 }
 
-func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool, skillDashIntent, bool) {
+func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool, approvedSkillEffect) {
 	if input.input.PressedSkill && input.attackDir != (Vector2{}) {
 		if skill, approved := s.tryApproveSkill(input.playerIndex, activationTick); approved {
-			dash, hasDash := s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill)
-			return attackIntent{}, false, dash, hasDash
+			return attackIntent{}, false, s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill, activationTick)
 		}
 	}
 	if !input.input.PressedAttack || input.attackDir == (Vector2{}) {
-		return attackIntent{}, false, skillDashIntent{}, false
+		return attackIntent{}, false, approvedSkillEffect{}
 	}
 	attack, ok := s.normalAttackConfig(input.input.PlayerID)
 	if !ok {
-		return attackIntent{}, false, skillDashIntent{}, false
+		return attackIntent{}, false, approvedSkillEffect{}
 	}
 	return attackIntent{
 		playerIndex: input.playerIndex,
 		owner:       s.players[input.playerIndex],
 		direction:   input.attackDir,
 		attack:      attack,
-	}, true, skillDashIntent{}, false
+	}, true, approvedSkillEffect{}
 }
 
 func (s *State) applyPlayerMovement(inputs []preparedInput) {

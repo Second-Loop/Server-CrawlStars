@@ -346,6 +346,31 @@ func TestShellyDashSettlesBeforeSameTickMeleeAndGameEnd(t *testing.T) {
 	assertGameEndResult(t, results, "lily", gameEndResultWin)
 }
 
+func TestColtSkillApprovalCommitsProjectileBeforeSameTickMeleeGameEnd(t *testing.T) {
+	gameConfig := simulation.StaticGameConfig()
+	gameConfig.Map = simulation.MapData{}
+	state := simulation.NewStateWithConfig([]simulation.PlayerData{
+		{ID: "colt", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeColt, HP: 1100},
+		{ID: "lily", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeLily, Pos: simulation.Vector2{X: -2}},
+	}, simulation.Config{Game: gameConfig})
+
+	snapshot := state.Step([]simulation.InputCommand{
+		{PlayerID: "colt", AttackDir: simulation.Vector2{Y: 1}, PressedSkill: true},
+		{PlayerID: "lily", AttackDir: simulation.Vector2{X: 1}, PressedAttack: true},
+	})
+	colt := snapshot.Players[0]
+	if colt.ID != "colt" || !colt.PressedSkill || !colt.IsDead || colt.HP != 0 {
+		t.Fatalf("terminal Colt snapshot=%+v, want approved skill and same-tick death", colt)
+	}
+	if len(snapshot.Projectiles) != 1 || snapshot.Projectiles[0].OwnerID != "colt" || snapshot.Projectiles[0].Type != "colt_skill" {
+		t.Fatalf("terminal projectiles=%+v, want committed Colt skill projectile", snapshot.Projectiles)
+	}
+
+	results := calculateGameEndResults(gameConfig, snapshot)
+	assertGameEndResult(t, results, "colt", gameEndResultLose)
+	assertGameEndResult(t, results, "lily", gameEndResultWin)
+}
+
 func TestGameEndUsesRoomConfig(t *testing.T) {
 	mode := simulation.GameModeConfig{
 		ID:              "custom_survival",
