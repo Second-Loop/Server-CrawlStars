@@ -4,13 +4,14 @@
 
 SL-80의 Shelly·Colt·Lily 스킬 기획을 SL-84의 `PressedSkill`·`SkillReadyTick` 승인 계약 위에서 결정적으로 실행할 수 있게 해요.
 
-- 기준 코드는 `origin/main`의 `b441bc65e0df5ab3dd400a7810c1b7802e8bf740`예요.
+- 기준 코드는 `origin/main`의 `64c501a2934824dffc0851719348159764c35969`예요.
+- SL-121에서 2026-08-15에 확정한 exact balance를 이 문서의 최신 canonical 값으로 사용해요.
 - ready 상태에서 non-zero `AttackDir`로 스킬을 승인하면 cooldown을 즉시 소비해요.
 - 승인 뒤 대시 차단, projectile miss, 순간이동 목적지 차단이 발생해도 cooldown을 환불하거나 일반 공격으로 fallback하지 않아요.
 - Client가 gameplay 결과를 재판정하지 않도록 snapshot을 서버 권위 상태로 유지해요.
 - 입력 순서, 내부 slice 순서, Go map 순서가 결과를 바꾸지 않게 해요.
 
-Client UI·애니메이션·이펙트 구현, bot의 스킬 사용, 최종 밸런싱, 범용 스킬 scripting engine은 범위 밖이에요.
+Client UI·애니메이션·이펙트 구현, bot의 스킬 사용, 이 문서에 없는 추가 밸런싱, 범용 스킬 scripting engine은 범위 밖이에요.
 
 ## 2. 선택한 구조
 
@@ -79,14 +80,14 @@ owner 사망은 이미 생성된 projectile을 제거하지 않아요. 일반 pr
 
 Colt의 예약 emission만 owner가 죽은 것을 확인한 다음 tick부터 취소해요. Lily seed는 owner가 죽어도 피해는 주지만 순간이동은 실행하지 않아요.
 
-## 5. Shelly: 최대 재장전과 3타일 대시
+## 5. Shelly: 최대 재장전과 5.4타일 대시
 
 ### 5.1 Activation 효과
 
 - 일반 이동을 먼저 적용한 post-movement 위치에서 시작해요.
 - attack charge를 `normalAttack.maxCharges`까지 즉시 복구해요.
 - 진행 중인 recharge tick도 `0`으로 초기화해요.
-- `AttackDir` 방향으로 `3 tile = 3.6 world` 대시를 시도해요.
+- `AttackDir` 방향으로 `5.4 tile = 6.48 world` 대시를 시도해요.
 - 대시가 일부 이동하거나 완전히 막혀도 reload와 cooldown은 유지해요.
 
 ### 5.2 충돌 대상
@@ -113,22 +114,30 @@ Shelly의 player circle을 전체 대시 segment에 쓸어 보는 swept-circle �
 
 예: 두 Shelly가 서로를 향해 같은 tick에 대시하면 두 원의 최초 접촉 직전에 함께 멈춰요. 한 Shelly가 먼저 벽에 멈춘 뒤 다른 Shelly의 경로를 막으면, 두 번째 Shelly도 그 멈춘 위치와의 최초 접촉 직전에 멈춰요.
 
-## 6. Colt: 39틱 12발 연사
+## 6. Colt: 일반 15틱 6발과 스킬 20틱 12발 연사
 
-### 6.1 값과 schedule
+### 6.1 일반 공격 schedule
+
+- emission offset: `[0, 3, 6, 9, 12, 15]`
+- 기존 일반 공격의 피해·사거리·projectile type은 server config의 Colt normal attack 값을 유지해요.
+- 한 번 승인된 일반 공격은 activation tick부터 15 tick 동안 정확히 6발을 생성해요.
+
+이 정수 배열 자체가 canonical source예요. Runtime이나 문서 생성기가 초 단위 float에서 offset을 다시 계산하지 않아요.
+
+### 6.2 스킬 값과 schedule
 
 - 피해: projectile당 `320`
 - 사거리: `11 tile = 13.2 world`
 - 속도: `13 world/s`
 - 반경: `0.3 world`
 - type: `colt_skill`
-- emission offset: `[0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 35, 39]`
+- emission offset: `[0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]`
 
-Offset은 `round(i * 39 / 11)`, `i=0..11`과 같은 canonical 값이며, 첫 발부터 마지막 발까지 정확히 39 tick, 1.3초를 사용해요.
+이 정수 배열 자체가 canonical source이며 초 단위 float에서 다시 계산하지 않아요. 첫 발부터 마지막 발까지 정확히 20 tick, 약 0.667초를 사용해요.
 
-예: activation tick이 `100`이면 emission tick은 `100,104,107,111,114,118,121,125,128,132,135,139`예요.
+예: activation tick이 `100`이면 emission tick은 `100,102,104,106,107,109,111,113,114,116,118,120`이에요.
 
-### 6.2 방향, origin, 사망
+### 6.3 방향, origin, 사망
 
 - `AttackDir`은 activation tick에 정규화해 고정해요.
 - 이후 input의 방향 변경은 진행 중인 skill burst에 영향을 주지 않아요.
@@ -137,20 +146,20 @@ Offset은 `round(i * 39 / 11)`, `i=0..11`과 같은 canonical 값이며, 첫 발
 - Colt가 그 뒤 같은 tick melee 피해로 죽어도 ordinal 0은 생성돼요.
 - owner가 이미 죽은 다음 tick부터 남은 ordinal을 취소해요.
 
-### 6.3 일반 burst와의 관계
+### 6.4 일반 burst와의 관계
 
 - skill 승인 시 기존 일반 6발 burst의 미래 emission을 취소해요.
 - 그 tick의 입력 단계 전에 이미 due로 committed된 일반 탄환은 생성해요.
 - skill ordinal 11이 생성될 때까지 새 일반 공격은 `PressedAttack=false`, charge 불변, queue 없음으로 처리해요.
 - 일반 공격이 잠겨도 movement, aim, 유효한 양수 `ClientTick` ACK는 처리해요.
-- skill cooldown `390 tick`이 burst 길이 `39 tick`보다 길어서 skill burst끼리는 겹치지 않아요.
+- skill cooldown `390 tick`이 burst 길이 `20 tick`보다 길어서 skill burst끼리는 겹치지 않아요.
 
 ## 7. Lily: 씨앗 피해와 적 뒤 순간이동
 
 ### 7.1 Seed projectile
 
 - 피해: `400`
-- 사거리: `8 tile = 9.6 world`
+- 사거리: `10.4 tile = 12.48 world`
 - 속도: `13 world/s`
 - 반경: `0.3 world`
 - type: `lily_seed`
@@ -194,12 +203,33 @@ Teleport는 경로 이동이 아니므로 target과 후보 사이의 타일을 �
 
 SL-116 구현이 server config v5를 먼저 병합한 뒤 SL-115 구현 계열이 v6을 사용해요. 구현 branch는 v5에 rebase하고 v6 schema를 한 번만 도입해야 해요. Client config v3는 변경하지 않아요.
 
+v5의 기존 field는 보존하되 projectile burst에는 optional `emissionOffsetsTicks`를 추가해요. v6 canonical Colt 일반 공격은 기존 `count + intervalTicks` 계산 대신 이 정수 배열을 유일한 cadence source로 사용해요. `count`는 배열 길이와 일치해야 하고, `emissionOffsetsTicks`가 있으면 `intervalTicks`는 `0`이어야 해 중복된 schedule source를 만들지 않아요.
+
+```json
+{
+  "normalAttack": {
+    "kind": "burst_projectile",
+    "damagePerHit": 340,
+    "rangeTiles": 9,
+    "maxCharges": 3,
+    "rechargeTicks": 30,
+    "projectile": {
+      "type": "default",
+      "count": 6,
+      "directionOffsetsDegrees": [0],
+      "intervalTicks": 0,
+      "emissionOffsetsTicks": [0, 3, 6, 9, 12, 15]
+    }
+  }
+}
+```
+
 ```json
 {
   "skill": {
     "kind": "reload_dash",
     "cooldownTicks": 360,
-    "dashDistanceTiles": 3
+    "dashDistanceTiles": 5.4
   }
 }
 ```
@@ -213,7 +243,10 @@ SL-116 구현이 server config v5를 먼저 병합한 뒤 SL-115 구현 계열�
     "rangeTiles": 11,
     "projectile": {
       "type": "colt_skill",
-      "emissionOffsetsTicks": [0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 35, 39]
+      "count": 12,
+      "directionOffsetsDegrees": [0],
+      "intervalTicks": 0,
+      "emissionOffsetsTicks": [0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]
     }
   }
 }
@@ -225,7 +258,7 @@ SL-116 구현이 server config v5를 먼저 병합한 뒤 SL-115 구현 계열�
     "kind": "teleport_projectile",
     "cooldownTicks": 330,
     "damagePerHit": 400,
-    "rangeTiles": 8,
+    "rangeTiles": 10.4,
     "behindDistanceTiles": 1,
     "projectile": {
       "type": "lily_seed"
@@ -249,8 +282,10 @@ Config validation은 다음을 fail-fast로 거부해요.
 - kind별 필수 field 누락 또는 다른 kind 전용 field 혼합
 - 0 이하, NaN, Infinity인 거리·피해·cooldown
 - 빈 emission offset, 첫 값이 0이 아님, 음수, 중복 또는 감소
+- `count`와 emission offset 개수 불일치 또는 emission offset과 non-zero `intervalTicks` 혼용
 - 정의되지 않은 projectile type 참조
 - stable `CharacterType`과 skill kind의 canonical mapping drift
+- Colt 일반 `[0,3,6,9,12,15]` 또는 스킬 `[0,2,4,6,7,9,11,13,14,16,18,20]` exact schedule drift
 
 ## 9. Snapshot과 API 계약
 
@@ -301,10 +336,10 @@ AsyncAPI dialect `3.0.0`은 유지하고 `info.version`을 `0.7.0`에서 `0.8.0`
 
 ### Simulation
 
-- Shelly 최대 reload, recharge reset, 3.6 world unobstructed dash
+- Shelly 최대 reload, recharge reset, 6.48 world unobstructed dash
 - Wall·Water·boundary·stationary player 접촉과 dead player 통과
 - 두 개 이상 동시 dash, same-time contact, wall에 먼저 멈춘 dasher와 후속 접촉, input reversal 동일성
-- Colt exact 12 offset, locked direction, emission-tick current origin, 일반 burst 선점, 일반 attack lock, owner death 취소
+- Colt 일반 6발 `[0,3,6,9,12,15]`과 스킬 12발 `[0,2,4,6,7,9,11,13,14,16,18,20]`, locked direction, emission-tick current origin, 일반 burst 선점, 일반 attack lock, owner death 취소
 - Lily seed Wall/boundary 충돌, Water 통과, mode hit eligibility, lethal hit teleport, dead owner damage-only
 - Lily desired destination, 직선 backoff, 최소 clearance 실패, live/dead player blocker 차이
 - projectile 생성 sequence와 target `PlayerID` tie-break
@@ -319,8 +354,8 @@ AsyncAPI dialect `3.0.0`은 유지하고 `info.version`을 `0.7.0`에서 `0.8.0`
 
 ## 12. 하위 티켓 전달
 
-- SL-118은 Shelly의 reload·동시 swept dash 규칙을 직접 참조해요.
-- SL-119는 Colt의 v6 config, exact schedule, burst 선점·잠금·사망 규칙을 직접 참조해요.
-- SL-117은 Lily의 seed, 피해 후 teleport, 1타일 중심 간격과 직선 backoff 규칙을 직접 참조해요.
+- SL-118은 Shelly의 reload·5.4타일 동시 swept dash 규칙을 직접 참조해요.
+- SL-119는 Colt의 v6 config, 일반·스킬 exact schedule, burst 선점·잠금·사망 규칙을 직접 참조해요.
+- SL-117은 Lily의 10.4타일 seed, 피해 후 teleport, 1타일 중심 간격과 직선 backoff 규칙을 직접 참조해요.
 
 공통 v6 config·snapshot·skill runtime 기반의 구현 소유권과 하위 티켓 dependency 순서는 별도 구현 계획에서 정해요. SL-115 자체는 승인된 설계와 계약을 닫는 문서 티켓이며 실제 효과 구현을 포함하지 않아요.
