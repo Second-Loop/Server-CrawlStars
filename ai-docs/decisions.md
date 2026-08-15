@@ -933,3 +933,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Production Map_0의 Solo/Team 900-tick fixture에서 live bot이 입력 종류와 무관하게 90 tick 연속 같은 authoritative position에 머물지 않습니다.
 - 3x3 blocked-corner fixture와 head-on two-bot fixture가 각각 static map cancellation과 dynamic player cancellation 경계를 고정합니다.
 - Client 변경, API schema/version 변경, 새 runtime tuning은 없습니다.
+
+## ADR-0049: SL-120 typed skill config와 탄약 snapshot은 server config v6가 소유한다
+
+상태: 구현과 계약 검증 중
+
+맥락: SL-115의 캐릭터별 skill 명세와 SL-121의 최신 밸런스를 후속 effect 구현이 같은 형태로 소비해야 합니다. 기존 server config v5는 cooldown만 가졌고 attack charge는 private state라 Client가 현재 탄약을 authoritative snapshot만으로 표시할 수 없었습니다.
+
+결정:
+
+- Server config를 v6으로 올리고 `reload_dash`, `burst_projectile`, `teleport_projectile` typed payload를 kind별 필수/금지 field validation으로 구분합니다.
+- Colt 일반/스킬 cadence는 각각 `[0,3,6,9,12,15]`, `[0,2,4,6,7,9,11,13,14,16,18,20]` 정수 배열이 유일한 source입니다. `count`는 배열 길이와 같고 explicit offsets와 non-zero `intervalTicks`를 혼용하지 않습니다.
+- Shelly dash는 `5.4 tile`, Lily seed range는 `10.4 tile`이며 projectile catalog에 `colt_skill`, `lily_seed`를 추가합니다.
+- Private `attackState`가 판정을 계속 소유합니다. 각 gameplay snapshot은 `AttackCharges`와 `NextAttackChargeTick`을 투영하며 max charge이면 next tick은 `0`, 아니면 snapshot tick `T`에서 `T + (R-r)`입니다.
+- Skill approval은 검증된 typed config를 좁은 dispatch 경계까지 전달합니다. SL-120은 실제 캐릭터 effect를 실행하지 않습니다.
+- AsyncAPI dialect 3.0.0은 유지하고 info version을 `0.8.0`으로 올립니다. 두 탄약 field는 gameplay `PlayerData` required이고 control snapshot의 `Players:null`/`Projectiles:null`, REST OpenAPI, Client config v3는 유지합니다.
+
+결과:
+
+- 후속 SL-118/119/117은 같은 immutable room config와 snapshot 계약 위에서 effect만 구현할 수 있습니다.
+- Client는 private recharge 진행도를 재현하지 않고 absolute next tick과 현재 charge를 authoritative snapshot에서 읽습니다.

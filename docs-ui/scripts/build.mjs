@@ -110,8 +110,8 @@ function renderAsyncAPI(specText) {
             <h3>Snapshot coalescing</h3>
             <p>일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 <code>PressedSkill: true</code>이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.</p>
             <p>multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 <code>approval -&gt; latest</code> 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다.</p>
-            <p>queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 wire field/event를 추가하지 않습니다. AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.</p>
-            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. SL-85 effect는 이번 범위에서 제외합니다. SL-99 client config v3/server config v5 경계를 유지합니다.</p>
+            <p>queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.</p>
+            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. SL-120은 실제 skill effect를 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.</p>
           </article>
           <article>
             <h3>Reliable control</h3>
@@ -161,7 +161,7 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity입니다. <code>Players[].PressedSkill</code>은 transient approval pulse이고 <code>Players[].SkillReadyTick</code>은 persistent canonical absolute tick입니다. <code>Snapshot.Tick &gt;= SkillReadyTick</code>이면 ready이며 승인 tick A에는 <code>A + C</code>를 기록해 exact <code>A + C</code>도 허용합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity입니다. <code>Players[].PressedSkill</code>은 transient approval pulse이고 <code>Players[].SkillReadyTick</code>은 persistent canonical absolute tick입니다. <code>Players[].AttackCharges</code>는 현재 일반 공격 charge, <code>Players[].NextAttackChargeTick</code>은 다음 charge 복구 absolute tick이며 max charge에서는 0입니다. <code>Snapshot.Tick &gt;= SkillReadyTick</code>이면 ready이며 승인 tick A에는 <code>A + C</code>를 기록해 exact <code>A + C</code>도 허용합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -258,6 +258,8 @@ function renderAsyncAPI(specText) {
         "PressedAttack": false,
         "PressedSkill": true,
         "SkillReadyTick": 361,
+        "AttackCharges": 3,
+        "NextAttackChargeTick": 0,
         "IsDead": false,
         "LastProcessedClientTick": 12
       },
@@ -276,6 +278,8 @@ function renderAsyncAPI(specText) {
         "PressedAttack": true,
         "PressedSkill": false,
         "SkillReadyTick": 0,
+        "AttackCharges": 2,
+        "NextAttackChargeTick": 31,
         "IsDead": false,
         "LastProcessedClientTick": 0
       }

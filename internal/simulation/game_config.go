@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-const ServerGameConfigVersion = 5
+const ServerGameConfigVersion = 6
 
 type CharacterType int
 
@@ -70,8 +70,110 @@ type PlayerTypeConfig struct {
 	Skill         SkillConfig        `json:"skill"`
 }
 
+type SkillKind string
+
+const (
+	SkillReloadDash         SkillKind = "reload_dash"
+	SkillBurstProjectile    SkillKind = "burst_projectile"
+	SkillTeleportProjectile SkillKind = "teleport_projectile"
+)
+
+type ReloadDashSkillConfig struct {
+	DashDistanceTiles float64
+}
+
+type BurstProjectileSkillConfig struct {
+	DamagePerHit float64
+	RangeTiles   float64
+	Projectile   ProjectileAttackConfig
+}
+
+type TeleportProjectileSkillConfig struct {
+	DamagePerHit        float64
+	RangeTiles          float64
+	BehindDistanceTiles float64
+	Projectile          ProjectileAttackConfig
+}
+
 type SkillConfig struct {
-	CooldownTicks int `json:"cooldownTicks"`
+	Kind               SkillKind
+	CooldownTicks      int
+	ReloadDash         *ReloadDashSkillConfig
+	BurstProjectile    *BurstProjectileSkillConfig
+	TeleportProjectile *TeleportProjectileSkillConfig
+}
+
+type skillConfigWire struct {
+	Kind                SkillKind               `json:"kind"`
+	CooldownTicks       int                     `json:"cooldownTicks"`
+	DashDistanceTiles   *float64                `json:"dashDistanceTiles,omitempty"`
+	DamagePerHit        *float64                `json:"damagePerHit,omitempty"`
+	RangeTiles          *float64                `json:"rangeTiles,omitempty"`
+	BehindDistanceTiles *float64                `json:"behindDistanceTiles,omitempty"`
+	Projectile          *ProjectileAttackConfig `json:"projectile,omitempty"`
+}
+
+func (config *SkillConfig) UnmarshalJSON(data []byte) error {
+	var wire skillConfigWire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return fmt.Errorf("decode skill config: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode skill config fields: %w", err)
+	}
+	hasField := func(name string) bool {
+		_, ok := fields[name]
+		return ok
+	}
+	decoded := SkillConfig{Kind: wire.Kind, CooldownTicks: wire.CooldownTicks}
+	switch wire.Kind {
+	case SkillReloadDash:
+		if wire.DashDistanceTiles == nil || hasField("damagePerHit") || hasField("rangeTiles") || hasField("behindDistanceTiles") || hasField("projectile") {
+			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
+		}
+		decoded.ReloadDash = &ReloadDashSkillConfig{DashDistanceTiles: *wire.DashDistanceTiles}
+	case SkillBurstProjectile:
+		if hasField("dashDistanceTiles") || wire.DamagePerHit == nil || wire.RangeTiles == nil || hasField("behindDistanceTiles") || wire.Projectile == nil {
+			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
+		}
+		decoded.BurstProjectile = &BurstProjectileSkillConfig{DamagePerHit: *wire.DamagePerHit, RangeTiles: *wire.RangeTiles, Projectile: *wire.Projectile}
+	case SkillTeleportProjectile:
+		if hasField("dashDistanceTiles") || wire.DamagePerHit == nil || wire.RangeTiles == nil || wire.BehindDistanceTiles == nil || wire.Projectile == nil {
+			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
+		}
+		decoded.TeleportProjectile = &TeleportProjectileSkillConfig{DamagePerHit: *wire.DamagePerHit, RangeTiles: *wire.RangeTiles, BehindDistanceTiles: *wire.BehindDistanceTiles, Projectile: *wire.Projectile}
+	default:
+		return fmt.Errorf("skill kind %q is not supported", wire.Kind)
+	}
+	*config = decoded
+	return nil
+}
+
+func (config SkillConfig) MarshalJSON() ([]byte, error) {
+	wire := skillConfigWire{Kind: config.Kind, CooldownTicks: config.CooldownTicks}
+	switch config.Kind {
+	case SkillReloadDash:
+		if config.ReloadDash != nil {
+			wire.DashDistanceTiles = &config.ReloadDash.DashDistanceTiles
+		}
+	case SkillBurstProjectile:
+		if config.BurstProjectile != nil {
+			wire.DamagePerHit = &config.BurstProjectile.DamagePerHit
+			wire.RangeTiles = &config.BurstProjectile.RangeTiles
+			wire.Projectile = &config.BurstProjectile.Projectile
+		}
+	case SkillTeleportProjectile:
+		if config.TeleportProjectile != nil {
+			wire.DamagePerHit = &config.TeleportProjectile.DamagePerHit
+			wire.RangeTiles = &config.TeleportProjectile.RangeTiles
+			wire.BehindDistanceTiles = &config.TeleportProjectile.BehindDistanceTiles
+			wire.Projectile = &config.TeleportProjectile.Projectile
+		}
+	}
+	return json.Marshal(wire)
 }
 
 type NormalAttackKind string
@@ -87,6 +189,7 @@ type ProjectileAttackConfig struct {
 	Count                   int            `json:"count"`
 	DirectionOffsetsDegrees []float64      `json:"directionOffsetsDegrees"`
 	IntervalTicks           int            `json:"intervalTicks"`
+	EmissionOffsetsTicks    []int          `json:"emissionOffsetsTicks,omitempty"`
 }
 
 type NormalAttackConfig struct {
@@ -322,11 +425,8 @@ func validatePlayerTypeCatalog(config GameConfig) error {
 		if err := validateNormalAttackConfig(playerType.ID, playerType.NormalAttack, config); err != nil {
 			return err
 		}
-		if playerType.Skill.CooldownTicks <= 0 {
-			return fmt.Errorf(
-				"game config player type %q skill.cooldownTicks must be positive",
-				playerType.ID,
-			)
+		if err := validateSkillConfig(playerType.ID, playerType.Skill, config); err != nil {
+			return err
 		}
 	}
 
@@ -359,7 +459,7 @@ func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, 
 		if err := validateDirectionOffsets(playerTypeID, attack.Projectile.DirectionOffsetsDegrees); err != nil {
 			return err
 		}
-		if attack.Projectile.Count <= 0 || attack.Projectile.Count != len(attack.Projectile.DirectionOffsetsDegrees) || attack.Projectile.IntervalTicks != 0 {
+		if attack.Projectile.Count <= 0 || attack.Projectile.Count != len(attack.Projectile.DirectionOffsetsDegrees) || attack.Projectile.IntervalTicks != 0 || len(attack.Projectile.EmissionOffsetsTicks) != 0 {
 			return fmt.Errorf("game config player type %q spread projectile shape is invalid", playerTypeID)
 		}
 	case NormalAttackBurstProjectile:
@@ -369,8 +469,14 @@ func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, 
 		if err := validateDirectionOffsets(playerTypeID, attack.Projectile.DirectionOffsetsDegrees); err != nil {
 			return err
 		}
-		if attack.Projectile.Count <= 1 || len(attack.Projectile.DirectionOffsetsDegrees) != 1 || attack.Projectile.DirectionOffsetsDegrees[0] != 0 || attack.Projectile.IntervalTicks <= 0 {
+		if attack.Projectile.Count <= 1 || len(attack.Projectile.DirectionOffsetsDegrees) != 1 || attack.Projectile.DirectionOffsetsDegrees[0] != 0 {
 			return fmt.Errorf("game config player type %q burst projectile shape is invalid", playerTypeID)
+		}
+		if err := validateProjectileSchedule(playerTypeID+" normalAttack", *attack.Projectile, false); err != nil {
+			return err
+		}
+		if playerTypeID == "colt" && !equalIntOffsets(attack.Projectile.EmissionOffsetsTicks, []int{0, 3, 6, 9, 12, 15}) {
+			return fmt.Errorf("game config player type %q normalAttack emission offsets do not match canonical schedule", playerTypeID)
 		}
 	case NormalAttackMelee:
 		if attack.Projectile != nil {
@@ -382,6 +488,102 @@ func validateNormalAttackConfig(playerTypeID string, attack NormalAttackConfig, 
 	}
 	if _, ok := config.ProjectileType(attack.Projectile.Type); !ok {
 		return fmt.Errorf("game config player type %q normalAttack projectile type %q is not defined", playerTypeID, attack.Projectile.Type)
+	}
+	return nil
+}
+
+func validateSkillConfig(playerTypeID string, skill SkillConfig, config GameConfig) error {
+	if skill.CooldownTicks <= 0 {
+		return fmt.Errorf("game config player type %q skill.cooldownTicks must be positive", playerTypeID)
+	}
+	wantKind := map[string]SkillKind{
+		"shelly": SkillReloadDash,
+		"colt":   SkillBurstProjectile,
+		"lily":   SkillTeleportProjectile,
+	}[playerTypeID]
+	if skill.Kind != wantKind {
+		return fmt.Errorf("game config player type %q skill kind %q does not match canonical kind %q", playerTypeID, skill.Kind, wantKind)
+	}
+	switch skill.Kind {
+	case SkillReloadDash:
+		if skill.ReloadDash == nil || skill.BurstProjectile != nil || skill.TeleportProjectile != nil {
+			return fmt.Errorf("game config player type %q reload_dash skill shape is invalid", playerTypeID)
+		}
+		if !isFinitePositive(skill.ReloadDash.DashDistanceTiles) {
+			return fmt.Errorf("game config player type %q skill.dashDistanceTiles must be positive", playerTypeID)
+		}
+		if skill.ReloadDash.DashDistanceTiles != 5.4 {
+			return fmt.Errorf("game config player type %q skill.dashDistanceTiles must be canonical 5.4", playerTypeID)
+		}
+	case SkillBurstProjectile:
+		if skill.ReloadDash != nil || skill.BurstProjectile == nil || skill.TeleportProjectile != nil {
+			return fmt.Errorf("game config player type %q burst_projectile skill shape is invalid", playerTypeID)
+		}
+		burst := skill.BurstProjectile
+		if !isFinitePositive(burst.DamagePerHit) || !isFinitePositive(burst.RangeTiles) {
+			return fmt.Errorf("game config player type %q burst_projectile values must be positive", playerTypeID)
+		}
+		if len(burst.Projectile.DirectionOffsetsDegrees) != 1 || burst.Projectile.DirectionOffsetsDegrees[0] != 0 {
+			return fmt.Errorf("game config player type %q burst_projectile direction is invalid", playerTypeID)
+		}
+		if err := validateProjectileSchedule(playerTypeID+" skill", burst.Projectile, true); err != nil {
+			return err
+		}
+		if !equalIntOffsets(burst.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}) {
+			return fmt.Errorf("game config player type %q skill emission offsets do not match canonical schedule", playerTypeID)
+		}
+		if _, ok := config.ProjectileType(burst.Projectile.Type); !ok {
+			return fmt.Errorf("game config player type %q skill projectile type %q is not defined", playerTypeID, burst.Projectile.Type)
+		}
+	case SkillTeleportProjectile:
+		if skill.ReloadDash != nil || skill.BurstProjectile != nil || skill.TeleportProjectile == nil {
+			return fmt.Errorf("game config player type %q teleport_projectile skill shape is invalid", playerTypeID)
+		}
+		teleport := skill.TeleportProjectile
+		if !isFinitePositive(teleport.DamagePerHit) || !isFinitePositive(teleport.RangeTiles) || !isFinitePositive(teleport.BehindDistanceTiles) {
+			return fmt.Errorf("game config player type %q teleport_projectile values must be positive", playerTypeID)
+		}
+		if teleport.RangeTiles != 10.4 {
+			return fmt.Errorf("game config player type %q skill.rangeTiles must be canonical 10.4", playerTypeID)
+		}
+		if _, ok := config.ProjectileType(teleport.Projectile.Type); !ok {
+			return fmt.Errorf("game config player type %q skill projectile type %q is not defined", playerTypeID, teleport.Projectile.Type)
+		}
+		if teleport.Projectile.Count != 0 || len(teleport.Projectile.DirectionOffsetsDegrees) != 0 || teleport.Projectile.IntervalTicks != 0 || len(teleport.Projectile.EmissionOffsetsTicks) != 0 {
+			return fmt.Errorf("game config player type %q teleport_projectile projectile shape is invalid", playerTypeID)
+		}
+	default:
+		return fmt.Errorf("game config player type %q skill kind %q is not supported", playerTypeID, skill.Kind)
+	}
+	return nil
+}
+
+func equalIntOffsets(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateProjectileSchedule(owner string, projectile ProjectileAttackConfig, requireOffsets bool) error {
+	if len(projectile.EmissionOffsetsTicks) == 0 {
+		if requireOffsets || projectile.IntervalTicks <= 0 {
+			return fmt.Errorf("game config %s projectile emission schedule is invalid", owner)
+		}
+		return nil
+	}
+	if projectile.Count != len(projectile.EmissionOffsetsTicks) || projectile.IntervalTicks != 0 || projectile.EmissionOffsetsTicks[0] != 0 {
+		return fmt.Errorf("game config %s projectile emission schedule is invalid", owner)
+	}
+	for index := 1; index < len(projectile.EmissionOffsetsTicks); index++ {
+		if projectile.EmissionOffsetsTicks[index] <= projectile.EmissionOffsetsTicks[index-1] {
+			return fmt.Errorf("game config %s projectile emission offsets must be strictly increasing", owner)
+		}
 	}
 	return nil
 }
@@ -520,7 +722,11 @@ func StaticGameConfig() GameConfig {
 							DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12},
 						},
 					},
-					Skill: SkillConfig{CooldownTicks: 360},
+					Skill: SkillConfig{
+						Kind:          SkillReloadDash,
+						CooldownTicks: 360,
+						ReloadDash:    &ReloadDashSkillConfig{DashDistanceTiles: 5.4},
+					},
 				},
 				{
 					CharacterType: CharacterTypeColt,
@@ -538,10 +744,23 @@ func StaticGameConfig() GameConfig {
 							Type:                    "default",
 							Count:                   6,
 							DirectionOffsetsDegrees: []float64{0},
-							IntervalTicks:           6,
+							EmissionOffsetsTicks:    []int{0, 3, 6, 9, 12, 15},
 						},
 					},
-					Skill: SkillConfig{CooldownTicks: 390},
+					Skill: SkillConfig{
+						Kind:          SkillBurstProjectile,
+						CooldownTicks: 390,
+						BurstProjectile: &BurstProjectileSkillConfig{
+							DamagePerHit: 320,
+							RangeTiles:   11,
+							Projectile: ProjectileAttackConfig{
+								Type:                    "colt_skill",
+								Count:                   12,
+								DirectionOffsetsDegrees: []float64{0},
+								EmissionOffsetsTicks:    []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20},
+							},
+						},
+					},
 				},
 				{
 					CharacterType: CharacterTypeLily,
@@ -556,7 +775,16 @@ func StaticGameConfig() GameConfig {
 						MaxCharges:    2,
 						RechargeTicks: 30,
 					},
-					Skill: SkillConfig{CooldownTicks: 330},
+					Skill: SkillConfig{
+						Kind:          SkillTeleportProjectile,
+						CooldownTicks: 330,
+						TeleportProjectile: &TeleportProjectileSkillConfig{
+							DamagePerHit:        400,
+							RangeTiles:          10.4,
+							BehindDistanceTiles: 1,
+							Projectile:          ProjectileAttackConfig{Type: "lily_seed"},
+						},
+					},
 				},
 			},
 		},
@@ -567,6 +795,8 @@ func StaticGameConfig() GameConfig {
 					Radius: DefaultProjectileRadius,
 					Speed:  DefaultProjectileSpeed,
 				},
+				{ID: "colt_skill", Radius: DefaultProjectileRadius, Speed: DefaultProjectileSpeed},
+				{ID: "lily_seed", Radius: DefaultProjectileRadius, Speed: DefaultProjectileSpeed},
 			},
 		},
 		ModeCatalog: GameModeCatalogConfig{

@@ -147,7 +147,11 @@ func (s *State) collectDueBurstEmissions(snapshotTick Tick) []projectileEmission
 		if projectile == nil || burst.nextOrdinal >= projectile.Count {
 			continue
 		}
-		dueTick := burst.activationTick + Tick(burst.nextOrdinal*projectile.IntervalTicks)
+		offset := burst.nextOrdinal * projectile.IntervalTicks
+		if len(projectile.EmissionOffsetsTicks) > burst.nextOrdinal {
+			offset = projectile.EmissionOffsetsTicks[burst.nextOrdinal]
+		}
+		dueTick := burst.activationTick + Tick(offset)
 		if snapshotTick != dueTick {
 			continue
 		}

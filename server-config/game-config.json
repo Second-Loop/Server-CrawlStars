@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "tickRate": 30,
   "tile": {
     "size": 1.2
@@ -34,7 +34,9 @@
           }
         },
         "skill": {
-          "cooldownTicks": 360
+          "kind": "reload_dash",
+          "cooldownTicks": 360,
+          "dashDistanceTiles": 5.4
         }
       },
       {
@@ -53,11 +55,22 @@
             "type": "default",
             "count": 6,
             "directionOffsetsDegrees": [0],
-            "intervalTicks": 6
+            "intervalTicks": 0,
+            "emissionOffsetsTicks": [0, 3, 6, 9, 12, 15]
           }
         },
         "skill": {
-          "cooldownTicks": 390
+          "kind": "burst_projectile",
+          "cooldownTicks": 390,
+          "damagePerHit": 320,
+          "rangeTiles": 11,
+          "projectile": {
+            "type": "colt_skill",
+            "count": 12,
+            "directionOffsetsDegrees": [0],
+            "intervalTicks": 0,
+            "emissionOffsetsTicks": [0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]
+          }
         }
       },
       {
@@ -74,7 +87,14 @@
           "rechargeTicks": 30
         },
         "skill": {
-          "cooldownTicks": 330
+          "kind": "teleport_projectile",
+          "cooldownTicks": 330,
+          "damagePerHit": 400,
+          "rangeTiles": 10.4,
+          "behindDistanceTiles": 1,
+          "projectile": {
+            "type": "lily_seed"
+          }
         }
       }
     ]
@@ -83,6 +103,16 @@
     "types": [
       {
         "id": "default",
+        "radius": 0.3,
+        "speed": 13
+      },
+      {
+        "id": "colt_skill",
+        "radius": 0.3,
+        "speed": 13
+      },
+      {
+        "id": "lily_seed",
         "radius": 0.3,
         "speed": 13
       }

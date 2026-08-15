@@ -88,9 +88,9 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.7.0",
+		"version: 0.8.0",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, IsDead, LastProcessedClientTick]",
+		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -118,7 +118,7 @@ func TestHandlerServesCharacterTypeContract(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.7.0",
+		"version: 0.8.0",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
 		"CharacterType: 0",
 		"CharacterType: 1",
@@ -138,9 +138,11 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.7.0",
+		"version: 0.8.0",
 		"PressedSkill:",
 		"SkillReadyTick:",
+		"AttackCharges:",
+		"NextAttackChargeTick:",
 		"minimum: 0",
 		"A + C",
 		"360/390/330",
@@ -157,11 +159,11 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
 		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
 		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
-		"새 wire field/event를 추가하지 않습니다.",
-		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
-		"SL-85 effect는 이번 범위에서 제외합니다.",
-		"SL-99 client config v3/server config v5 경계를 유지합니다.",
+		"SL-120은 실제 skill effect를 실행하지 않습니다.",
+		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
 	}
@@ -202,17 +204,19 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.",
 		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
 		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
-		"새 wire field/event를 추가하지 않습니다.",
-		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.",
+		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
-		"SL-85 effect는 이번 범위에서 제외합니다.",
-		"SL-99 client config v3/server config v5 경계를 유지합니다.",
+		"SL-120은 실제 skill effect를 실행하지 않습니다.",
+		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)
 	}
 	openAPI := request(handler, http.MethodGet, "/openapi.yaml")
 	if strings.Contains(openAPI.Body.String(), "PressedSkill") ||
-		strings.Contains(openAPI.Body.String(), "SkillReadyTick") {
+		strings.Contains(openAPI.Body.String(), "SkillReadyTick") ||
+		strings.Contains(openAPI.Body.String(), "AttackCharges") ||
+		strings.Contains(openAPI.Body.String(), "NextAttackChargeTick") {
 		t.Fatal("OpenAPI must not expose gameplay skill fields")
 	}
 }
@@ -297,7 +301,7 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	asyncAPIText := asyncAPI.Body.String()
 
 	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
-	assertStringContains(t, info, "  version: 0.7.0")
+	assertStringContains(t, info, "  version: 0.8.0")
 
 	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
 	schemas := extractYAMLNamedBlock(t, components, "  schemas:")

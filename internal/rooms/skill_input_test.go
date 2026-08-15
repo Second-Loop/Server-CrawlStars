@@ -36,19 +36,19 @@ func TestWebSocketPressedSkillAppearsInAuthoritativeSnapshot(t *testing.T) {
 		t.Fatalf("decode first skill snapshot: %v", err)
 	}
 	firstPlayer := findSnapshotPlayer(t, first.Snapshot, simulation.PlayerID(player.ID))
-	if !firstPlayer.PressedSkill || firstPlayer.PressedAttack || firstPlayer.SkillReadyTick != 361 || firstPlayer.LastProcessedClientTick != 1 {
+	if !firstPlayer.PressedSkill || firstPlayer.PressedAttack || firstPlayer.SkillReadyTick != 361 || firstPlayer.AttackCharges != 3 || firstPlayer.NextAttackChargeTick != 0 || firstPlayer.LastProcessedClientTick != 1 {
 		t.Fatalf("first skill player=%+v", firstPlayer)
 	}
 	if len(first.Snapshot.Projectiles) != 0 {
 		t.Fatalf("skill-first command created projectiles: %+v", first.Snapshot.Projectiles)
 	}
 	text := string(firstPayload)
-	for _, want := range []string{`"PressedSkill":true`, `"SkillReadyTick":361`} {
+	for _, want := range []string{`"PressedSkill":true`, `"SkillReadyTick":361`, `"AttackCharges":3`, `"NextAttackChargeTick":0`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("skill snapshot missing %s: %s", want, text)
 		}
 	}
-	if strings.Contains(text, `"pressedSkill"`) || strings.Contains(text, `"skillReadyTick"`) {
+	if strings.Contains(text, `"pressedSkill"`) || strings.Contains(text, `"skillReadyTick"`) || strings.Contains(text, `"attackCharges"`) || strings.Contains(text, `"nextAttackChargeTick"`) {
 		t.Fatalf("skill snapshot used lowercase field casing: %s", text)
 	}
 

@@ -1348,7 +1348,7 @@ func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
 				case CharacterTypeShelly:
 					wantProjectiles = 5
 				case CharacterTypeColt:
-					wantProjectiles = 5
+					wantProjectiles = 6
 				}
 			}
 			if got := len(notYetRecharged.Projectiles); got != wantProjectiles {
@@ -1359,18 +1359,11 @@ func TestStepRestoresAttackChargeAfterRechargeTicks(t *testing.T) {
 			}
 
 			recharged := state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
+			wantAfterRecharge := 2 * wantProjectiles
 			if characterType == CharacterTypeColt {
-				if recharged.Players[0].PressedAttack {
-					t.Fatal("expected reattack on the last burst emission tick to be rejected")
-				}
-				if got := len(recharged.Projectiles); got != 6 {
-					t.Fatalf("expected Colt's last scheduled emission, got %d projectiles", got)
-				}
-				recharged = state.Step([]InputCommand{attackInput(PlayerID("red-1"))})
-				if got := len(recharged.Projectiles); got != 7 {
-					t.Fatalf("expected Colt reactivation on the next tick, got %d projectiles", got)
-				}
-			} else if got := len(recharged.Projectiles); got != 2*wantProjectiles {
+				wantAfterRecharge = wantProjectiles + 1
+			}
+			if got := len(recharged.Projectiles); got != wantAfterRecharge {
 				t.Fatalf("expected one restored charge after 30 ticks, got %d projectiles", got)
 			}
 			if !recharged.Players[0].PressedAttack {

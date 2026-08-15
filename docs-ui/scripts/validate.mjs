@@ -45,12 +45,12 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["fail-closed", ["queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다.", "queue overflow/write failure는 해당 session close/release의 fail-closed로 처리해요."]],
   ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.", "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요."]],
   ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.", "PressedAttack: true-only snapshot은 계속 latest-only로 전달해요."]],
-  ["no new wire event", ["새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
-  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
-  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["no new wire event", ["새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.", "새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
-  ["SL-85 effect boundary", ["SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
-  ["SL-99 config boundary", ["SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
+  ["SL-85 effect boundary", ["SL-120은 실제 skill effect를 실행하지 않습니다.", "SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
+  ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
 const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) =>
   meaning === "SL-99 config boundary"
@@ -72,6 +72,8 @@ const requiredWebSocketFields = [
   "PressedAttack",
   "PressedSkill",
   "SkillReadyTick",
+  "AttackCharges",
+  "NextAttackChargeTick",
   "ReadyEventMessage",
   "ReadyAckMessage",
   "SpawnPosition",
@@ -395,7 +397,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.7.0"), "api/asyncapi.yaml must publish version 0.7.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.8.0"), "api/asyncapi.yaml must publish version 0.8.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -560,7 +562,7 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 5, "server config version must be 5");
+assert(serverGameConfig.version === 6, "server config version must be 6");
 assertOnlyKeys(serverGameConfig.bot, Object.keys(expectedServerBotConfig), "server-config/game-config.json bot");
 for (const [field, expected] of Object.entries(expectedServerBotConfig)) {
   assert(serverGameConfig.bot[field] === expected, `server bot config ${field} must be ${expected}`);
@@ -594,7 +596,7 @@ assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must
 const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
 const expectedNormalAttacks = new Map([
   [0, { kind: "spread_projectile", damagePerHit: 280, rangeTiles: 7.2, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 5, directionOffsetsDegrees: [-12, -6, 0, 6, 12], intervalTicks: 0 } }],
-  [1, { kind: "burst_projectile", damagePerHit: 340, rangeTiles: 9, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 6, directionOffsetsDegrees: [0], intervalTicks: 6 } }],
+  [1, { kind: "burst_projectile", damagePerHit: 340, rangeTiles: 9, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 6, directionOffsetsDegrees: [0], intervalTicks: 0, emissionOffsetsTicks: [0, 3, 6, 9, 12, 15] } }],
   [2, { kind: "melee", damagePerHit: 1100, rangeTiles: 2.2, maxCharges: 2, rechargeTicks: 30 }],
 ]);
 for (const playerType of serverGameConfig.player.types) {
@@ -837,12 +839,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
+  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -886,7 +888,7 @@ function validateCharacterTypeContract() {
   const playerSchema = extractYAMLSchema(openAPIText, "Player");
   assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
 
-  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must be 0.7.0");
+  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0");
   for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     const schema = extractYAMLSchema(asyncAPIText, schemaName);
     assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
@@ -926,7 +928,7 @@ function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
   assert(!inputPressedAttack.includes("server config v4"), "InputMessage.PressedAttack must not document server config v4");
-  for (const marker of ["server config v5", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  for (const marker of ["server config v6", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -955,6 +957,13 @@ function validateCharacterNormalAttackContract() {
     extractSchemaProperty(projectileSchema, "Type").includes("normalAttack.projectile.type"),
     "ProjectileData.Type must document normalAttack.projectile.type ownership",
   );
+  const projectileTypeProperty = extractSchemaProperty(projectileSchema, "Type");
+  for (const marker of ["enum: [default, colt_skill, lily_seed]", "colt_skill", "lily_seed"]) {
+    assert(
+      projectileTypeProperty.includes(marker),
+      `ProjectileData.Type must document canonical projectile type ${marker}`,
+    );
+  }
 
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const snapshotMessage = extractYAMLNamedBlock(messagesBlock, "    SnapshotMessage:");
@@ -971,10 +980,10 @@ function validateCharacterNormalAttackContract() {
   );
 
   for (const [text, name, markers] of [
-    [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,6,12,18,24,30]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v5가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
-    [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
-    [apiReferenceText, "api reference", ["server config v5의 캐릭터별 일반 공격 activation 요청", "A+[0,6,12,18,24,30]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,3,6,9,12,15]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
+    [architectureText, "architecture", ["server config v6가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+16", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
+    [apiReferenceText, "api reference", ["server config v6의 캐릭터별 일반 공격 activation 요청", "A+[0,3,6,9,12,15]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
   ]) {
     for (const marker of markers) {
@@ -990,7 +999,7 @@ function validateCharacterSkillCooldownContract() {
   assert(!topLevelRequiredFields(inputSchema).includes("PressedSkill"), "InputMessage.PressedSkill must be optional");
 
   const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
-  for (const field of ["PressedSkill", "SkillReadyTick"]) {
+  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
       `PlayerData must require ${field} exactly once`);
   }
@@ -1005,14 +1014,39 @@ function validateCharacterSkillCooldownContract() {
     assert(readyTick.includes(marker), `PlayerData.SkillReadyTick must document ${marker}`);
   }
 
-  assert(serverGameConfig.version === 5, "server config must be version 5");
+  const attackCharges = extractSchemaProperty(playerSchema, "AttackCharges");
+  for (const marker of ["type: integer", "minimum: 0", "3/3/2"]) {
+    assert(attackCharges.includes(marker), `PlayerData.AttackCharges must document ${marker}`);
+  }
+  const nextChargeTick = extractSchemaProperty(playerSchema, "NextAttackChargeTick");
+  for (const marker of ["type: integer", "minimum: 0", "T + (R - r)"]) {
+    assert(nextChargeTick.includes(marker), `PlayerData.NextAttackChargeTick must document ${marker}`);
+  }
+
+  assert(serverGameConfig.version === 6, "server config must be version 6");
   const cooldowns = new Map([[0, 360], [1, 390], [2, 330]]);
   for (const playerType of serverGameConfig.player.types) {
     assert(playerType.skill?.cooldownTicks === cooldowns.get(playerType.characterType),
       `character ${playerType.characterType} skill cooldown drift`);
   }
-  assert(!openAPIText.includes("PressedSkill") && !openAPIText.includes("SkillReadyTick"),
-    "OpenAPI must not expose gameplay skill fields");
+  const [shelly, colt, lily] = [0, 1, 2].map((characterType) =>
+    serverGameConfig.player.types.find((playerType) => playerType.characterType === characterType));
+  assert(shelly?.skill?.kind === "reload_dash" && shelly.skill.dashDistanceTiles === 5.4,
+    "Shelly canonical reload_dash config drift");
+  assert(JSON.stringify(colt?.normalAttack?.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 3, 6, 9, 12, 15]),
+    "Colt normal exact offsets drift");
+  assert(colt?.skill?.kind === "burst_projectile" &&
+    JSON.stringify(colt.skill.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]),
+    "Colt skill exact offsets drift");
+  assert(lily?.skill?.kind === "teleport_projectile" && lily.skill.rangeTiles === 10.4,
+    "Lily canonical teleport_projectile config drift");
+  for (const projectileType of ["colt_skill", "lily_seed"]) {
+    assert(serverGameConfig.projectile.types.some((projectile) => projectile.id === projectileType),
+      `missing canonical projectile type ${projectileType}`);
+  }
+  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
+    assert(!openAPIText.includes(field), `OpenAPI must not expose gameplay field ${field}`);
+  }
 
   const messages = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const snapshotMessage = extractYAMLNamedBlock(messages, "    SnapshotMessage:");
@@ -1047,7 +1081,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## SL-82 CharacterType ownership",
     "architecture current config summary",
   );
-  for (const marker of ["server-config/game-config.json` v5", "skill.cooldownTicks", "SkillReadyTick"]) {
+  for (const marker of ["server-config/game-config.json` v6", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(architectureConfigSummary.includes(marker), `architecture current config summary must document ${marker}`);
   }
 
@@ -1057,7 +1091,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## 기본 duel 2인 수동 검증 시나리오",
     "api reference current config summary",
   );
-  for (const marker of ["server-only v5 config", "skill.cooldownTicks", "SkillReadyTick"]) {
+  for (const marker of ["server-only v6 config", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
   }
 
@@ -1192,13 +1226,13 @@ function validateBotBehaviorDocumentation() {
   }
 
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
-  assert(hasLine(asyncAPIText, "  version: 0.7.0"), "AsyncAPI version must remain 0.7.0 for SL-116");
+  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0 after SL-120");
 }
 
 function validateReliableSkillDeliveryValidatorSelfTests() {
   const currentDocsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
   const staleDocsUICoalescingArticle = currentDocsUICoalescingArticle.replace(
-    "SL-99 client config v3/server config v5 경계를 유지합니다.",
+    "Client config v3/server config v6 경계를 유지합니다.",
     "SL-99 client config v3/server config v4 경계를 유지합니다.",
   );
   let rejectedStaleDocsUICoalescing = false;
@@ -1481,8 +1515,8 @@ function validateApiDocsServerConfigV5Contract() {
     "api docs current validation section",
   );
   assert(
-    validationSection.includes("server config v5 `360/390/330`"),
-    "api docs current validation must document server config v5 cooldowns",
+    validationSection.includes("server config v6 `360/390/330`"),
+    "api docs current validation must document server config v6 cooldowns",
   );
   assert(!validationSection.includes("server config v4"), "api docs current validation must not document server config v4");
 
@@ -1492,8 +1526,8 @@ function validateApiDocsServerConfigV5Contract() {
     "api docs current CharacterType section",
   );
   assert(
-    characterTypeSection.includes("server config v5 HP `4000/3100/4100`"),
-    "api docs current CharacterType section must document server config v5 authoritative stats",
+    characterTypeSection.includes("server config v6 HP `4000/3100/4100`"),
+    "api docs current CharacterType section must document server config v6 authoritative stats",
   );
   assert(!characterTypeSection.includes("server config v4"), "api docs current CharacterType section must not document server config v4");
 }
@@ -1503,8 +1537,12 @@ function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
   for (const [index, object] of objects.entries()) {
     const pressedSkillFields = object.match(/^\s+PressedSkill:\s+(true|false)$/gm) ?? [];
     const readyTickFields = object.match(/^\s+SkillReadyTick:\s+(\d+)$/gm) ?? [];
+    const attackChargeFields = object.match(/^\s+AttackCharges:\s+(\d+)$/gm) ?? [];
+    const nextChargeTickFields = object.match(/^\s+NextAttackChargeTick:\s+(\d+)$/gm) ?? [];
     assert(pressedSkillFields.length === 1, `${name} player ${index} must contain exactly one PressedSkill`);
     assert(readyTickFields.length === 1, `${name} player ${index} must contain exactly one SkillReadyTick`);
+    assert(attackChargeFields.length === 1, `${name} player ${index} must contain exactly one AttackCharges`);
+    assert(nextChargeTickFields.length === 1, `${name} player ${index} must contain exactly one NextAttackChargeTick`);
   }
 }
 
@@ -1518,6 +1556,14 @@ function assertEveryJSONGameplayPlayerHasSkillCooldownState(players, name) {
       `${name} player ${index} must contain exactly one SkillReadyTick`);
     assert(Number.isSafeInteger(player.SkillReadyTick) && player.SkillReadyTick >= 0,
       `${name} player ${index} must contain non-negative integer SkillReadyTick`);
+    assert(Object.keys(player).filter((field) => field === "AttackCharges").length === 1,
+      `${name} player ${index} must contain exactly one AttackCharges`);
+    assert(Number.isSafeInteger(player.AttackCharges) && player.AttackCharges >= 0,
+      `${name} player ${index} must contain non-negative integer AttackCharges`);
+    assert(Object.keys(player).filter((field) => field === "NextAttackChargeTick").length === 1,
+      `${name} player ${index} must contain exactly one NextAttackChargeTick`);
+    assert(Number.isSafeInteger(player.NextAttackChargeTick) && player.NextAttackChargeTick >= 0,
+      `${name} player ${index} must contain non-negative integer NextAttackChargeTick`);
   }
 }
 
