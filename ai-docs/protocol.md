@@ -54,14 +54,14 @@ internal/simulation.State.EliminatePlayers(ids []PlayerID)
 1. 모든 player의 transient `PressedAttack`, `PressedSkill`을 `false`로 초기화
 2. 최대 charge보다 적은 player의 attack recharge tick 진행
 3. 기존 projectile을 남은 range까지 clamp해 이동하고 Wall/boundary 충돌, selected mode별 player hit, range 만료 순서로 처리합니다. Destroyed snapshot tick을 `D`라고 하면 `D..D+29`까지 `IsDestroyed: true`를 유지하고 `D+30` 전에 canonical history에서 제거합니다.
-4. 현재 snapshot tick에 예정된 Colt burst projectile 수집
+4. 현재 snapshot tick에 예정된 Colt normal/skill burst projectile 수집
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative `ClientTick`, 마지막 processed ACK보다 큰 양수 tick인지 검증
 6. 유효한 양수 input의 `LastProcessedClientTick`을 visible gameplay effect 판정보다 먼저 갱신하고 legacy `ClientTick: 0`은 ACK를 유지
 7. movement는 X축, Y축 순서로 Wall/Water/boundary와 live player 후보를 검사합니다. 같은 축에서 swept circle이 접촉/통과하면 충돌 pair 양쪽 이동을 취소하고, 기존 overlap은 separation을 엄격히 늘리는 이동만 허용합니다.
-8. `PressedSkill` 시도가 ready이고 방향이 non-zero면 skill을 우선 승인합니다. Shelly면 attack charge/recharge를 `max/0`으로 바꾸고 post-movement 위치의 dash intent를 수집하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다.
+8. `PressedSkill` 시도가 ready이고 방향이 non-zero면 skill을 우선 승인합니다. Shelly면 attack charge/recharge를 `max/0`으로 바꾸고 post-movement 위치의 dash intent를 수집합니다. Colt면 active normal burst의 미래분을 취소하고 exact 12발 skill burst의 첫 emission을 승인하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다.
 9. 같은 tick의 모든 Shelly dash를 연속 시간 batch로 정산해 Wall/Water/boundary/live player 최초 접촉 직전에 멈춥니다.
 10. 공격 요청, non-zero 방향, 남은 캐릭터별 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
-11. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/ordinal 순서로 생성
+11. Lily melee intent의 피해를 같은 tick batch로 적용한 뒤 projectile emission을 owner ID/emission phase/ordinal 순서로 생성
 12. tick 증가 후 processed input ACK, HP/death, projectile history와 canonical skill ready tick이 포함된 snapshot 반환
 
 현재 값:
@@ -127,7 +127,7 @@ server config v6 `normalAttack`이 일반 공격의 source of truth입니다. Cl
 
 Projectile은 남은 configured range까지 이동량을 먼저 clamp한 뒤 map Wall/boundary 충돌, selected mode player hit, 미충돌 range 만료 순서로 처리합니다. 따라서 range endpoint의 tangent hit은 포함됩니다. Lily는 wall/boundary까지의 range를 먼저 잘라 centerline target을 찾고 target과 blocking contact가 같으면 Wall/boundary가 우선합니다. Bush와 Water는 Lily centerline을 막지 않습니다.
 
-`PressedAttack`은 activation 승인 tick만 `true`입니다. Colt의 후속 scheduled emission은 새 activation이 아니므로 `false`이고, projectile `Damage`는 owner의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 결정됩니다. SL-83의 normal attack wire field는 그대로이며 Client parser 구현과 final balancing은 범위 밖입니다.
+`PressedAttack`은 activation 승인 tick만 `true`입니다. Colt의 후속 scheduled emission은 새 activation이 아니므로 `false`이고, 일반 projectile `Damage`는 owner의 `normalAttack.damagePerHit`, `Type`은 `normalAttack.projectile.type`에서 결정됩니다. Colt skill projectile은 같은 wire field에 typed `skill.damagePerHit`과 `skill.projectile.type`을 투영합니다. SL-83의 normal attack wire field는 그대로이며 Client parser 구현과 final balancing은 범위 밖입니다.
 
 ### SL-84 Skill input과 cooldown
 
@@ -135,7 +135,7 @@ Input `PressedSkill`은 optional boolean입니다. 누락은 `false`, present `n
 
 Skill-ready와 non-zero direction이면 normal attack보다 먼저 승인합니다. Shelly `reload_dash`는 attack charge/recharge를 `max/0`으로 만들고 5.4타일 dash를 실행합니다. Cooldown 또는 zero direction이면 기존 attack으로 fall through합니다. Gameplay `PlayerData.PressedSkill`은 승인 tick에만 `true`인 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute tick입니다. Ready predicate는 `Snapshot.Tick >= SkillReadyTick`이고 tick `A`에서 승인하면 server config v6의 cooldown `C`를 더해 `A + C`를 기록하며 exact `A + C`도 허용합니다. 초기 state는 `false/0`입니다.
 
-Server config v6의 Shelly/Colt/Lily cooldown은 `360/390/330` tick입니다. Typed kind는 `reload_dash`/`burst_projectile`/`teleport_projectile`입니다. Shelly `reload_dash`는 일반 이동 뒤 charge/recharge를 `max/0`으로 만들고 `5.4 tile` swept dash를 실행합니다. Wall/Water/boundary/live player 최초 접촉 직전에 멈추며 같은 tick의 여러 dash는 연속 시간 batch로 정산합니다. Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3와 REST OpenAPI는 유지하고 AsyncAPI info는 `0.8.0`입니다.
+Server config v6의 Shelly/Colt/Lily cooldown은 `360/390/330` tick입니다. Typed kind는 `reload_dash`/`burst_projectile`/`teleport_projectile`입니다. Shelly `reload_dash`는 일반 이동 뒤 charge/recharge를 `max/0`으로 만들고 `5.4 tile` swept dash를 실행합니다. Wall/Water/boundary/live player 최초 접촉 직전에 멈추며 같은 tick의 여러 dash는 연속 시간 batch로 정산합니다. Colt `burst_projectile`은 approval tick `S` 기준 `S+[0,2,4,6,7,9,11,13,14,16,18,20]`에 `colt_skill` 12발을 발사하고 `S+21`부터 일반 공격을 승인합니다. 각 발은 emission tick 현재 위치에서 생성되고 승인 방향을 유지하며, owner 사망은 아직 commit되지 않은 미래 emission을 취소합니다. Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3와 REST OpenAPI는 유지하고 AsyncAPI info는 `0.8.0`입니다.
 
 ### SL-116 Bot input과 행동 계약
 
@@ -179,7 +179,7 @@ Token은 일회용 credential이 아니며 room/player session이 존재하는 �
 
 Server는 각 connection에 snapshot writer와 독립적인 30초 heartbeat ticker를 둡니다. 각 Ping은 90초 context로 제한하며 error/timeout은 read/write failure와 같은 close-once 경로로 현재 session만 해제합니다. 최초 close cause는 `peer_close`, `read_failure`, `write_timeout`, `write_error`, `ping_timeout`, `ping_error`, `control_overflow`, `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete` 중 하나로 고정합니다. 종료 publication은 이 cause와 connection generation, 종료 시 match phase, session duration, 마지막 전송 gameplay tick을 정확히 한 번 log/metric에 반영하며 raw close reason, transport error, room/player ID는 metric label로 쓰지 않습니다. 오래된 heartbeat가 늦게 실패해도 expected-session identity가 다르면 reconnect된 connection을 제거하지 않고, 그 종료 관측도 이전 generation에 귀속됩니다. Reconnect 전에 current map에서 빠진 이전 connection도 transport `closeDone`까지 room-owned close barrier에 남습니다. Unmatched disconnect는 credential과 deadline을 유지하고 matched/loading/starting disconnect만 match cancel을 적용하며, started room에서 마지막 client가 사라지면 disconnected TTL을 시작합니다. Started grace expiry는 per-player timer/goroutine 없이 room gameplay tick에서 batch 처리합니다. Bot replacement는 만들지 않습니다.
 
-일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.
 
 Client input:
 

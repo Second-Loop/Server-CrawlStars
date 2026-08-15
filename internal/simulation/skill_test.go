@@ -238,7 +238,7 @@ func TestStepSkillResultIsIndependentOfInputOrder(t *testing.T) {
 	}
 }
 
-func TestStepSkillDoesNotCancelExistingColtBurst(t *testing.T) {
+func TestStepColtSkillReplacesExistingNormalBurst(t *testing.T) {
 	state := newSkillTestState(t, CharacterTypeColt, 2)
 	activation := state.Step([]InputCommand{{
 		PlayerID: "player", ClientTick: 1,
@@ -263,8 +263,21 @@ func TestStepSkillDoesNotCancelExistingColtBurst(t *testing.T) {
 	if due.Tick != 7 {
 		t.Fatalf("due snapshot tick = %d, want 7", due.Tick)
 	}
-	if len(due.Projectiles) != 3 {
-		t.Fatalf("projectiles at activation tick A+6 = %d, want 3", len(due.Projectiles))
+	if len(due.Projectiles) != 4 {
+		t.Fatalf("projectiles after normal-to-skill replacement = %d, want one normal and three skill projectiles", len(due.Projectiles))
+	}
+	normalCount := 0
+	skillCount := 0
+	for _, projectile := range due.Projectiles {
+		switch projectile.Type {
+		case "default":
+			normalCount++
+		case "colt_skill":
+			skillCount++
+		}
+	}
+	if normalCount != 1 || skillCount != 3 {
+		t.Fatalf("projectile types after replacement: normal=%d skill=%d, want 1/3", normalCount, skillCount)
 	}
 }
 

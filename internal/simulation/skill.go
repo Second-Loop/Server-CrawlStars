@@ -14,29 +14,54 @@ func (s *State) tryApproveSkill(playerIndex int, activationTick Tick) (SkillConf
 	return playerType.Skill, true
 }
 
-// dispatchApprovedSkill applies immediate character state and returns movement
-// that must be resolved with the other same-tick skill effects as one batch.
-func (s *State) dispatchApprovedSkill(playerIndex int, direction Vector2, skill SkillConfig) (skillDashIntent, bool) {
+type approvedSkillEffect struct {
+	dash      skillDashIntent
+	hasDash   bool
+	emissions []projectileEmission
+}
+
+// dispatchApprovedSkill applies immediate character state and returns effects
+// that must be committed in the remaining same-tick simulation phases.
+func (s *State) dispatchApprovedSkill(playerIndex int, direction Vector2, skill SkillConfig, activationTick Tick) approvedSkillEffect {
 	switch skill.Kind {
 	case SkillReloadDash:
 		if skill.ReloadDash == nil || playerIndex < 0 || playerIndex >= len(s.players) {
-			return skillDashIntent{}, false
+			return approvedSkillEffect{}
 		}
 		playerID := s.players[playerIndex].ID
 		attack, ok := s.normalAttackConfig(playerID)
 		if !ok {
-			return skillDashIntent{}, false
+			return approvedSkillEffect{}
 		}
 		s.attackStates[playerID] = attackState{charges: attack.MaxCharges}
-		return skillDashIntent{
-			playerIndex: playerIndex,
-			direction:   direction,
-			distance:    skill.ReloadDash.DashDistanceTiles * s.resolvedTileSize(),
-		}, true
+		return approvedSkillEffect{
+			dash: skillDashIntent{
+				playerIndex: playerIndex,
+				direction:   direction,
+				distance:    skill.ReloadDash.DashDistanceTiles * s.resolvedTileSize(),
+			},
+			hasDash: true,
+		}
 	case SkillBurstProjectile:
-		_ = skill.BurstProjectile
+		if skill.BurstProjectile == nil || playerIndex < 0 || playerIndex >= len(s.players) {
+			return approvedSkillEffect{}
+		}
+		playerID := s.players[playerIndex].ID
+		attack := skillProjectileAttackSpec(*skill.BurstProjectile)
+		s.burstStates[playerID] = burstState{
+			direction:      direction,
+			attack:         attack,
+			activationTick: activationTick,
+			nextOrdinal:    1,
+		}
+		emission, ok := s.newProjectileEmission(playerID, direction, attack, projectileEmissionActivation, 0, activationTick)
+		if !ok {
+			delete(s.burstStates, playerID)
+			return approvedSkillEffect{}
+		}
+		return approvedSkillEffect{emissions: []projectileEmission{emission}}
 	case SkillTeleportProjectile:
 		_ = skill.TeleportProjectile
 	}
-	return skillDashIntent{}, false
+	return approvedSkillEffect{}
 }

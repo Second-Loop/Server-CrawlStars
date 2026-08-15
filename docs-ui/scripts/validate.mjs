@@ -49,7 +49,7 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
-  ["current skill effect boundary", ["SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.", "SL-118은 Shelly <code>reload_dash</code>만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다."]],
+  ["current skill effect boundary", ["현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.", "현재 Shelly <code>reload_dash</code>와 Colt <code>burst_projectile</code>을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다."]],
   ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
 const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) => {
@@ -958,6 +958,10 @@ function validateCharacterNormalAttackContract() {
     "ProjectileData.Damage must document normalAttack.damagePerHit ownership",
   );
   assert(
+    extractSchemaProperty(projectileSchema, "Damage").includes("skill.damagePerHit"),
+    "ProjectileData.Damage must document skill.damagePerHit ownership",
+  );
+  assert(
     extractSchemaProperty(projectileSchema, "Type").includes("normalAttack.projectile.type"),
     "ProjectileData.Type must document normalAttack.projectile.type ownership",
   );
@@ -1039,15 +1043,39 @@ function validateCharacterSkillCooldownContract() {
     "Shelly canonical reload_dash config drift");
   assert(JSON.stringify(colt?.normalAttack?.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 3, 6, 9, 12, 15]),
     "Colt normal exact offsets drift");
-  assert(colt?.skill?.kind === "burst_projectile" &&
+  assert(colt?.skill?.kind === "burst_projectile" && colt.skill.damagePerHit === 320 &&
+    colt.skill.rangeTiles === 11 && colt.skill.projectile?.type === "colt_skill" &&
+    colt.skill.projectile?.count === 12 &&
     JSON.stringify(colt.skill.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]),
-    "Colt skill exact offsets drift");
+    "Colt skill canonical contract drift");
   assert(lily?.skill?.kind === "teleport_projectile" && lily.skill.rangeTiles === 10.4,
     "Lily canonical teleport_projectile config drift");
   for (const projectileType of ["colt_skill", "lily_seed"]) {
     assert(serverGameConfig.projectile.types.some((projectile) => projectile.id === projectileType),
       `missing canonical projectile type ${projectileType}`);
   }
+  const coltSkillProjectile = serverGameConfig.projectile.types.find((projectile) => projectile.id === "colt_skill");
+  assert(coltSkillProjectile?.speed === 13 && coltSkillProjectile?.radius === 0.3,
+    "Colt skill projectile speed/radius drift");
+  const skillProjectileSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
+  for (const marker of ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "damage 320", "range 11 tile", "speed 13 world/s", "radius 0.3", "type colt_skill"]) {
+    assert(skillProjectileSchema.includes(marker), `ProjectileData must document Colt skill marker ${marker}`);
+  }
+  for (const [text, name, markers] of [
+    [protocolText, "protocol Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "S+21", "emission tick 현재 위치", "미래 emission을 취소"]],
+    [architectureText, "architecture Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "colt_skill", "마지막 발 tick까지 일반 공격"]],
+    [projectMapText, "project map Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "S+21", "same-tick due emission은 committed"]],
+    [apiReferenceText, "api reference Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "Type: colt_skill", "damage `320`", "range `11 tile`"]],
+    [apiDocsText, "api docs Colt skill", ["[0,2,4,6,7,9,11,13,14,16,18,20]", "`colt_skill` 12발", "일반 공격을 잠급니다"]],
+    [decisionsText, "ADR-0051 Colt skill", ["ADR-0051", "scheduled-before-activation phase", "S+21", "Goroutine, timer"]],
+    [docsBuildText, "docs UI Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "Projectiles[].Type: colt_skill", "일반 공격을 잠급니다"]],
+  ]) {
+    for (const marker of markers) {
+      assert(text.includes(marker), `${name} must document ${marker}`);
+    }
+  }
+  assert(!apiReferenceText.includes("실제 projectile 생성은 후속 효과 티켓에서 구현합니다."),
+    "api reference must not retain pre-SL-119 projectile implementation boundary");
   for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(!openAPIText.includes(field), `OpenAPI must not expose gameplay field ${field}`);
   }
@@ -1266,7 +1294,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-SL-118은 Shelly \`reload_dash\`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.
+현재 Shelly \`reload_dash\`와 Colt \`burst_projectile\`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
@@ -1305,7 +1333,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-SL-118은 Shelly \`reload_dash\`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.
+현재 Shelly \`reload_dash\`와 Colt \`burst_projectile\`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 ## End`;
@@ -1433,8 +1461,8 @@ SL-99 client config v3/server config v5 경계를 유지합니다.
     ],
     [
       "current skill effect boundary",
-      "SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
-      "SL-118은 Shelly `reload_dash`뿐 아니라 Colt/Lily effect와 bot skill use도 실행합니다.",
+      "현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+      "현재 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
       "current skill effect boundary",
     ],
     [

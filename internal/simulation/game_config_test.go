@@ -122,6 +122,13 @@ func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 	if got, want := colt.Skill.BurstProjectile.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Colt skill offsets=%v, want %v", got, want)
 	}
+	if skill := colt.Skill.BurstProjectile; skill.DamagePerHit != 320 || skill.RangeTiles != 11 || skill.Projectile.Type != "colt_skill" || skill.Projectile.Count != 12 {
+		t.Fatalf("Colt skill=%+v, want damage/range/type/count 320/11/colt_skill/12", skill)
+	}
+	coltSkillProjectile, ok := config.ProjectileType("colt_skill")
+	if !ok || coltSkillProjectile.Speed != 13 || coltSkillProjectile.Radius != 0.3 {
+		t.Fatalf("Colt skill projectile=%+v found=%t, want speed/radius 13/0.3", coltSkillProjectile, ok)
+	}
 	lily, _ := config.PlayerType(CharacterTypeLily)
 	if lily.Skill.Kind != SkillTeleportProjectile || lily.Skill.TeleportProjectile == nil || lily.Skill.TeleportProjectile.RangeTiles != 10.4 {
 		t.Fatalf("Lily skill=%+v, want teleport_projectile range 10.4", lily.Skill)
