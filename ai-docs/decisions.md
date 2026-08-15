@@ -953,3 +953,24 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - 후속 SL-118/119/117은 같은 immutable room config와 snapshot 계약 위에서 effect만 구현할 수 있습니다.
 - Client는 private recharge 진행도를 재현하지 않고 absolute next tick과 현재 charge를 authoritative snapshot에서 읽습니다.
+
+## ADR-0050: SL-118 Shelly reload_dash는 완전 재장전 뒤 연속 시간 batch로 이동한다
+
+상태: 구현과 계약 검증 중
+
+맥락: SL-120은 `reload_dash` typed config와 탄약 snapshot을 제공했지만 실제 효과는 실행하지 않았습니다. Shelly 스킬은 일반 이동 뒤 최대 `5.4 tile`을 이동하면서 map과 여러 live player의 최초 접촉을 input/slice 순서와 무관하게 판정해야 합니다.
+
+결정:
+
+- Ready인 Shelly 스킬은 기존 approval/cooldown을 먼저 소비하고 일반 attack state를 `maxCharges/0 rechargeTicks`로 즉시 바꿉니다. Partial/blocked dash도 reload와 cooldown을 환불하지 않습니다.
+- 일반 movement batch를 먼저 적용한 post-movement 위치에서 normalized `AttackDir * 5.4 * tileSize` dash intent를 만듭니다.
+- Wall, Water, boundary, live player는 player circle의 swept collision으로 막고 Ground, SpawnPoint, Bush, dead player는 통과합니다. 최초 접촉 위치에서 진행 방향 반대로 `1e-6 world`를 보정합니다.
+- 같은 tick의 모든 Shelly dash는 정규화한 연속 시간 `0..1`에서 함께 전진합니다. `1e-12` 이내의 map/player contact를 한 event로 묶어 관련 dasher를 모두 멈추고, 먼저 멈춘 player는 남은 dasher의 fixed blocker가 됩니다.
+- Input은 기존처럼 `PlayerID`로 정렬하고 dash candidate도 `PlayerID`로 정규화합니다. 결과는 기존 `Pos`, `PressedSkill`, `SkillReadyTick`, `AttackCharges`, `NextAttackChargeTick`에 투영하며 새 wire field/event는 추가하지 않습니다.
+- Colt/Lily effect, bot skill use, Client animation/effect, dash invulnerability, knockback, 범용 ability framework는 포함하지 않습니다.
+
+결과:
+
+- Unobstructed 축/대각선 dash는 정확히 `6.48 world`를 이동하고 blocked 결과도 authoritative snapshot 하나로 확인할 수 있습니다.
+- 서로 마주보는 dash, wall에 먼저 멈춘 player와의 후속 접촉, ordinary movement가 섞인 입력도 순서 독립적으로 정산됩니다.
+- AsyncAPI info `0.8.0`, REST OpenAPI, Client config v3와 control snapshot null 계약은 유지됩니다.

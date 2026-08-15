@@ -206,6 +206,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.moveProjectiles()
 	emissions := s.collectDueBurstEmissions(snapshotTick)
 	meleeIntents := make([]meleeIntent, 0, len(inputs))
+	dashIntents := make([]skillDashIntent, 0, len(inputs))
 	prepared := make([]preparedInput, 0, len(inputs))
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
@@ -216,7 +217,11 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.applyPlayerMovement(prepared)
 
 	for _, input := range prepared {
-		if intent, ok := s.applyPreparedInput(input, snapshotTick); ok {
+		intent, attackApproved, dash, dashApproved := s.applyPreparedInput(input, snapshotTick)
+		if dashApproved {
+			dashIntents = append(dashIntents, dash)
+		}
+		if attackApproved {
 			if intent.attack.Kind == NormalAttackMelee {
 				if melee, approved := s.approveMeleeAttack(intent); approved {
 					meleeIntents = append(meleeIntents, melee)
@@ -226,6 +231,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 			emissions = append(emissions, s.approveProjectileAttack(intent, snapshotTick)...)
 		}
 	}
+	s.applySkillDashes(dashIntents)
 	s.applyMeleeIntents(meleeIntents)
 	s.emitProjectiles(emissions)
 	s.finishCompletedBursts()
@@ -435,26 +441,26 @@ func (s *State) prepareInput(input InputCommand) (preparedInput, bool) {
 	return preparedInput{}, false
 }
 
-func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool) {
+func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool, skillDashIntent, bool) {
 	if input.input.PressedSkill && input.attackDir != (Vector2{}) {
 		if skill, approved := s.tryApproveSkill(input.playerIndex, activationTick); approved {
-			s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill)
-			return attackIntent{}, false
+			dash, hasDash := s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill)
+			return attackIntent{}, false, dash, hasDash
 		}
 	}
 	if !input.input.PressedAttack || input.attackDir == (Vector2{}) {
-		return attackIntent{}, false
+		return attackIntent{}, false, skillDashIntent{}, false
 	}
 	attack, ok := s.normalAttackConfig(input.input.PlayerID)
 	if !ok {
-		return attackIntent{}, false
+		return attackIntent{}, false, skillDashIntent{}, false
 	}
 	return attackIntent{
 		playerIndex: input.playerIndex,
 		owner:       s.players[input.playerIndex],
 		direction:   input.attackDir,
 		attack:      attack,
-	}, true
+	}, true, skillDashIntent{}, false
 }
 
 func (s *State) applyPlayerMovement(inputs []preparedInput) {

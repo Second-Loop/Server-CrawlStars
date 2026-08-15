@@ -73,9 +73,9 @@ func TestStepSkillPriorityOverNormalAttack(t *testing.T) {
 		wantAttack  bool
 		wantCharges int
 	}{
-		{"ready_with_charge", 0, 1, true, false, 1},
+		{"ready_with_charge", 0, 1, true, false, 3},
 		{"cooldown_with_charge", 2, 1, false, true, 0},
-		{"ready_without_charge", 0, 0, true, false, 0},
+		{"ready_without_charge", 0, 0, true, false, 3},
 		{"cooldown_without_charge", 2, 0, false, false, 0},
 	}
 
