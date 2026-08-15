@@ -162,7 +162,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
-		"SL-120은 실제 skill effect를 실행하지 않습니다.",
+		"SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
 		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
@@ -187,7 +187,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 wire field/event를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.7.0을 유지하지 않습니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하지 않고 gameplay entity를 넣습니다.",
-		"SL-85 effect는 이번 범위에서 제외하지 않습니다.",
+		"SL-118은 Shelly <code>reload_dash</code>뿐 아니라 Colt/Lily effect와 bot skill use도 실행합니다.",
 		"SL-99 client config v3/server config v5 경계를 유지하지 않습니다.",
 	})
 	for _, marker := range []string{
@@ -207,7 +207,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
 		"AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
-		"SL-120은 실제 skill effect를 실행하지 않습니다.",
+		"SL-118은 Shelly <code>reload_dash</code>만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
 		"Client config v3/server config v6 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)

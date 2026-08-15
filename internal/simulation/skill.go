@@ -14,15 +14,29 @@ func (s *State) tryApproveSkill(playerIndex int, activationTick Tick) (SkillConf
 	return playerType.Skill, true
 }
 
-// dispatchApprovedSkill is the typed handoff used by the character effect
-// tickets. SL-120 intentionally keeps every branch effect-free.
-func (s *State) dispatchApprovedSkill(_ int, _ Vector2, skill SkillConfig) {
+// dispatchApprovedSkill applies immediate character state and returns movement
+// that must be resolved with the other same-tick skill effects as one batch.
+func (s *State) dispatchApprovedSkill(playerIndex int, direction Vector2, skill SkillConfig) (skillDashIntent, bool) {
 	switch skill.Kind {
 	case SkillReloadDash:
-		_ = skill.ReloadDash
+		if skill.ReloadDash == nil || playerIndex < 0 || playerIndex >= len(s.players) {
+			return skillDashIntent{}, false
+		}
+		playerID := s.players[playerIndex].ID
+		attack, ok := s.normalAttackConfig(playerID)
+		if !ok {
+			return skillDashIntent{}, false
+		}
+		s.attackStates[playerID] = attackState{charges: attack.MaxCharges}
+		return skillDashIntent{
+			playerIndex: playerIndex,
+			direction:   direction,
+			distance:    skill.ReloadDash.DashDistanceTiles * s.resolvedTileSize(),
+		}, true
 	case SkillBurstProjectile:
 		_ = skill.BurstProjectile
 	case SkillTeleportProjectile:
 		_ = skill.TeleportProjectile
 	}
+	return skillDashIntent{}, false
 }

@@ -62,7 +62,7 @@ SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 d
 
 아직 안 되는 것:
 
-- SL-85 실제 skill effect와 bot skill use
+- Colt/Lily 실제 skill effect와 bot skill use
 - bot replacement
 - respawn, score
 - production matchmaking queue, rating, account auth, persistence
@@ -202,7 +202,7 @@ Started room의 tick 흐름:
 5. Simulation이 처리한 `LastProcessedClientTick`을 포함한 반환 snapshot을 다음 tick의 `lastPlayers`로 복사하고 Room REST detail/list의 `latestSnapshot` summary를 바로 갱신합니다.
 6. Room-local mode helper로 새 player 결과와 terminal 여부를 계산하고, player별 첫 결과만 immutable ledger에 확정합니다.
 7. Room terminal이면 `ending`을 예약하고 ticker를 terminal decision 즉시 중단합니다. Tick observer, encode, enqueue는 ticker stop 뒤에 실행합니다.
-8. `{"Type":"snapshot","Snapshot":...}`을 tick당 한 번 marshal합니다. 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-120은 실제 skill effect를 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다. Bot도 ledger 결과는 계산하지만 transport session은 없습니다.
+8. `{"Type":"snapshot","Snapshot":...}`을 tick당 한 번 marshal합니다. 일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다. Bot도 ledger 결과는 계산하지만 transport session은 없습니다.
 9. Solo 중간 탈락이면 loser human session만 닫고 survivor room tick은 계속합니다. Room terminal이면 모든 captured human close가 끝난 뒤 normal cleanup을 실행합니다.
 
 Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movement, projectile, hit, HP/death, attack charge와 processed input ACK는 모두 `internal/simulation.State.Step`이 계속 소유합니다. Receipt나 pending 저장만으로 ACK하지 않습니다.
@@ -218,16 +218,17 @@ Bot controller는 이동이나 피해를 직접 계산하지 않습니다. Movem
 5. input을 `PlayerID` 오름차순으로 stable sort하고 live player, 유한한 방향, non-negative/stale `ClientTick`을 검증
 6. 유효한 양수 input의 processed ACK를 visible effect 판정보다 먼저 갱신하고 legacy 0은 ACK 유지
 7. `MoveDir` clamp와 `AttackDir` 정규화 뒤 X축, Y축 순서로 player의 Wall/Water/boundary collision 검사
-8. skill-ready와 non-zero direction이면 skill을 우선 승인하고 attack charge를 보존하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through
-9. 공격 요청, non-zero 방향, 캐릭터별 남은 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
-10. Lily same-tick batched damage 적용 후 projectile을 owner ID/ordinal 순서로 생성
-11. tick 증가, `D+30` 만료 projectile prune, ACK/HP/death/projectile 및 canonical skill ready state snapshot clone 반환
+8. skill-ready와 non-zero direction이면 skill을 우선 승인합니다. Shelly면 attack charge/recharge를 `max/0`으로 바꾸고 post-movement 위치의 5.4타일 dash intent를 수집하며, cooldown 또는 zero direction이면 기존 normal attack 판정으로 fall through합니다.
+9. 같은 tick의 Shelly dash를 연속 시간 batch로 정산해 Wall/Water/boundary/live player 최초 접촉 직전에 멈춥니다.
+10. 공격 요청, non-zero 방향, 캐릭터별 남은 charge가 유효하면 projectile emission 또는 Lily melee intent 승인
+11. Lily same-tick batched damage 적용 후 projectile을 owner ID/ordinal 순서로 생성
+12. tick 증가, `D+30` 만료 projectile prune, ACK/HP/death/projectile 및 canonical skill ready state snapshot clone 반환
 
 새 projectile은 생성된 tick에는 owner 위치에 보이고 다음 tick부터 이동합니다.
 
 SL-83 일반 공격 구조 위에서 Shelly는 activation tick에 `-12,-6,0,6,12`도 5발을 동시에 생성합니다. Colt는 activation tick `A` 기준 `A+[0,3,6,9,12,15]`에 발사하고 마지막 emission과 새 activation을 겹치지 않아 `A+16`부터 재공격할 수 있습니다. Lily는 wall/boundary까지 잘린 2.2 tile centerline의 첫 eligible target을 고르고 모든 melee intent를 모든 input과 movement 적용 뒤 clone한 post-movement player snapshot에 대해 계산한 뒤 same-tick batched damage를 적용합니다.
 
-SL-83 실행기는 기존 `PressedAttack`, `Damage`, `Type`, HP/death snapshot과 room GameEnd 계산기를 재사용하며 client parser는 아직 범위 밖입니다. SL-84는 `PressedSkill`/`SkillReadyTick` wire field만 추가했고, 실제 skill effect와 bot skill use는 SL-85로 남깁니다.
+SL-83 실행기는 기존 `PressedAttack`, `Damage`, `Type`, HP/death snapshot과 room GameEnd 계산기를 재사용하며 client parser는 아직 범위 밖입니다. SL-84가 `PressedSkill`/`SkillReadyTick` wire field를 추가했고 SL-120이 typed config와 탄약 snapshot을 제공했습니다. 현재 SL-118은 Shelly `reload_dash`의 완전 재장전과 5.4타일 swept dash를 실행하며 Colt/Lily effect와 bot skill use는 남아 있습니다.
 
 Projectile hit은 owner와 이미 사망한 player를 제외합니다. Solo는 나머지 live player를 모두 적으로 보고, 현재 `friendlyFire=false`인 Team/Duel은 ally를 통과해 enemy만 hit합니다. 여러 eligible target이 겹치면 join/배정 순서의 첫 target만 피해를 받습니다. 이 target tie-break는 input의 `PlayerID` 정렬과 별개입니다.
 

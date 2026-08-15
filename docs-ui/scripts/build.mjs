@@ -111,7 +111,7 @@ function renderAsyncAPI(specText) {
             <p>일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 <code>PressedSkill: true</code>이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.</p>
             <p>multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 <code>approval -&gt; latest</code> 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다.</p>
             <p>queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.</p>
-            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. SL-120은 실제 skill effect를 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.</p>
+            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. SL-118은 Shelly <code>reload_dash</code>만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.</p>
           </article>
           <article>
             <h3>Reliable control</h3>

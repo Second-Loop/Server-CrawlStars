@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"math"
 	"reflect"
 	"testing"
 
@@ -315,6 +316,34 @@ func TestDuelGameEndResultsReturnDrawWhenBothPlayersAreDead(t *testing.T) {
 
 	assertGameEndResult(t, results, "red", gameEndResultDraw)
 	assertGameEndResult(t, results, "blue", gameEndResultDraw)
+}
+
+func TestShellyDashSettlesBeforeSameTickMeleeAndGameEnd(t *testing.T) {
+	gameConfig := simulation.StaticGameConfig()
+	gameConfig.Map = simulation.MapData{}
+	state := simulation.NewStateWithConfig([]simulation.PlayerData{
+		{ID: "shelly", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: -4}, HP: 1100},
+		{ID: "lily", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeLily, Pos: simulation.Vector2{X: 4}},
+	}, simulation.Config{Game: gameConfig})
+
+	snapshot := state.Step([]simulation.InputCommand{
+		{PlayerID: "shelly", AttackDir: simulation.Vector2{X: 1}, PressedSkill: true},
+		{PlayerID: "lily", AttackDir: simulation.Vector2{X: -1}, PressedAttack: true},
+	})
+	shelly := snapshot.Players[0]
+	if shelly.ID != "shelly" {
+		t.Fatalf("first player = %q, want shelly", shelly.ID)
+	}
+	if math.Abs(shelly.Pos.X-2.48) > 1e-9 || math.Abs(shelly.Pos.Y) > 1e-9 || !shelly.PressedSkill || shelly.AttackCharges != 3 || shelly.NextAttackChargeTick != 0 {
+		t.Fatalf("Shelly dash snapshot = %+v, want canonical 2.48/full reload approval", shelly)
+	}
+	if !shelly.IsDead || shelly.HP != 0 {
+		t.Fatalf("same-tick Lily melee result = %+v, want dead Shelly", shelly)
+	}
+
+	results := calculateGameEndResults(gameConfig, snapshot)
+	assertGameEndResult(t, results, "shelly", gameEndResultLose)
+	assertGameEndResult(t, results, "lily", gameEndResultWin)
 }
 
 func TestGameEndUsesRoomConfig(t *testing.T) {

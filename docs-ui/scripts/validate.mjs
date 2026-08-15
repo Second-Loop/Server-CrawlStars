@@ -49,14 +49,18 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
-  ["SL-85 effect boundary", ["SL-120은 실제 skill effect를 실행하지 않습니다.", "SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]],
+  ["current skill effect boundary", ["SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.", "SL-118은 Shelly <code>reload_dash</code>만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다."]],
   ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
-const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) =>
-  meaning === "SL-99 config boundary"
-    ? [meaning, [...markers, "SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]]
-    : [meaning, markers],
-);
+const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) => {
+  if (meaning === "SL-99 config boundary") {
+    return [meaning, [...markers, "SL-99 client config v3/server config v4 경계를 유지합니다.", "SL-99 client config v3/server config v4 경계를 유지해요."]];
+  }
+  if (meaning === "current skill effect boundary") {
+    return [meaning, ["SL-120은 실제 skill effect를 실행하지 않습니다.", "SL-85 effect는 이번 범위에서 제외합니다.", "SL-85 effect는 이번 범위에서 제외해요."]];
+  }
+  return [meaning, markers];
+});
 
 const requiredRESTPaths = [
   "/health",
@@ -1262,7 +1266,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-SL-85 effect는 이번 범위에서 제외합니다.
+SL-118은 Shelly \`reload_dash\`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
@@ -1301,7 +1305,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-SL-85 effect는 이번 범위에서 제외합니다.
+SL-118은 Shelly \`reload_dash\`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 ## End`;
@@ -1428,10 +1432,10 @@ SL-99 client config v3/server config v5 경계를 유지합니다.
       "control players and projectiles remain null",
     ],
     [
-      "SL-85 effect exclusion",
-      "SL-85 effect는 이번 범위에서 제외합니다.",
-      "SL-85 effect는 이번 범위에서 제외하지 않습니다.",
-      "SL-85 effect boundary",
+      "current skill effect boundary",
+      "SL-118은 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+      "SL-118은 Shelly `reload_dash`뿐 아니라 Colt/Lily effect와 bot skill use도 실행합니다.",
+      "current skill effect boundary",
     ],
     [
       "SL-99 config boundary retention",
