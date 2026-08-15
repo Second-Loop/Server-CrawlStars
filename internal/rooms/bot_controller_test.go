@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Second-Loop/Server-CrawlStars/internal/simulation"
@@ -428,44 +429,51 @@ func TestBotControllerPathCacheReusesAndInvalidatesOnStartOrGoal(t *testing.T) {
 }
 
 func TestBotControllerAvoidsHeadOnPlayerMovementDeadlock(t *testing.T) {
-	gameMap := botControllerOpenMap(7, 7)
-	gameMap.MaxPlayers = 6
-	config := botControllerConfig(gameMap)
-	center := gameMap.WorldPos(3, 3)
-	botA := botControllerPlayer(config, "bot-a", simulation.TeamRed, botControllerOffset(center, 0, 0.5333333333333333))
-	botB := botControllerPlayer(config, "bot-b", simulation.TeamBlue, botControllerOffset(center, 0, -0.5333333333333333))
-	botA.IsBot = true
-	botB.IsBot = true
-	observation := botObservation{
-		roomID:      "head-on",
-		gameMap:     gameMap,
-		gameConfig:  config,
-		players:     []simulation.PlayerData{botA, botB},
-		currentTick: 1,
-		nextAttackTicks: map[simulation.PlayerID]simulation.Tick{
-			botA.ID: 2,
-			botB.ID: 2,
-		},
-	}
-	inputA, ok := botInputForObservation(botA, observation, &botControllerState{})
-	if !ok {
-		t.Fatal("bot-a did not produce an input")
-	}
-	inputB, ok := botInputForObservation(botB, observation, &botControllerState{})
-	if !ok {
-		t.Fatal("bot-b did not produce an input")
-	}
-	state := simulation.NewStateWithConfig(
-		[]simulation.PlayerData{botA, botB},
-		simulation.Config{Map: gameMap, Game: config},
-	)
-	snapshot := state.Step([]simulation.InputCommand{inputA, inputB})
-	if snapshot.Players[0].Pos == botA.Pos || snapshot.Players[1].Pos == botB.Pos {
-		t.Fatalf(
-			"head-on bot positions remained blocked: inputs=%+v players=%+v",
-			[]simulation.InputCommand{inputA, inputB},
-			snapshot.Players,
-		)
+	for _, distance := range []float64{1.0666666666666667, 1.10} {
+		t.Run(fmt.Sprintf("distance-%.3f", distance), func(t *testing.T) {
+			gameMap := botControllerOpenMap(7, 7)
+			gameMap.MaxPlayers = 6
+			config := botControllerConfig(gameMap)
+			center := gameMap.WorldPos(3, 3)
+			botA := botControllerPlayer(config, "bot-a", simulation.TeamRed, botControllerOffset(center, 0, distance/2))
+			botB := botControllerPlayer(config, "bot-b", simulation.TeamBlue, botControllerOffset(center, 0, -distance/2))
+			botA.IsBot = true
+			botB.IsBot = true
+			observation := botObservation{
+				roomID:      "head-on",
+				gameMap:     gameMap,
+				gameConfig:  config,
+				players:     []simulation.PlayerData{botA, botB},
+				currentTick: 1,
+				nextAttackTicks: map[simulation.PlayerID]simulation.Tick{
+					botA.ID: 2,
+					botB.ID: 2,
+				},
+			}
+			botIDs := map[simulation.PlayerID]struct{}{botA.ID: {}, botB.ID: {}}
+			inputs := mergedTickInputsAtTick(
+				nil,
+				observation,
+				map[simulation.PlayerID]*botControllerState{},
+				botIDs,
+				botIDs,
+			)
+			if len(inputs) != 2 {
+				t.Fatalf("head-on bot inputs=%+v, want two", inputs)
+			}
+			state := simulation.NewStateWithConfig(
+				[]simulation.PlayerData{botA, botB},
+				simulation.Config{Map: gameMap, Game: config},
+			)
+			snapshot := state.Step(inputs)
+			if snapshot.Players[0].Pos == botA.Pos || snapshot.Players[1].Pos == botB.Pos {
+				t.Fatalf(
+					"head-on bot positions remained blocked: inputs=%+v players=%+v",
+					inputs,
+					snapshot.Players,
+				)
+			}
+		})
 	}
 }
 

@@ -925,7 +925,7 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - A*의 search와 `F -> H -> y -> x` tie-break는 유지하되 cache result를 direction에서 first-step tile로 바꿉니다.
 - First-step이 현재 진행축과 다르면 현재 tile의 수직축 중앙을 한 tick 이동량 이내까지 정확히 맞춘 뒤 cardinal step을 수행합니다. 따라서 tile path는 그대로이면서 player radius가 inside corner를 자르지 않습니다.
-- Controller의 최종 candidate가 다른 live player와 다음 tick에 접촉·겹침을 만들면 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 선택합니다. 같은 snapshot의 정면 접근 bot은 같은 handedness를 적용해 서로 반대 world 방향으로 분리됩니다.
+- Human pending input과 모든 bot raw input을 먼저 모아 이번 tick의 상대 이동을 계산합니다. Candidate pair의 swept movement가 접촉·겹침을 만들면 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 선택합니다. 같은 snapshot의 정면 접근 bot은 같은 handedness를 적용해 서로 반대 world 방향으로 분리됩니다.
 - 양쪽 우회가 모두 막히면 zero movement를 사용합니다. Simulation의 player-player axis collision, public Input/Snapshot schema, bot priority와 attack decision은 변경하지 않습니다.
 
 결과:

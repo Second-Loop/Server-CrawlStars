@@ -91,7 +91,7 @@ Threat는 `ProjectileID` 오름차순으로 정렬해 각 ray에서 멀어지는
 4. Player radius를 포함한 map collision이 없는 첫 방향을 선택해요.
 5. 양쪽이 모두 막히면 `MoveDir`은 zero예요.
 
-Projectile owner의 hit eligibility는 실제 projectile collision과 drift하지 않도록 simulation의 mode rule을 재사용하는 순수 helper로 한 번만 정의해요. Dodge를 포함한 최종 movement 후보는 SL-121의 one-tick live-player avoidance를 통과해요. 충돌 예상 시 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 고르고, authoritative 충돌과 위치는 기존 Step resolution이 확정해요.
+Projectile owner의 hit eligibility는 실제 projectile collision과 drift하지 않도록 simulation의 mode rule을 재사용하는 순수 helper로 한 번만 정의해요. Dodge를 포함한 최종 movement 후보는 SL-121의 one-tick live-player avoidance를 통과해요. Human pending input과 모든 bot raw input을 먼저 모아 candidate pair의 swept collision이 예상되면 진행 방향 기준 `+90°`, `-90°` 순서로 map/player-safe 후보를 고르고, authoritative 충돌과 위치는 기존 Step resolution이 확정해요.
 
 ## 3. 책임과 상태 소유권
 

@@ -32,6 +32,7 @@
 - [x] Cache `(start tile, goal tile, first-step tile)` and recompute the world direction on each same-tile call.
 - [x] Update cache tests to prove the search result is reused while steering changes with current position.
 - [x] Add deterministic one-tick live-player avoidance and a two-bot head-on regression without changing simulation collision.
+- [x] Incorporate all raw human/bot movement candidates so simultaneous approach distances such as `1.10` cannot bypass avoidance.
 
 ### Task 3: Document the repaired invariant
 
@@ -54,5 +55,5 @@
 - [x] Run the focused corner test and production 900-tick probe.
 - [x] Run each production probe ten times for determinism.
 - [x] Run adjacent bot/movement regressions.
-- [ ] Run `make ci`.
+- [x] Run `make ci`.
 - [ ] Commit with SL-121 convention, push, open a focused PR, wait for CI, merge, and reconcile Linear evidence.

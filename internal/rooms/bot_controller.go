@@ -67,8 +67,6 @@ func botInputForObservation(
 			state,
 		)
 	}
-	moveDirection = botAvoidPlayerCollisionDirection(bot, moveDirection, observation)
-
 	input := simulation.InputCommand{
 		PlayerID:     bot.ID,
 		ClientTick:   0,
@@ -363,12 +361,13 @@ func botAvoidPlayerCollisionDirection(
 	bot simulation.PlayerData,
 	desired simulation.Vector2,
 	observation botObservation,
+	intendedDirections map[simulation.PlayerID]simulation.Vector2,
 ) simulation.Vector2 {
 	if desired == (simulation.Vector2{}) || !finiteBotVector(desired) {
 		return desired
 	}
 	step := botMovementStepWorld(bot, observation.gameConfig)
-	if !botMovementCollidesWithLivePlayer(bot, desired, step, observation.players) {
+	if !botDesiredMovementCollidesWithLivePlayer(bot, desired, step, observation, intendedDirections) {
 		return desired
 	}
 
@@ -390,6 +389,43 @@ func botAvoidPlayerCollisionDirection(
 		return candidate
 	}
 	return simulation.Vector2{}
+}
+
+func avoidBotPlayerCollisions(
+	byPlayer map[simulation.PlayerID]simulation.InputCommand,
+	observation botObservation,
+) {
+	intendedDirections := make(map[simulation.PlayerID]simulation.Vector2, len(byPlayer))
+	for playerID, input := range byPlayer {
+		intendedDirections[playerID] = botClampedDirection(input.MoveDir)
+	}
+	for _, player := range observation.players {
+		if !player.IsBot || player.IsDead {
+			continue
+		}
+		input, ok := byPlayer[player.ID]
+		if !ok {
+			continue
+		}
+		input.MoveDir = botAvoidPlayerCollisionDirection(
+			player,
+			intendedDirections[player.ID],
+			observation,
+			intendedDirections,
+		)
+		byPlayer[player.ID] = input
+	}
+}
+
+func botClampedDirection(direction simulation.Vector2) simulation.Vector2 {
+	if !finiteBotVector(direction) {
+		return simulation.Vector2{}
+	}
+	length := math.Hypot(direction.X, direction.Y)
+	if length <= 1 {
+		return direction
+	}
+	return simulation.Vector2{X: direction.X / length, Y: direction.Y / length}
 }
 
 func botMovementCollidesWithMap(
@@ -425,6 +461,74 @@ func botMovementCollidesWithLivePlayer(
 		}
 	}
 	return false
+}
+
+func botDesiredMovementCollidesWithLivePlayer(
+	bot simulation.PlayerData,
+	direction simulation.Vector2,
+	step float64,
+	observation botObservation,
+	intendedDirections map[simulation.PlayerID]simulation.Vector2,
+) bool {
+	botMovement := simulation.Vector2{X: direction.X * step, Y: direction.Y * step}
+	for _, other := range observation.players {
+		if other.ID == bot.ID || other.IsDead {
+			continue
+		}
+		otherDirection := intendedDirections[other.ID]
+		otherStep := botPossibleMovementStepWorld(other, observation.gameConfig)
+		otherMovement := simulation.Vector2{X: otherDirection.X * otherStep, Y: otherDirection.Y * otherStep}
+		if botSweptPlayerMovementsCollide(bot, botMovement, other, otherMovement) {
+			return true
+		}
+	}
+	return false
+}
+
+func botSweptPlayerMovementsCollide(
+	bot simulation.PlayerData,
+	botMovement simulation.Vector2,
+	other simulation.PlayerData,
+	otherMovement simulation.Vector2,
+) bool {
+	relativeStart := simulation.Vector2{X: bot.Pos.X - other.Pos.X, Y: bot.Pos.Y - other.Pos.Y}
+	relativeDelta := simulation.Vector2{X: botMovement.X - otherMovement.X, Y: botMovement.Y - otherMovement.Y}
+	initialDistanceSquared := relativeStart.X*relativeStart.X + relativeStart.Y*relativeStart.Y
+	final := simulation.Vector2{X: relativeStart.X + relativeDelta.X, Y: relativeStart.Y + relativeDelta.Y}
+	finalDistanceSquared := final.X*final.X + final.Y*final.Y
+	minimumDistanceSquared := initialDistanceSquared
+	relativeSpeedSquared := relativeDelta.X*relativeDelta.X + relativeDelta.Y*relativeDelta.Y
+	if relativeSpeedSquared > 0 {
+		closestT := botClamp(
+			-(relativeStart.X*relativeDelta.X+relativeStart.Y*relativeDelta.Y)/relativeSpeedSquared,
+			0,
+			1,
+		)
+		closest := simulation.Vector2{
+			X: relativeStart.X + relativeDelta.X*closestT,
+			Y: relativeStart.Y + relativeDelta.Y*closestT,
+		}
+		minimumDistanceSquared = closest.X*closest.X + closest.Y*closest.Y
+	}
+	radiusSum := math.Max(bot.Radius, 0) + math.Max(other.Radius, 0)
+	contactDistanceSquared := radiusSum * radiusSum
+	if initialDistanceSquared <= contactDistanceSquared+botDistanceCompareEpsilon &&
+		finalDistanceSquared > initialDistanceSquared+botDistanceCompareEpsilon &&
+		minimumDistanceSquared >= initialDistanceSquared-botDistanceCompareEpsilon {
+		return false
+	}
+	return minimumDistanceSquared <= contactDistanceSquared+botDistanceCompareEpsilon
+}
+
+func botPossibleMovementStepWorld(player simulation.PlayerData, gameConfig simulation.GameConfig) float64 {
+	if !finiteBotFloat(player.Speed) || player.Speed <= 0 {
+		return 0
+	}
+	tickRate := gameConfig.TickRate
+	if tickRate <= 0 {
+		tickRate = simulation.TickRate
+	}
+	return player.Speed / float64(tickRate)
 }
 
 func invalidateBotPathCache(state *botControllerState) {
