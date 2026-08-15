@@ -1871,7 +1871,7 @@ func TestStepProjectileCollisionMatrix(t *testing.T) {
 			destroyed: true,
 		},
 		{
-			name: "first eligible overlap preserves player order",
+			name: "simultaneous eligible overlap chooses lowest player ID",
 			mode: GameModeSolo,
 			players: []PlayerData{
 				{ID: PlayerID("owner"), Team: Team("solo-1"), Pos: start},
@@ -1879,8 +1879,8 @@ func TestStepProjectileCollisionMatrix(t *testing.T) {
 				{ID: PlayerID("target-a"), Team: Team("solo-3"), Pos: overlap},
 			},
 			expected: []expectedPlayer{
-				{id: PlayerID("target-z"), hp: DefaultPlayerHP - defaultShellyProjectileDamage()},
-				{id: PlayerID("target-a"), hp: DefaultPlayerHP},
+				{id: PlayerID("target-z"), hp: DefaultPlayerHP},
+				{id: PlayerID("target-a"), hp: DefaultPlayerHP - defaultShellyProjectileDamage()},
 			},
 			destroyed: true,
 		},

@@ -61,7 +61,16 @@ func (s *State) dispatchApprovedSkill(playerIndex int, direction Vector2, skill 
 		}
 		return approvedSkillEffect{emissions: []projectileEmission{emission}}
 	case SkillTeleportProjectile:
-		_ = skill.TeleportProjectile
+		if skill.TeleportProjectile == nil || playerIndex < 0 || playerIndex >= len(s.players) {
+			return approvedSkillEffect{}
+		}
+		playerID := s.players[playerIndex].ID
+		attack := skillTeleportProjectileAttackSpec(*skill.TeleportProjectile)
+		emission, ok := s.newProjectileEmission(playerID, direction, attack, projectileEmissionActivation, 0, activationTick)
+		if !ok {
+			return approvedSkillEffect{}
+		}
+		return approvedSkillEffect{emissions: []projectileEmission{emission}}
 	}
 	return approvedSkillEffect{}
 }

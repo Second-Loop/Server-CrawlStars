@@ -49,7 +49,7 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
-  ["current skill effect boundary", ["현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.", "현재 Shelly <code>reload_dash</code>와 Colt <code>burst_projectile</code>을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다."]],
+  ["current skill effect boundary", ["현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.", "현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다."]],
   ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
 const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) => {
@@ -390,7 +390,7 @@ for (const marker of [
   "Solo",
   "Team",
   "friendlyFire=false",
-  "join/배정 순서",
+  "PlayerID 오름차순 첫 target",
   "PlayerID 오름차순 input",
 ]) {
   assert(projectileDataDescription.includes(marker), `ProjectileData description must include ${marker}`);
@@ -1048,7 +1048,9 @@ function validateCharacterSkillCooldownContract() {
     colt.skill.projectile?.count === 12 &&
     JSON.stringify(colt.skill.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]),
     "Colt skill canonical contract drift");
-  assert(lily?.skill?.kind === "teleport_projectile" && lily.skill.rangeTiles === 10.4,
+  assert(lily?.skill?.kind === "teleport_projectile" && lily.skill.damagePerHit === 400 &&
+    lily.skill.rangeTiles === 10.4 && lily.skill.behindDistanceTiles === 1 &&
+    lily.skill.projectile?.type === "lily_seed",
     "Lily canonical teleport_projectile config drift");
   for (const projectileType of ["colt_skill", "lily_seed"]) {
     assert(serverGameConfig.projectile.types.some((projectile) => projectile.id === projectileType),
@@ -1057,6 +1059,9 @@ function validateCharacterSkillCooldownContract() {
   const coltSkillProjectile = serverGameConfig.projectile.types.find((projectile) => projectile.id === "colt_skill");
   assert(coltSkillProjectile?.speed === 13 && coltSkillProjectile?.radius === 0.3,
     "Colt skill projectile speed/radius drift");
+  const lilySeedProjectile = serverGameConfig.projectile.types.find((projectile) => projectile.id === "lily_seed");
+  assert(lilySeedProjectile?.speed === 13 && lilySeedProjectile?.radius === 0.3,
+    "Lily seed projectile speed/radius drift");
   const skillProjectileSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
   for (const marker of ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "damage 320", "range 11 tile", "speed 13 world/s", "radius 0.3", "type colt_skill"]) {
     assert(skillProjectileSchema.includes(marker), `ProjectileData must document Colt skill marker ${marker}`);
@@ -1072,6 +1077,34 @@ function validateCharacterSkillCooldownContract() {
   ]) {
     for (const marker of markers) {
       assert(text.includes(marker), `${name} must document ${marker}`);
+    }
+  }
+  for (const marker of ["damage 400", "range 10.4 tile", "speed 13 world/s", "radius 0.3", "type lily_seed", "PlayerID 오름차순"]) {
+    assert(skillProjectileSchema.includes(marker), `ProjectileData must document Lily skill marker ${marker}`);
+  }
+  for (const [text, name, markers] of [
+    [protocolText, "protocol Lily skill", ["damage `400`", "range `10.4 tile`", "target 뒤 `1 tile`", "최대 유효 지점", "피해만 유지"]],
+    [architectureText, "architecture Lily skill", ["lily_seed", "피격 전 위치", "damage `400`", "가장 큰 유효 거리", "owner 사망"]],
+    [projectMapText, "project map Lily skill", ["lily_seed", "피격 전 위치", "400 피해 후 적 뒤 1타일", "PlayerID` 오름차순"]],
+    [apiReferenceText, "api reference Lily skill", ["Type: lily_seed", "damage `400`", "range `10.4 tile`", "가장 큰 유효 지점", "HP/IsDead/Pos"]],
+    [apiDocsText, "api docs Lily skill", ["damage `400`", "range `10.4 tile`", "피격 전 target 위치", "최대 유효 위치"]],
+    [decisionsText, "ADR-0052 Lily skill", ["ADR-0052", "피해·HP·IsDead를 먼저", "contact interval", "PlayerID` 오름차순", "Win/Lose/Draw"]],
+    [docsBuildText, "docs UI Lily skill", ["Projectiles[].Type: lily_seed", "damage 400", "range 10.4 tile", "최대 유효 지점"]],
+  ]) {
+    for (const marker of markers) {
+      assert(text.includes(marker), `${name} must document ${marker}`);
+    }
+  }
+  for (const [text, name] of [
+    [asyncAPIText, "AsyncAPI"],
+    [protocolText, "protocol"],
+    [architectureText, "architecture"],
+    [projectMapText, "project map"],
+    [apiReferenceText, "api reference"],
+    [apiDocsText, "api docs"],
+  ]) {
+    for (const staleMarker of ["join/배정 순서에서 첫 target", "join/배정 순서 target tie-break", "players`의 join/배정 순서에서 첫 target"]) {
+      assert(!text.includes(staleMarker), `${name} must not retain stale projectile target marker ${staleMarker}`);
     }
   }
   assert(!apiReferenceText.includes("실제 projectile 생성은 후속 효과 티켓에서 구현합니다."),
@@ -1294,7 +1327,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-현재 Shelly \`reload_dash\`와 Colt \`burst_projectile\`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.
+현재 Shelly \`reload_dash\`, Colt \`burst_projectile\`, Lily \`teleport_projectile\`을 실행하며 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다.
@@ -1333,7 +1366,7 @@ PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.
 새 wire field/event를 추가하지 않습니다.
 AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.
 Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.
-현재 Shelly \`reload_dash\`와 Colt \`burst_projectile\`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.
+현재 Shelly \`reload_dash\`, Colt \`burst_projectile\`, Lily \`teleport_projectile\`을 실행하며 bot skill use는 아직 실행하지 않습니다.
 SL-99 client config v3/server config v5 경계를 유지합니다.
 ## Historical note
 ## End`;
@@ -1461,8 +1494,8 @@ SL-99 client config v3/server config v5 경계를 유지합니다.
     ],
     [
       "current skill effect boundary",
-      "현재 Shelly `reload_dash`와 Colt `burst_projectile`을 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
-      "현재 Shelly `reload_dash`만 실행하고 Colt/Lily effect와 bot skill use는 아직 실행하지 않습니다.",
+      "현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.",
+      "현재 Shelly `reload_dash`, Colt `burst_projectile`만 실행하고 Lily effect와 bot skill use는 아직 실행하지 않습니다.",
       "current skill effect boundary",
     ],
     [

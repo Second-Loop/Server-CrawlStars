@@ -646,7 +646,7 @@ func (s *State) moveProjectiles() {
 			s.markProjectileDestroyed(projectile)
 		}
 		if !projectile.IsDestroyed {
-			s.applyProjectileHit(projectile)
+			s.applyProjectileHit(projectile, runtime)
 		}
 		if !projectile.IsDestroyed && reachedRange {
 			s.markProjectileDestroyed(projectile)
@@ -659,7 +659,8 @@ func (s *State) moveProjectiles() {
 	}
 }
 
-func (s *State) applyProjectileHit(projectile *ProjectileData) {
+func (s *State) applyProjectileHit(projectile *ProjectileData, runtime projectileRuntime) {
+	targetIndex := -1
 	for i := range s.players {
 		if !s.canOwnerHit(projectile.OwnerID, s.players[i]) {
 			continue
@@ -668,13 +669,24 @@ func (s *State) applyProjectileHit(projectile *ProjectileData) {
 			continue
 		}
 
-		s.players[i].HP -= projectile.Damage
-		if s.players[i].HP <= 0 {
-			s.players[i].HP = 0
-			s.players[i].IsDead = true
+		if targetIndex < 0 || s.players[i].ID < s.players[targetIndex].ID {
+			targetIndex = i
 		}
-		s.markProjectileDestroyed(projectile)
+	}
+	if targetIndex < 0 {
 		return
+	}
+
+	targetPosition := s.players[targetIndex].Pos
+	targetRadius := s.players[targetIndex].Radius
+	s.players[targetIndex].HP -= projectile.Damage
+	if s.players[targetIndex].HP <= 0 {
+		s.players[targetIndex].HP = 0
+		s.players[targetIndex].IsDead = true
+	}
+	s.markProjectileDestroyed(projectile)
+	if runtime.teleportBehindDistance > 0 {
+		s.applyLilySeedTeleport(projectile.OwnerID, targetIndex, targetPosition, targetRadius, projectile.Dir, runtime.teleportBehindDistance)
 	}
 }
 

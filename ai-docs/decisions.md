@@ -542,6 +542,8 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Multi-contact target tie-break는 기존 join/assignment order를 유지하므로 기존 duel hit behavior와 wire schema가 바뀌지 않습니다.
 - Projectile로 만든 death snapshot 이후의 match 종료 결과는 SL-89 전까지 기존 GameEnd fallback을 사용합니다.
 
+후속 반영 (SL-117): ADR-0052가 multi-contact projectile target을 `PlayerID` 오름차순으로 정규화했습니다. 위 join/assignment tie-break는 ADR-0030 당시의 역사적 계약입니다.
+
 ## ADR-0031: SL-89 Mode별 GameEnd는 Immutable Result와 Close Barrier로 처리
 
 상태: 승인됨
@@ -996,3 +998,26 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Client는 기존 `PressedSkill`, `SkillReadyTick`, `Projectiles[].Type`, `Damage`, `Pos`로 approval과 일반/스킬 projectile을 구분합니다.
 - Input 순서와 map iteration에 무관한 12발 cadence를 simulation state 하나로 검증할 수 있습니다.
 - Lily `teleport_projectile` effect와 bot skill use는 후속 티켓 범위입니다.
+
+후속 반영 (SL-117): Lily `teleport_projectile` effect는 ADR-0052에서 구현했고 bot skill use만 후속 범위로 남았습니다.
+
+## ADR-0052: SL-117 Lily seed는 피해 뒤 피격 전 target 위치 기준으로 순간이동한다
+
+상태: 구현 및 검증 완료
+
+맥락: Lily 씨앗은 비행 중 owner 사망, lethal hit, 목적지 Wall/Water/boundary/live player 충돌과 동시 target 접촉에서도 같은 결과를 내야 합니다. 고정 간격 sampling은 좁은 유효 구간을 놓치고 map/player iteration 순서에 따라 결과가 달라질 수 있습니다.
+
+결정:
+
+- `teleport_projectile` 승인은 server config v6의 damage `400`, range `10.4 tile`, type `lily_seed`, catalog speed `13`, radius `0.3`으로 projectile 하나를 생성하고 cooldown `330 tick`을 즉시 소비합니다.
+- Projectile pre-phase에서 target의 위치와 반경을 보존하고 피해·HP·IsDead를 먼저 갱신합니다. Target이 죽어도 owner가 살아 있으면 보존한 위치를 사용해 순간이동합니다. Owner가 이미 죽었으면 피해만 유지합니다.
+- 우선 중심 거리는 `max(1 tile, target radius + Lily radius + 1e-6)`입니다. Wall, Water, boundary, 다른 live player의 contact interval을 같은 seed ray 위 거리 구간으로 변환·합성하고 우선 지점부터 가장 큰 유효 거리를 선택합니다. Hit target, Lily 자신, dead player는 destination blocker에서 제외합니다.
+- 유효 거리가 없으면 위치를 바꾸지 않습니다. Teleport는 경로 이동이 아니므로 target과 목적지 사이 타일은 검사하지 않고 최종 circle만 검사합니다.
+- 같은 projectile 위치의 eligible target은 `PlayerID` 오름차순으로 하나를 선택합니다. 기존 mode eligibility, Wall/boundary projectile collision, Water 통과, range clamp, tombstone과 Room GameEnd evaluator를 재사용합니다.
+- 새 wire field/event, REST OpenAPI, Client config v3, bot skill use, 범용 teleport system은 추가하지 않습니다.
+
+결과:
+
+- Snapshot의 기존 `PressedSkill`, `SkillReadyTick`, `Projectiles[].Type`, `Damage`, `Players[].HP/IsDead/Pos`만으로 승인·피해·순간이동을 확인할 수 있습니다.
+- Lethal seed hit은 순간이동까지 반영한 최종 snapshot을 만든 뒤 Win/Lose/Draw를 판정합니다.
+- AsyncAPI dialect `3.0.0`, info `0.8.0`, control snapshot null 계약과 Client config v3 경계는 유지됩니다.
