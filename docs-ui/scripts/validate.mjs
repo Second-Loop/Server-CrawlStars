@@ -178,8 +178,8 @@ for (const marker of [
 }
 const matchmakingJoinRequestBody = extractYAMLNamedBlock(matchmakingJoinOperation, "      requestBody:");
 assert(
-  !matchmakingJoinRequestBody.includes("required: true"),
-  "joinMatchmaking request body must remain optional",
+  matchmakingJoinRequestBody.includes("required: true"),
+  "joinMatchmaking request body must be required with characterType",
 );
 assert(
   matchmakingJoinRequestBody.includes('$ref: "#/components/schemas/MatchmakingJoinRequest"'),
@@ -884,7 +884,7 @@ function validateCharacterTypeContract() {
   const joinRequest = extractYAMLSchema(openAPIText, "MatchmakingJoinRequest");
   const characterTypeProperty = extractSchemaProperty(joinRequest, "characterType");
   assert(characterTypeProperty.includes('$ref: "#/components/schemas/CharacterType"'), "join characterType must use the shared schema");
-  assert(!topLevelRequiredFields(joinRequest).includes("characterType"), "join characterType must remain optional until SL-98");
+  assert(topLevelRequiredFields(joinRequest).filter((field) => field === "characterType").length === 1, "join characterType must be required exactly once");
   for (const forbidden of ["deprecated: true", "default:", "nullable:"]) {
     assert(!characterTypeProperty.includes(forbidden), `join characterType must not contain ${forbidden}`);
   }
@@ -1576,7 +1576,7 @@ function validateApiDocsServerConfigV5Contract() {
   const validationSection = extractDelimitedText(
     apiDocsText,
     "## Validation",
-    "\n\n### SL-82 CharacterType 문서화 기준",
+    "\n\n### SL-98 CharacterType 필수 계약 문서화 기준",
     "api docs current validation section",
   );
   assert(
@@ -1587,7 +1587,7 @@ function validateApiDocsServerConfigV5Contract() {
 
   const characterTypeSection = extractMarkdownHeadingSection(
     apiDocsText,
-    "### SL-82 CharacterType 문서화 기준",
+    "### SL-98 CharacterType 필수 계약 문서화 기준",
     "api docs current CharacterType section",
   );
   assert(

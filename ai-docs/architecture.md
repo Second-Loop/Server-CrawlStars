@@ -259,8 +259,8 @@ Store의 config는 catalog와 새 room의 default source일 뿐, 생성된 room�
 Simple matchmaking:
 
 - `POST /matchmaking/join`
-- Optional body의 `gameMode`로 `duel_1v1`, `solo`, `team`을 선택합니다.
-- Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`로 처리합니다.
+- Required body의 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 선택합니다.
+- Required `characterType`은 stable `0/1/2` 중 하나이며 누락·null·잘못된 값은 room/player mutation 전에 거부합니다. `gameMode` 생략과 빈 문자열만 default `duel_1v1`로 처리합니다.
 - 같은 mode의 waiting room 탐색과 없을 때의 room 생성을 하나의 serialized find-or-create transition으로 처리합니다. 동시 첫 join도 같은 pool을 재사용합니다.
 - player를 발급합니다.
 - 첫 human의 `0 -> 1` 전이에서만 room-owned one-shot 10초 ticker를 arm합니다. 후속 human join과 partial manual bot 추가는 deadline을 reset하지 않습니다.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -421,7 +422,7 @@ func TestMatchmakingRateLimitIgnoresUntrustedHeadersAndSharesInvalidPeers(t *tes
 }
 
 func performMatchmakingJoinRequest(handler http.Handler, remoteAddr string, forwarded string, xff string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"characterType":0}`))
 	req.RemoteAddr = remoteAddr
 	if forwarded != "" {
 		req.Header.Set("CF-Connecting-IP", forwarded)

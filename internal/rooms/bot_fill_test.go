@@ -206,7 +206,7 @@ func TestBotFillRoomCap(t *testing.T) {
 	lateStarted := make(chan struct{})
 	go func() {
 		close(lateStarted)
-		response <- requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":"duel_1v1"}`)
+		response <- requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"gameMode":"duel_1v1","characterType":0}`)
 	}()
 	waitBotFillSignal(t, lateStarted, "late handler join start")
 	reader.release()

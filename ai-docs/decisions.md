@@ -1021,3 +1021,23 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - Snapshot의 기존 `PressedSkill`, `SkillReadyTick`, `Projectiles[].Type`, `Damage`, `Players[].HP/IsDead/Pos`만으로 승인·피해·순간이동을 확인할 수 있습니다.
 - Lethal seed hit은 순간이동까지 반영한 최종 snapshot을 만든 뒤 Win/Lose/Draw를 판정합니다.
 - AsyncAPI dialect `3.0.0`, info `0.8.0`, control snapshot null 계약과 Client config v3 경계는 유지됩니다.
+
+## ADR-0053: SL-98 matchmaking join은 모든 mode에서 CharacterType을 요구한다
+
+상태: 구현 및 검증 완료
+
+맥락: SL-82의 단계적 migration 동안 `POST /matchmaking/join`이 `characterType` 누락을 Shelly `0`으로 보정했습니다. 현재 Client의 Solo/Team join은 stable ID를 명시하지만 Client에는 duel UI 흐름이 없습니다. Server의 duel 회귀와 test/debug 호출부는 계속 존재하므로 mode별 조건부 계약 대신 하나의 public join 계약이 필요합니다.
+
+결정:
+
+- Request body와 lower-camel `characterType`은 required입니다. `characterType`은 stable `0=Shelly`, `1=Colt`, `2=Lily` 중 하나여야 합니다.
+- Body 없음, 빈 object, mode-only request, explicit null, non-integer, string/bool/object/array, 지원하지 않는 integer는 room/player/session mutation 전에 400 `invalid_character_type`으로 거부합니다.
+- `gameMode`는 계속 optional입니다. field 생략과 빈 문자열은 default `duel_1v1`이고 canonical non-empty 값은 `duel_1v1`, `solo`, `team`입니다.
+- 누락값 Shelly fallback, `CharacterTypeDefaulted` 결과 상태와 `character_type_defaulted` warning을 제거합니다. Server의 duel/solo/team caller와 test는 characterType을 명시합니다.
+- Bot chooser와 debug human participant 생성의 내부 기본값은 matchmaking request 계약이 아니므로 유지합니다. Client code, stable ID, REST response, Ready/Snapshot field와 AsyncAPI schema는 변경하지 않습니다.
+
+결과:
+
+- 모든 public matchmaking mode가 같은 validation table과 error contract를 사용합니다.
+- 지원 ID는 join response, canonical participant, Ready와 gameplay Snapshot까지 기존처럼 보존됩니다.
+- OpenAPI request body와 `MatchmakingJoinRequest.characterType`이 required이고 사람이 읽는 문서도 같은 경계를 설명합니다.
