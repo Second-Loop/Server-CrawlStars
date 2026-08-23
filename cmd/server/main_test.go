@@ -118,7 +118,7 @@ func TestNewMuxServesMatchmakingJoin(t *testing.T) {
 	handler := mustNewMux(t, rooms.HandlerConfig{})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+	req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"characterType":0}`))
 
 	handler.ServeHTTP(rec, req)
 
@@ -358,7 +358,7 @@ func TestLoadRoomHandlerConfigWiresRateOverrides(t *testing.T) {
 	handler := mustNewMux(t, config)
 
 	for attempt, wantStatus := range []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests} {
-		req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", nil)
+		req := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"characterType":0}`))
 		req.RemoteAddr = "198.51.100.10:1234"
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)

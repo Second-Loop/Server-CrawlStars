@@ -290,7 +290,7 @@ func TestHandlerSessionSecretFailureIsAtomic(t *testing.T) {
 		store := NewStoreWithConfig(5, StoreConfig{Random: random})
 		defer store.Close()
 
-		assertInternalError(t, request(debugHandler(t, store), http.MethodPost, "/matchmaking/join"))
+		assertInternalError(t, requestWithBody(debugHandler(t, store), http.MethodPost, "/matchmaking/join", `{"characterType":0}`))
 		if got := len(store.listRooms().Rooms); got != 0 {
 			t.Fatalf("expected failed matchmaking to leave no room, got %d", got)
 		}
@@ -820,7 +820,7 @@ func TestHandlerRouteErrorContract(t *testing.T) {
 			_ = createPlayer(t, handler, room.ID)
 		}
 
-		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 		assertJSONRouteResponse(t, rec, http.StatusConflict, "room_cap_reached")
 	})
 
@@ -1382,7 +1382,7 @@ func TestStoreMatchmakingAtCapCleansUpAndRetriesExactlyOnce(t *testing.T) {
 		clock.Advance(defaultWaitingRoomIdleTTL)
 		clock.ResetNowCalls()
 
-		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected matchmaking cap cleanup retry to create a room, got status %d", rec.Code)
 		}
@@ -1406,7 +1406,7 @@ func TestStoreMatchmakingAtCapCleansUpAndRetriesExactlyOnce(t *testing.T) {
 		}
 		clock.ResetNowCalls()
 
-		rec := request(handler, http.MethodPost, "/matchmaking/join")
+		rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("expected non-expired matchmaking cap status 409, got %d", rec.Code)
 		}
@@ -1806,12 +1806,13 @@ func TestMatchmakingJoinGameMode(t *testing.T) {
 		wantMode   string
 		wantCode   string
 	}{
-		{name: "no body defaults", body: "", wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
-		{name: "empty object defaults", body: `{}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
-		{name: "empty mode defaults", body: `{"gameMode":""}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
-		{name: "solo", body: `{"gameMode":"solo"}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
-		{name: "team", body: `{"gameMode":"team"}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeTeam},
-		{name: "trailing whitespace", body: "{\"gameMode\":\"solo\"} \n\t", wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
+		{name: "no body requires character", body: "", wantStatus: http.StatusBadRequest, wantCode: "invalid_character_type"},
+		{name: "empty object requires character", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_character_type"},
+		{name: "character only defaults mode", body: `{"characterType":0}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
+		{name: "empty mode defaults", body: `{"gameMode":"","characterType":0}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeDuel1v1},
+		{name: "solo", body: `{"gameMode":"solo","characterType":1}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
+		{name: "team", body: `{"gameMode":"team","characterType":2}`, wantStatus: http.StatusCreated, wantMode: simulation.GameModeTeam},
+		{name: "trailing whitespace", body: "{\"gameMode\":\"solo\",\"characterType\":0} \n\t", wantStatus: http.StatusCreated, wantMode: simulation.GameModeSolo},
 		{name: "unknown", body: `{"gameMode":"ranked"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
 		{name: "whitespace mode", body: `{"gameMode":" "}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_game_mode"},
 		{name: "top-level null", body: `null`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
@@ -1976,7 +1977,7 @@ func TestMatchmakingJoinGameModeRateLimitPrecedesBodyDecode(t *testing.T) {
 		t.Fatalf("create handler: %v", err)
 	}
 
-	first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", "")
+	first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("expected first join status 201, got %d", first.Code)
 	}
@@ -2020,7 +2021,7 @@ func TestMatchmakingJoinRejectsOversizedBody(t *testing.T) {
 			t.Fatalf("create handler: %v", err)
 		}
 
-		first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", "")
+		first := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 		if first.Code != http.StatusCreated {
 			t.Fatalf("expected first join status 201, got %d", first.Code)
 		}
@@ -2062,7 +2063,7 @@ func TestDebugRoomUsesDefaultMode(t *testing.T) {
 func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t *testing.T) {
 	handler := debugHandler(t, NewStore(5))
 
-	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
 	}
@@ -2091,7 +2092,7 @@ func TestHandlerMatchmakingFirstJoinCreatesWaitingRoomAndReturnsConnectionInfo(t
 func TestMatchmakingJoinRawJSONExposesHumanBotFlagAtBothLevels(t *testing.T) {
 	handler := debugHandler(t, NewStore(5))
 
-	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -2133,7 +2134,7 @@ func TestMatchmakingJoinRawJSONExposesHumanBotFlagAtBothLevels(t *testing.T) {
 func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.T) {
 	handler := debugHandler(t, NewStore(5))
 
-	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
 	}
@@ -2163,7 +2164,7 @@ func TestHandlerMatchmakingResponseIncludesMapDataForClientRendering(t *testing.
 func TestHandlerMatchmakingResponseSerializesMapRowsAsNumberArrays(t *testing.T) {
 	handler := debugHandler(t, NewStore(5))
 
-	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
 	}
@@ -2546,7 +2547,7 @@ func createRoom(t *testing.T, handler http.Handler) roomResponse {
 func joinMatchmaking(t *testing.T, handler http.Handler) matchmakingJoinResponse {
 	t.Helper()
 
-	rec := request(handler, http.MethodPost, "/matchmaking/join")
+	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d", rec.Code)
 	}
@@ -2558,7 +2559,7 @@ func joinMatchmaking(t *testing.T, handler http.Handler) matchmakingJoinResponse
 func joinMatchmakingWithMode(t *testing.T, handler http.Handler, gameMode string) matchmakingJoinResponse {
 	t.Helper()
 
-	body := `{"gameMode":` + strconv.Quote(gameMode) + `}`
+	body := `{"gameMode":` + strconv.Quote(gameMode) + `,"characterType":0}`
 	rec := requestWithBody(handler, http.MethodPost, "/matchmaking/join", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected matchmaking join status 201, got %d: %s", rec.Code, rec.Body.String())

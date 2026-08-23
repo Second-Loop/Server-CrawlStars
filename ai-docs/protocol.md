@@ -397,13 +397,13 @@ SL-94는 public WebSocket input에 optional `ClientTick`, gameplay `PlayerData`�
 POST /matchmaking/join
 ```
 
-Request body는 optional입니다.
+Request body와 `characterType`은 required입니다.
 
 ```json
-{"gameMode":"solo"}
+{"gameMode":"solo","characterType":1}
 ```
 
-Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. Body 없음, `{}`, `{"gameMode":""}`는 default `duel_1v1`로 normalize합니다. optional lower-camel `characterType`은 stable `0=Shelly`, `1=Colt`, `2=Lily`이고 missing field만 Shelly `0` warning compatibility로 처리합니다. explicit invalid type/value는 400 `invalid_character_type`이며 SL-98에서 required로 전환합니다. 지원하지 않는 non-empty mode ID는 400 `invalid_game_mode`, malformed JSON과 trailing JSON value는 400 `invalid_request`입니다.
+Canonical mode ID는 `duel_1v1`, `solo`, `team`입니다. `gameMode` 생략과 `{"gameMode":"","characterType":0}`는 default `duel_1v1`로 normalize합니다. required lower-camel `characterType`은 stable `0=Shelly`, `1=Colt`, `2=Lily`이고 누락값을 보정하지 않습니다. 누락, null, 잘못된 type/value는 400 `invalid_character_type`입니다. 지원하지 않는 non-empty mode ID는 400 `invalid_game_mode`, malformed JSON과 trailing JSON value는 400 `invalid_request`입니다.
 
 응답:
 
@@ -555,8 +555,8 @@ DELETE /rooms/{roomID}
 
 후속 protocol message는 Linear issue에서 scope와 acceptance criteria를 먼저 정한 뒤 구현합니다.
 
-## SL-82 CharacterType 전파
+## SL-98 CharacterType 필수 전파
 
-Join request의 optional lower-camel `characterType`은 `0=Shelly`, `1=Colt`, `2=Lily` stable numeric ID입니다. room admission은 이를 canonical participant에 저장하고, legacy missing만 Shelly `0`과 structured warning으로 처리합니다. explicit null, 잘못된 JSON type, 지원하지 않는 integer는 `invalid_character_type` 400이며 SL-98이 required 전환 경계입니다.
+Join request의 required lower-camel `characterType`은 `0=Shelly`, `1=Colt`, `2=Lily` stable numeric ID입니다. room admission은 이를 canonical participant에 저장하며, 누락값은 Shelly로 보정하지 않습니다. 누락, explicit null, 잘못된 JSON type, 지원하지 않는 integer는 room mutation 전에 `invalid_character_type` 400입니다.
 
 전파는 `join 또는 server-owned bot 생성 -> canonical room participant -> Ready -> PlayerData` 순서입니다. REST participant는 `characterType`, Ready와 Snapshot `PlayerData`는 PascalCase `CharacterType`을 required로 사용합니다. Bot은 Shelly/Colt/Lily 중 균등·독립 선택된 값을 중복 허용으로 match 동안 유지하고, debug human participant의 기본값만 Shelly `0`입니다. `starting`과 `started` control은 기존처럼 `Players: null`이며 gameplay snapshot부터 participant identity와 stats가 나타납니다.

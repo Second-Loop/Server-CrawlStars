@@ -380,7 +380,7 @@ func TestApplicationShutdownClosesWebSocketAndBothServersWithinBudget(t *testing
 	waitForHTTPStatus(t, "http://"+publicAddress+"/health", http.StatusOK)
 	waitForHTTPStatus(t, "http://"+metricsAddress+"/metrics", http.StatusOK)
 
-	joinResponse, err := http.Post("http://"+publicAddress+"/matchmaking/join", "application/json", nil)
+	joinResponse, err := http.Post("http://"+publicAddress+"/matchmaking/join", "application/json", strings.NewReader(`{"characterType":0}`))
 	if err != nil {
 		t.Fatalf("join matchmaking: %v", err)
 	}

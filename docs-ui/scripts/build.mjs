@@ -79,7 +79,7 @@ function renderAsyncAPI(specText) {
         <div class="grid">
           <article>
             <h3>1. join</h3>
-            <p><code>POST /matchmaking/join</code>은 optional <code>gameMode</code>와 optional <code>characterType</code>을 받습니다. characterType stable ID는 <code>0=Shelly</code>, <code>1=Colt</code>, <code>2=Lily</code>이며 새 client는 값을 명시합니다. SL-82에서는 생략한 legacy 요청만 Shelly 0으로 보정하고 structured warning을 한 번 남기며, SL-98에서 required로 전환합니다. explicit null, non-integer, string/bool/object/array, 지원하지 않는 값은 <code>400 invalid_character_type</code>입니다. 응답은 <code>{ gameMode, room, player, sessionToken, webSocketPath }</code>이고 top-level <code>player.characterType</code>와 <code>room.players[].characterType</code>은 같습니다.</p>
+            <p><code>POST /matchmaking/join</code>은 required request body에서 optional <code>gameMode</code>와 required <code>characterType</code>을 받습니다. characterType stable ID는 <code>0=Shelly</code>, <code>1=Colt</code>, <code>2=Lily</code>이며 누락값을 보정하지 않습니다. 누락, explicit null, non-integer, string/bool/object/array, 지원하지 않는 값은 <code>400 invalid_character_type</code>입니다. 응답은 <code>{ gameMode, room, player, sessionToken, webSocketPath }</code>이고 top-level <code>player.characterType</code>와 <code>room.players[].characterType</code>은 같습니다.</p>
           </article>
           <article>
             <h3>2. Ready</h3>

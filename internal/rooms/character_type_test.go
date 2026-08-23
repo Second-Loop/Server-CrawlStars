@@ -358,12 +358,9 @@ func TestMatchmakingCharacterTypeContract(t *testing.T) {
 		body string
 		want simulation.CharacterType
 	}{
-		{name: "no body", body: "", want: simulation.CharacterTypeShelly},
-		{name: "empty object", body: `{}`, want: simulation.CharacterTypeShelly},
-		{name: "mode only", body: `{"gameMode":"solo"}`, want: simulation.CharacterTypeShelly},
-		{name: "shelly", body: `{"characterType":0}`, want: simulation.CharacterTypeShelly},
-		{name: "colt", body: `{"characterType":1}`, want: simulation.CharacterTypeColt},
-		{name: "lily", body: `{"characterType":2}`, want: simulation.CharacterTypeLily},
+		{name: "duel Shelly", body: `{"gameMode":"duel_1v1","characterType":0}`, want: simulation.CharacterTypeShelly},
+		{name: "solo Colt", body: `{"gameMode":"solo","characterType":1}`, want: simulation.CharacterTypeColt},
+		{name: "team Lily", body: `{"gameMode":"team","characterType":2}`, want: simulation.CharacterTypeLily},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -384,6 +381,39 @@ func TestMatchmakingCharacterTypeContract(t *testing.T) {
 			stored.mu.Unlock()
 			if got != tt.want {
 				t.Fatalf("stored CharacterType = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchmakingMissingCharacterTypeDoesNotMutate(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "no body"},
+		{name: "empty object", body: `{}`},
+		{name: "duel mode only", body: `{"gameMode":"duel_1v1"}`},
+		{name: "solo mode only", body: `{"gameMode":"solo"}`},
+		{name: "team mode only", body: `{"gameMode":"team"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(5)
+			t.Cleanup(store.Close)
+			recorder := requestWithBody(debugHandler(t, store), http.MethodPost, "/matchmaking/join", tt.body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			assertError(t, recorder, "invalid_character_type")
+			if len(store.listRooms().Rooms) != 0 {
+				t.Fatal("missing CharacterType created a room")
+			}
+			store.mu.RLock()
+			playerIDs, sessions := len(store.playerIDs), len(store.activeSessions)
+			store.mu.RUnlock()
+			if playerIDs != 0 || sessions != 0 {
+				t.Fatalf("missing CharacterType mutated IDs/sessions: %d/%d", playerIDs, sessions)
 			}
 		})
 	}

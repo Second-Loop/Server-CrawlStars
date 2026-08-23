@@ -4,11 +4,11 @@
 
 ## 한 줄 요약
 
-클라이언트는 `POST /matchmaking/join`의 optional `gameMode`로 `duel_1v1`, `solo`, `team`을 고르고, 같은 mode의 `room`, human `player`, `sessionToken`, tokenized `webSocketPath`를 받습니다. 서버는 optional human `ClientTick`과 sessionless bot command를 공통 `InputCommand`로 합쳐 room-local selected config의 tick에서 `State.Step(inputs) -> Snapshot`을 정확히 한 번 실행하고, player별 processed input ACK와 Solo 마지막 생존자·Team elimination을 authoritative snapshot으로 판정합니다.
+클라이언트는 `POST /matchmaking/join`의 required body에서 optional `gameMode`와 required `characterType`을 보내 `duel_1v1`, `solo`, `team` 및 stable character ID `0/1/2`를 고르고, 같은 mode의 `room`, human `player`, `sessionToken`, tokenized `webSocketPath`를 받습니다. 서버는 optional human `ClientTick`과 sessionless bot command를 공통 `InputCommand`로 합쳐 room-local selected config의 tick에서 `State.Step(inputs) -> Snapshot`을 정확히 한 번 실행하고, player별 processed input ACK와 Solo 마지막 생존자·Team elimination을 authoritative snapshot으로 판정합니다.
 
 ## 현재 상태
 
-SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`와 UI/로컬 bot 입력 보조값을 제공하고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel field는 migration 동안 optional이며, canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다. 일반 공격과 typed skill config는 server config v6와 production `State.Step`이 소유합니다. AsyncAPI는 `0.8.0`이고 REST OpenAPI와 SL-99 client config v3 artifact는 변경하지 않습니다.
+SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`와 UI/로컬 bot 입력 보조값을 제공하고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel `characterType`은 required이며 누락값 fallback이 없습니다. Canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다. 일반 공격과 typed skill config는 server config v6와 production `State.Step`이 소유합니다. AsyncAPI는 `0.8.0`이고 SL-99 client config v3 artifact는 변경하지 않습니다.
 
 ## SL-116 문서 전달과 현재 검증 경계
 
@@ -119,7 +119,7 @@ Process와 HTTP server error는 JSON `slog`로 stdout에 기록합니다. SIGINT
 `POST /matchmaking/join`은 production queue가 아니라 단순 connector입니다.
 
 1. Client IP를 resolve하고 token-bucket quota를 평가합니다. 허용 요청은 여기서 quota를 소비합니다.
-2. Optional request body의 `gameMode`를 catalog의 canonical config로 선택합니다. Body 없음, 빈 object, 빈 문자열은 default `duel_1v1`입니다.
+2. Required request body를 decode하고 optional `gameMode`를 catalog의 canonical config로 선택합니다. `gameMode` 생략과 빈 문자열은 default `duel_1v1`이고, required `characterType` 누락·null·잘못된 값은 room/player mutation 전에 거부합니다.
 3. 같은 selected mode의 여유 waiting room 탐색과 없을 때의 생성을 하나의 serialized find-or-create transition으로 처리합니다.
 4. 새 room은 selected config를 소유합니다. Cap에 닿았을 때만 만료 room을 한 번 즉시 정리하고 생성도 한 번 재시도합니다.
 5. player와 session token을 발급합니다.
@@ -320,18 +320,14 @@ GameEnd wire는 `Type: "GameEnd"`, `PlayerId`, `Result: Win|Lose|Draw` 그대로
 - `SL-110`: server-owned uniform independent bot character chooser와 match-stable REST/Ready/Snapshot CharacterType
 - `SL-94`: optional ClientTick, monotonic processed input ACK, legacy zero compatibility, stale/duplicate silent drop
 - `SL-82`: config v2 CharacterType `0/1/2` join-to-Ready/Snapshot contract and docs drift validation
+- `SL-98`: matchmaking join의 required CharacterType, missing fallback/warning 제거, duel/solo/team 회귀 검증
 
 각 issue의 최신 상태는 Linear를 확인합니다. 이 문서는 상태판이 아니라 흐름 복구용 지도입니다.
 
 ## 다음 추천 작업
 
-1. `SL-98`: CharacterType request required 전환
-   - SL-82 legacy missing Shelly fallback/warning을 제거하기 전 client rollout을 확인
-   - stable IDs `0=Shelly`, `1=Colt`, `2=Lily`와 REST lower camel/WebSocket PascalCase는 유지
-
-2. `SL-14` closeout
-   - `SL-57` client PR 상태 확인
-   - server/client acceptance criteria가 모두 닫히면 parent issue 정리
+1. `SL-19`의 핵심 데모와 다음 에픽 결정 사항을 Linear에서 확인합니다.
+2. 결정된 Server 범위를 새 issue로 만든 뒤 해당 acceptance criteria 안에서만 구현합니다.
 
 ## 자주 쓰는 명령
 

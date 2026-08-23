@@ -99,33 +99,17 @@ func TestRoomCreatedWaitsForRegistryInsertionAndCredentialSuccess(t *testing.T) 
 	})
 }
 
-func TestCharacterTypeDefaultWarningOnlyForSuccessfulMissingJoin(t *testing.T) {
-	t.Run("successful missing join warns once with bounded fields", func(t *testing.T) {
+func TestCharacterTypeDefaultWarningRemoved(t *testing.T) {
+	t.Run("missing character is rejected without warning", func(t *testing.T) {
 		logs := &lockedLogBuffer{}
 		store := NewStoreWithConfig(5, StoreConfig{Logger: jsonTestLogger(logs)})
 		handler := debugHandler(t, store)
 		recorder := request(handler, http.MethodPost, "/matchmaking/join")
-		if recorder.Code != http.StatusCreated {
+		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("join status=%d body=%s", recorder.Code, recorder.Body.String())
 		}
-		var joined matchmakingJoinResponse
-		decodeResponse(t, recorder, &joined)
-		assertLogEventCount(t, logs, "character_type_defaulted", 1)
-		record := matchingLogRecord(t, logs, "character_type_defaulted")
-		if record["level"] != "WARN" || record["msg"] != "character_type_defaulted" || record["game_mode"] != simulation.GameModeDuel1v1 {
-			t.Fatalf("default warning fields=%v", record)
-		}
-		allowed := map[string]bool{"time": true, "level": true, "msg": true, "event": true, "game_mode": true}
-		for key := range record {
-			if !allowed[key] {
-				t.Fatalf("default warning has unexpected field %q: %v", key, record)
-			}
-		}
-		for _, forbidden := range []string{joined.SessionToken, joined.WebSocketPath, "sessionToken", `"token"`, "127.0.0.1"} {
-			if strings.Contains(logs.String(), forbidden) {
-				t.Fatalf("default warning leaked %q: %s", forbidden, logs.String())
-			}
-		}
+		assertError(t, recorder, "invalid_character_type")
+		assertLogEventCount(t, logs, "character_type_defaulted", 0)
 	})
 
 	for _, characterType := range []simulation.CharacterType{
@@ -151,9 +135,9 @@ func TestCharacterTypeDefaultWarningOnlyForSuccessfulMissingJoin(t *testing.T) {
 			config StoreConfig
 			body   string
 		}{
-			{name: "invalid mode", body: `{"gameMode":"ranked"}`},
+			{name: "invalid mode", body: `{"gameMode":"ranked","characterType":0}`},
 			{name: "invalid character", body: `{"characterType":3}`},
-			{name: "credential failure", config: StoreConfig{Random: bytes.NewReader(bytes.Join([][]byte{bytes.Repeat([]byte{0x21}, 16), bytes.Repeat([]byte{0x22}, 16), bytes.Repeat([]byte{0x23}, 31)}, nil))}, body: `{}`},
+			{name: "credential failure", config: StoreConfig{Random: bytes.NewReader(bytes.Join([][]byte{bytes.Repeat([]byte{0x21}, 16), bytes.Repeat([]byte{0x22}, 16), bytes.Repeat([]byte{0x23}, 31)}, nil))}, body: `{"characterType":0}`},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -183,7 +167,7 @@ func TestCharacterTypeDefaultWarningOnlyForSuccessfulMissingJoin(t *testing.T) {
 			}
 		}
 		handler := debugHandler(t, store)
-		if recorder := request(handler, http.MethodPost, "/matchmaking/join"); recorder.Code != http.StatusConflict {
+		if recorder := requestWithBody(handler, http.MethodPost, "/matchmaking/join", `{"characterType":0}`); recorder.Code != http.StatusConflict {
 			t.Fatalf("capped join status=%d body=%s", recorder.Code, recorder.Body.String())
 		}
 		assertLogEventCount(t, logs, "character_type_defaulted", 0)
@@ -1155,8 +1139,7 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 	t.Helper()
 	allowedEvents := map[string]bool{
 		"room_created": true, "room_started": true, "room_ended": true, "room_expired": true,
-		"character_type_defaulted": true,
-		"websocket_connected":      true, "websocket_disconnected": true,
+		"websocket_connected": true, "websocket_disconnected": true,
 		"websocket_auth_rejected": true, "websocket_io_error": true,
 		"bot_fill_failed": true,
 	}
@@ -1170,8 +1153,7 @@ func assertStructuredLogSchema(t *testing.T, logs *lockedLogBuffer) {
 	}
 	allowedKeys := map[string]bool{
 		"time": true, "level": true, "msg": true, "event": true,
-		"game_mode": true,
-		"roomID":    true, "playerID": true, "category": true, "status": true,
+		"roomID": true, "playerID": true, "category": true, "status": true,
 		"close_cause": true, "connection_generation": true, "match_phase": true,
 		"session_duration_ms": true, "last_sent_tick": true,
 		"room_id": true, "error": true,

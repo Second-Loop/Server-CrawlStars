@@ -658,29 +658,28 @@ func botAppendErrorLocked(room *room, count int) error {
 }
 
 type matchmakingJoinResult struct {
-	Response               matchmakingJoinResponse
-	CharacterTypeDefaulted bool
-	Matched                bool
+	Response matchmakingJoinResponse
+	Matched  bool
 }
 
 func resolveMatchmakingCharacterType(
 	gameConfig simulation.GameConfig,
 	raw json.RawMessage,
-) (simulation.CharacterType, bool, error) {
+) (simulation.CharacterType, error) {
 	if len(raw) == 0 {
-		return simulation.CharacterTypeShelly, true, nil
+		return 0, ErrInvalidCharacterType
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return 0, false, ErrInvalidCharacterType
+		return 0, ErrInvalidCharacterType
 	}
 	var characterType simulation.CharacterType
 	if err := json.Unmarshal(raw, &characterType); err != nil {
-		return 0, false, ErrInvalidCharacterType
+		return 0, ErrInvalidCharacterType
 	}
 	if _, ok := gameConfig.PlayerType(characterType); !ok {
-		return 0, false, ErrInvalidCharacterType
+		return 0, ErrInvalidCharacterType
 	}
-	return characterType, false, nil
+	return characterType, nil
 }
 
 func (s *Store) joinMatchmaking(gameMode string) (matchmakingJoinResponse, error) {
@@ -720,7 +719,7 @@ func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.Raw
 	if err != nil {
 		return matchmakingJoinResult{}, ErrInvalidGameMode
 	}
-	characterType, defaulted, err := resolveMatchmakingCharacterType(selectedConfig, rawCharacterType)
+	characterType, err := resolveMatchmakingCharacterType(selectedConfig, rawCharacterType)
 	if err != nil {
 		return matchmakingJoinResult{}, err
 	}
@@ -744,9 +743,8 @@ func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.Raw
 		if joined, joinedResources, ok := s.tryJoinMatchmakingRoom(room, *credentials, characterType); ok {
 			resources.merge(joinedResources)
 			return matchmakingJoinResult{
-				Response:               joined,
-				CharacterTypeDefaulted: defaulted,
-				Matched:                len(joined.Room.Players) == selectedConfig.MatchPlayerCount(),
+				Response: joined,
+				Matched:  len(joined.Room.Players) == selectedConfig.MatchPlayerCount(),
 			}, nil
 		}
 	}
@@ -762,9 +760,8 @@ func (s *Store) joinMatchmakingLocked(gameMode string, rawCharacterType json.Raw
 		s.releasePlayerID(credentials.id)
 	}
 	return matchmakingJoinResult{
-		Response:               response,
-		CharacterTypeDefaulted: defaulted,
-		Matched:                err == nil && len(response.Room.Players) == selectedConfig.MatchPlayerCount(),
+		Response: response,
+		Matched:  err == nil && len(response.Room.Players) == selectedConfig.MatchPlayerCount(),
 	}, err
 }
 
@@ -1121,14 +1118,6 @@ func (s *Store) logMatchmakingTransition(roomID string, state string, cause stri
 		"roomID", roomID,
 		"state", state,
 		"cause", cause,
-	)
-}
-
-func (s *Store) logCharacterTypeDefaulted(gameMode string) {
-	s.logger.Warn(
-		"character_type_defaulted",
-		"event", "character_type_defaulted",
-		"game_mode", gameMode,
 	)
 }
 

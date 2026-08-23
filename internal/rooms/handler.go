@@ -145,9 +145,6 @@ func newRouterWithDebugGuard(
 			writeError(w, http.StatusConflict, "room_cap_reached", err.Error())
 			return
 		}
-		if result.CharacterTypeDefaulted {
-			store.logCharacterTypeDefaulted(result.Response.GameMode)
-		}
 		writeJSON(w, http.StatusCreated, result.Response)
 	})
 	mux.HandleFunc("HEAD /matchmaking/join", writeMethodNotAllowed)
