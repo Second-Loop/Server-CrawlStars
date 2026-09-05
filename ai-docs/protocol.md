@@ -564,3 +564,7 @@ Join request의 required lower-camel `characterType`은 `0=Shelly`, `1=Colt`, `2
 ### SL-123 AttackReadyTick
 
 Gameplay snapshot에는 `AttackReadyTick`을 보내요. 연사 중에는 `activationTick + lastEmissionOffset + 1`, 연사 완료·비연사·사망 상태는 `0`이에요. 기존 승인 순서와 탄약 소모 규칙은 바뀌지 않아요. REST OpenAPI는 필드 변경이 없어요.
+
+### SL-124 client 표시 설정 정합성
+
+Client config v3의 스키마는 유지하고 표시용 최대 탄약을 Shelly/Colt/Lily `3/3/2`, 스킬 쿨타임을 `12/13/11`초로 맞췄어요. 이전 SL-113의 `4/3` 탄약 값은 이제 사용하지 않아요. 실제 상태는 gameplay snapshot으로 보정하며, 설정만으로 서버 승인 여부를 확정하지 않아요. 거리 보조값은 이번 변경에서 유지했어요.

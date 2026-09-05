@@ -7,22 +7,22 @@
       "type": 0,
       "normalAttackDistance": 5.0,
       "skillAttackDistance": 1.0,
-      "skillAttackCoolDown": 10,
+      "skillAttackCoolDown": 12,
       "maxBullets": 3
     },
     {
       "type": 1,
       "normalAttackDistance": 6.0,
       "skillAttackDistance": 7.0,
-      "skillAttackCoolDown": 10,
-      "maxBullets": 4
+      "skillAttackCoolDown": 13,
+      "maxBullets": 3
     },
     {
       "type": 2,
       "normalAttackDistance": 1.5,
       "skillAttackDistance": 3.0,
-      "skillAttackCoolDown": 10,
-      "maxBullets": 3
+      "skillAttackCoolDown": 11,
+      "maxBullets": 2
     }
   ],
   "normalAttackCoolDown": 1,

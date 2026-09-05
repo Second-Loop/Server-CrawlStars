@@ -556,11 +556,11 @@ for (const [text, name, allowedTokens] of [
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
 const expectedClientCharacters = new Map([
-  [0, { normalAttackDistance: 5, skillAttackDistance: 1, skillAttackCoolDown: 10, maxBullets: 3 }],
-  [1, { normalAttackDistance: 6, skillAttackDistance: 7, skillAttackCoolDown: 10, maxBullets: 4 }],
-  [2, { normalAttackDistance: 1.5, skillAttackDistance: 3, skillAttackCoolDown: 10, maxBullets: 3 }],
+  [0, { normalAttackDistance: 5, skillAttackDistance: 1, skillAttackCoolDown: 12, maxBullets: 3 }],
+  [1, { normalAttackDistance: 6, skillAttackDistance: 7, skillAttackCoolDown: 13, maxBullets: 3 }],
+  [2, { normalAttackDistance: 1.5, skillAttackDistance: 3, skillAttackCoolDown: 11, maxBullets: 2 }],
 ]);
-const approvedClientGameConfigSHA256 = "6fddd2971ce302a0ff50c2ed9fb9c5977f91bfed7c9f21fb0c4cc534dd7ea7c3";
+const approvedClientGameConfigSHA256 = "78e4d3a991c519b4850acab760dfb1a12089dec99ba2db3d03cd6e3868f79c08";
 assert(
   createHash("sha256").update(clientGameConfigBytes).digest("hex") === approvedClientGameConfigSHA256,
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",

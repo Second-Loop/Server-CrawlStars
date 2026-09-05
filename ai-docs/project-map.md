@@ -348,3 +348,7 @@ curl http://127.0.0.1:9090/metrics
 - `ai-docs/protocol.md`: protocol 경계
 - `ai-docs/api-reference.md`: API shape
 - `ai-docs/decisions.md`: 왜 이렇게 정했는지
+
+### SL-124 client 표시 설정 정합성
+
+Client config v3의 스키마는 유지하고 표시용 최대 탄약을 Shelly/Colt/Lily `3/3/2`, 스킬 쿨타임을 `12/13/11`초로 맞췄어요. 이전 SL-113의 `4/3` 탄약 값은 이제 사용하지 않아요. 실제 상태는 gameplay snapshot으로 보정하며, 설정만으로 서버 승인 여부를 확정하지 않아요. 거리 보조값은 이번 변경에서 유지했어요.

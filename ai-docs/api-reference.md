@@ -660,3 +660,7 @@ REST `Player.characterType`은 required이며 top-level `player`와 nested `room
 ## SL-123 일반 공격 잠금
 
 Gameplay PlayerData의 required `AttackReadyTick`은 일반 공격의 연사 잠금 해제 tick이에요. `0`이면 잠금이 없어요. 마지막 투사체를 생성한 snapshot부터 잠금을 해제하고 다음 simulation tick 입력을 허용해요. 쿨타임 준비와 별개로 `AttackCharges > 0`이어야 해요. 이 필드는 서버가 정하므로 클라이언트가 연사 수와 간격을 재계산하지 않아요.
+
+### SL-124 client 표시 설정 정합성
+
+Client config v3의 스키마는 유지하고 표시용 최대 탄약을 Shelly/Colt/Lily `3/3/2`, 스킬 쿨타임을 `12/13/11`초로 맞췄어요. 이전 SL-113의 `4/3` 탄약 값은 이제 사용하지 않아요. 실제 상태는 gameplay snapshot으로 보정하며, 설정만으로 서버 승인 여부를 확정하지 않아요. 거리 보조값은 이번 변경에서 유지했어요.

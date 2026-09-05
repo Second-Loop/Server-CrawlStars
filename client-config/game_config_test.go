@@ -40,15 +40,15 @@ func TestParseEmbeddedGameConfigV3(t *testing.T) {
 
 	assertCharacter(t, config, CharacterConfig{
 		Type: 0, NormalAttackDistance: 5, SkillAttackDistance: 1,
-		SkillAttackCoolDown: 10, MaxBullets: 3,
+		SkillAttackCoolDown: 12, MaxBullets: 3,
 	})
 	assertCharacter(t, config, CharacterConfig{
 		Type: 1, NormalAttackDistance: 6, SkillAttackDistance: 7,
-		SkillAttackCoolDown: 10, MaxBullets: 4,
+		SkillAttackCoolDown: 13, MaxBullets: 3,
 	})
 	assertCharacter(t, config, CharacterConfig{
 		Type: 2, NormalAttackDistance: 1.5, SkillAttackDistance: 3,
-		SkillAttackCoolDown: 10, MaxBullets: 3,
+		SkillAttackCoolDown: 11, MaxBullets: 2,
 	})
 }
 
