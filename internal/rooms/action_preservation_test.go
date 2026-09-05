@@ -40,6 +40,32 @@ func TestSetInputPreservesPendingPositiveActionAcrossMovement(t *testing.T) {
 	}
 }
 
+func TestSetInputUsesLatestAimWhenPendingHasNoAction(t *testing.T) {
+	store, room, playerID, session := inputSelectionFixture(t)
+
+	if got := store.setInput(room.ID, playerID, inputMessage{
+		ClientTick: 10,
+		MoveDir:    simulation.Vector2{X: 1},
+		AttackDir:  simulation.Vector2{X: 1},
+	}, session); got != inputStored {
+		t.Fatalf("setInput first movement disposition=%v, want stored", got)
+	}
+	if got := store.setInput(room.ID, playerID, inputMessage{
+		ClientTick: 11,
+		MoveDir:    simulation.Vector2{Y: 1},
+		AttackDir:  simulation.Vector2{Y: 1},
+	}, session); got != inputStored {
+		t.Fatalf("setInput latest movement disposition=%v, want stored", got)
+	}
+
+	room.mu.Lock()
+	pending := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if pending.AttackDir != (simulation.Vector2{Y: 1}) || pending.PressedAttack || pending.PressedSkill {
+		t.Fatalf("actionless pending input=%+v, want latest aim without action", pending)
+	}
+}
+
 func TestSetInputUsesNewestPositiveActionAsWholeAction(t *testing.T) {
 	store, room, playerID, session := inputSelectionFixture(t)
 
@@ -156,10 +182,23 @@ func TestSetInputConsumesPreservedActionOnceAndDoesNotReplayAfterCooldownRejecti
 	}
 
 	if got := store.setInput(room.ID, playerID, inputMessage{
-		ClientTick: 2,
+		ClientTick:   2,
+		AttackDir:    simulation.Vector2{X: 1},
+		PressedSkill: true,
+	}, session); got != inputStored {
+		t.Fatalf("second skill disposition=%v, want stored", got)
+	}
+	if got := store.setInput(room.ID, playerID, inputMessage{
+		ClientTick: 3,
 		MoveDir:    simulation.Vector2{Y: 1},
 	}, session); got != inputStored {
 		t.Fatalf("movement disposition=%v, want stored", got)
+	}
+	room.mu.Lock()
+	pendingBeforeRejection := room.pendingInputs[playerID]
+	room.mu.Unlock()
+	if !pendingBeforeRejection.PressedSkill || pendingBeforeRejection.ClientTick != 3 {
+		t.Fatalf("pending before cooldown rejection=%+v, want preserved skill at tick 3", pendingBeforeRejection)
 	}
 	store.tickRoomState(room)
 
@@ -170,8 +209,8 @@ func TestSetInputConsumesPreservedActionOnceAndDoesNotReplayAfterCooldownRejecti
 	if processed.PressedSkill {
 		t.Fatal("cooldown-rejected preserved skill was approved again")
 	}
-	if processed.LastProcessedClientTick != 2 || processed.SkillReadyTick != first.SkillReadyTick {
-		t.Fatalf("cooldown rejection state=%+v, want ACK 2 and unchanged ready tick %d", processed, first.SkillReadyTick)
+	if processed.LastProcessedClientTick != 3 || processed.SkillReadyTick != first.SkillReadyTick {
+		t.Fatalf("cooldown rejection state=%+v, want ACK 3 and unchanged ready tick %d", processed, first.SkillReadyTick)
 	}
 	if pendingAfterRejection != 0 {
 		t.Fatalf("pending inputs after cooldown rejection=%v, want consumed", pendingAfterRejection)

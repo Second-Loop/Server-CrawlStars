@@ -1177,6 +1177,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 	}
 	if pending, ok := room.pendingInputs[playerID]; ok &&
 		input.ClientTick > 0 && pending.ClientTick > 0 &&
+		(pending.PressedAttack || pending.PressedSkill) &&
 		!input.PressedAttack && !input.PressedSkill {
 		command.AttackDir = pending.AttackDir
 		command.PressedAttack = pending.PressedAttack
