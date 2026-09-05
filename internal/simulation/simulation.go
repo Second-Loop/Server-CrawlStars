@@ -61,6 +61,7 @@ type PlayerData struct {
 	PressedSkill            bool          `json:"PressedSkill"`
 	AttackCharges           int           `json:"AttackCharges"`
 	NextAttackChargeTick    Tick          `json:"NextAttackChargeTick"`
+	AttackReadyTick         Tick          `json:"AttackReadyTick"`
 	IsDead                  bool          `json:"IsDead"`
 	SkillReadyTick          Tick          `json:"SkillReadyTick"`
 	LastProcessedClientTick int64         `json:"LastProcessedClientTick"`
@@ -251,6 +252,15 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 func (s *State) projectAttackStateToPlayers(snapshotTick Tick) {
 	for index := range s.players {
 		player := &s.players[index]
+		player.AttackReadyTick = 0
+		if burst, active := s.burstStates[player.ID]; active && !player.IsDead {
+			projectile := burst.attack.projectile
+			lastOffset := (projectile.Count - 1) * projectile.IntervalTicks
+			if len(projectile.EmissionOffsetsTicks) == projectile.Count {
+				lastOffset = projectile.EmissionOffsetsTicks[projectile.Count-1]
+			}
+			player.AttackReadyTick = burst.activationTick + Tick(lastOffset) + 1
+		}
 		state, ok := s.attackStates[player.ID]
 		if !ok {
 			continue
