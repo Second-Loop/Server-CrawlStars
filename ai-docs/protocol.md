@@ -94,7 +94,7 @@ Config artifact는 client 공유용과 server runtime용을 분리합니다.
 - `characters[].type` (`0=Shelly`, `1=Colt`, `2=Lily`)
 - `characters[].normalAttackDistance`, `characters[].skillAttackDistance` (Unity world unit)
 - `characters[].skillAttackCoolDown` (초), `characters[].maxBullets` (client charge 개수)
-- Client PR #29 병합 계약에서 Colt(type 1)는 거리 `6.0/7.0`, charge `4`이고 Lily(type 2)는 거리 `1.5/3.0`, charge `3`입니다. 순서는 `normalAttackDistance/skillAttackDistance/maxBullets`입니다.
+- 현재 SL-124 표시 계약에서 Colt(type 1)는 거리 `6.0/7.0`, charge `3`이고 Lily(type 2)는 거리 `1.5/3.0`, charge `2`예요. 거리는 Client PR #29 값을 유지하고 charge는 서버와 맞췄어요. 순서는 `normalAttackDistance/skillAttackDistance/maxBullets`예요.
 - `normalAttackCoolDown` (초)
 - `projectileRadius`
 
