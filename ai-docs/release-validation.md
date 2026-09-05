@@ -4,6 +4,8 @@
 
 `make ci`는 source marker → 공식 OpenAPI/AsyncAPI schema → docs embed build 순서를 검증하고 Go vet/test/build 및 배포 회귀를 실행해요. 동시성 검사는 `go test -race ./... -count=1`로 별도 실행해요.
 
+연결 종료 검사는 방 registry 제거와 플레이어 ID 반환을 별도로 기다려요. `releaseClient`가 방을 먼저 제거하고 함수 종료 시 ID를 반환하므로, 방이 없다는 사실만으로 전체 정리가 끝났다고 판단하지 않아요. 각 완료 조건에는 제한 시간이 있어 실제 정리 누락은 실패해요.
+
 ## 가속 용량 검사
 
 ```sh
