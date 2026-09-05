@@ -248,7 +248,7 @@ Server snapshot:
 }
 ```
 
-`ClientTick`은 optional `int64`이며 누락/`0`은 legacy input입니다. Room은 `room.mu` 아래 마지막 processed ACK와 positive pending을 비교해 더 큰 양수 command만 저장합니다. Stale/duplicate 양수는 error 없이 무시하고, legacy `0`은 last-write-wins로 positive pending도 덮을 수 있지만 ACK를 변경하지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
+`ClientTick`은 optional `int64`이며 누락/`0`은 legacy input입니다. Room은 `room.mu` 아래 마지막 processed ACK와 positive pending을 비교해 더 큰 양수 command만 저장합니다. 새 양수 movement-only input은 pending 양수 command의 action flags와 `AttackDir`을 보존하면서 최신 `MoveDir`과 `ClientTick`을 사용하고, 새 action input은 flags와 `AttackDir`을 함께 교체합니다. Stale/duplicate 양수는 error 없이 무시하고, 어느 한쪽이 legacy `0`이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 `State.Step`에서 한 번 소비되며 cooldown 거절 뒤 재생하지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
 
 `LastProcessedClientTick`은 WebSocket 수신이나 pending 저장이 아니라 `State.Step`이 실제 처리한 마지막 양수 tick입니다. Live player의 유한한 input은 충돌이나 공격 budget 때문에 visible effect가 없어도 ACK합니다. Unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다. ACK는 player별로 단조 증가하며 bot command와 bot ACK는 `0`입니다. Match 시작용 Ready ACK와 processed input ACK는 서로 다른 계약입니다.
 
@@ -378,7 +378,7 @@ Solo 중간 탈락 또는 reconnect grace expiry는 해당 session이 있으면 
 `ClientTick`과 `LastProcessedClientTick`은 입력 순서와 처리 완료를 연결합니다.
 
 - input `ClientTick > 0`: room과 simulation의 stale/duplicate guard 대상인 client sequence
-- input `ClientTick = 0` 또는 누락: 기존 last-write-wins를 유지하지만 processed input ACK를 바꾸지 않는 legacy command
+- input `ClientTick = 0` 또는 누락: 기존 last-write-wins를 유지하지만 processed input ACK를 바꾸지 않는 legacy command; 양수 pending과 결합하지 않고 command 전체를 덮어씁니다.
 - snapshot `LastProcessedClientTick`: simulation이 처리한 마지막 양수 command이며 receipt/pending ACK가 아님
 
 같은 gameplay `State.Step`의 input batch는 caller slice를 바꾸지 않고 `PlayerID` 오름차순으로 stable sort한 뒤 적용합니다. 이는 pending input map의 순회 순서와 무관하게 movement와 새 projectile 생성을 결정적으로 만드는 기준입니다.

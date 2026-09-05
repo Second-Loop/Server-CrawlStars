@@ -9,7 +9,7 @@ info:
     duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
     같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` control snapshot을 보낸 다음 gameplay snapshot을 broadcast합니다.
     Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며, `now >= deadline`이면 attach를 거부하고 pre-start room 전체와 credential을 폐기합니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready ACK timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
-    Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다.
+    Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 AttackDir을 보존하면서 최신 MoveDir과 ClientTick을 사용합니다. 새 PressedAttack 또는 PressedSkill action input은 flags와 AttackDir을 함께 교체하며, 어느 한쪽 ClientTick이 legacy 0이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 State.Step에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다.
     `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
     Human의 REST 선택값과 bot의 server-owned CharacterType은 Ready와 gameplay Snapshot까지 같은 canonical 값으로 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Bot은 Shelly/Colt/Lily를 각 bot마다 균등·독립적으로 선택하고 같은 room의 중복을 허용하며 participant 생성 뒤 match 동안 고정합니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
     일반 공격과 typed skill config는 server config v6가 소유합니다. 캐릭터별 cooldown tick은 Shelly/Colt/Lily 순서로 360/390/330입니다. Shelly는 normal attack activation tick에 5발을 동시에 만들고, Colt 일반 공격은 activation tick A부터 exact offset [0,3,6,9,12,15]로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다.
@@ -444,7 +444,7 @@ components:
       description: |
         Human WebSocket gameplay input입니다. `Type` field를 넣지 않습니다. Optional `ClientTick`은 누락 또는 0일 때 legacy input이며, bot command는 같은 InputCommand shape를 server 내부 controller가 ClientTick 0으로 만들고 WebSocket sender가 아닙니다.
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
-        양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. Legacy 0은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 ACK를 바꾸지 않습니다. 음수는 `invalid_input`입니다.
+        양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 AttackDir을 보존하면서 최신 MoveDir과 ClientTick을 사용하고, 새 action input은 flags와 AttackDir을 함께 교체합니다. 어느 한쪽 ClientTick이 legacy 0이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 State.Step에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다. 음수는 `invalid_input`입니다.
         유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
         Player의 server-only attack charge는 Shelly/Colt/Lily 순서로 3/3/2이며 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
         Optional `PressedSkill`은 누락하면 false입니다. Present null이나 boolean이 아닌 값은 `invalid_input`이며 기존 pending input을 바꾸지 않습니다. `PressedSkill: true`는 command마다 독립적인 활성화 시도이고 같은 command의 `AttackDir`을 재사용하지만 방향만으로 skill을 시도하지 않습니다. Cooldown 동안의 시도는 queue하지 않습니다.
@@ -454,7 +454,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Player가 보낸 optional input sequence입니다. 누락 또는 0은 legacy last-write-wins이고 ACK를 변경하지 않습니다.
+          description: Player가 보낸 optional input sequence입니다. 누락 또는 0은 legacy last-write-wins이고 ACK를 변경하지 않습니다. 양수 movement-only 갱신은 pending 양수 action flags와 AttackDir을 보존하며 최신 MoveDir과 ClientTick을 사용합니다.
         MoveDir:
           $ref: "#/components/schemas/Vector2"
         AttackDir:

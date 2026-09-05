@@ -329,7 +329,7 @@ Client input:
 }
 ```
 
-`ClientTick`은 optional `int64`이고 `0` 이상입니다. 누락하거나 `0`을 보내면 legacy input으로 처리합니다. 양수 tick은 해당 player의 마지막 processed input ACK와 현재 positive pending tick보다 클 때만 command 전체를 저장합니다. 이미 처리했거나 더 높은 pending이 있는 stale/duplicate 양수 tick은 error frame 없이 조용히 무시합니다. Legacy `0`은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 `LastProcessedClientTick`은 바꾸지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
+`ClientTick`은 optional `int64`이고 `0` 이상입니다. 누락하거나 `0`을 보내면 legacy input으로 처리합니다. 양수 tick은 해당 player의 마지막 processed input ACK와 현재 positive pending tick보다 클 때만 저장합니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 `AttackDir`을 보존하면서 최신 `MoveDir`과 `ClientTick`을 사용하고, 새 `PressedAttack` 또는 `PressedSkill` action input은 flags와 `AttackDir`을 함께 교체합니다. 이미 처리했거나 더 높은 pending이 있는 stale/duplicate 양수 tick은 error frame 없이 조용히 무시합니다. 어느 한쪽이 legacy `0`이면 기존 last-write-wins로 command 전체를 덮어쓰며 `LastProcessedClientTick`은 바꾸지 않습니다. Pending command는 다음 `State.Step`에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다. 음수는 `invalid_input`이고 기존 pending을 보존합니다.
 
 서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Shelly/Colt/Lily는 server-only `3/3/2` attack charge로 시작하고 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. `PressedAttack: true`여도 player가 사망했거나 방향이 zero이거나 charge가 소진됐으면 공격을 거부합니다. Live player의 유한한 양수 input은 Wall 충돌, zero attack 방향, charge 소진처럼 눈에 보이는 효과가 없어도 처리한 것으로 ACK합니다. Unknown/dead player, non-finite, 음수, stale/duplicate input은 ACK하지 않습니다.
 

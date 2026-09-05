@@ -1167,7 +1167,7 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 		return inputIgnored
 	}
 	room.lastActivityAt = s.clock.Now()
-	room.pendingInputs[playerID] = simulation.InputCommand{
+	command := simulation.InputCommand{
 		PlayerID:      simulation.PlayerID(playerID),
 		ClientTick:    input.ClientTick,
 		MoveDir:       input.MoveDir,
@@ -1175,6 +1175,14 @@ func (s *Store) setInput(roomID string, playerID string, input inputMessage, exp
 		PressedAttack: input.PressedAttack,
 		PressedSkill:  input.PressedSkill,
 	}
+	if pending, ok := room.pendingInputs[playerID]; ok &&
+		input.ClientTick > 0 && pending.ClientTick > 0 &&
+		!input.PressedAttack && !input.PressedSkill {
+		command.AttackDir = pending.AttackDir
+		command.PressedAttack = pending.PressedAttack
+		command.PressedSkill = pending.PressedSkill
+	}
+	room.pendingInputs[playerID] = command
 	return inputStored
 }
 

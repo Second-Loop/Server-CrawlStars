@@ -1041,3 +1041,21 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 - 모든 public matchmaking mode가 같은 validation table과 error contract를 사용합니다.
 - 지원 ID는 join response, canonical participant, Ready와 gameplay Snapshot까지 기존처럼 보존됩니다.
 - OpenAPI request body와 `MatchmakingJoinRequest.characterType`이 required이고 사람이 읽는 문서도 같은 경계를 설명합니다.
+
+## ADR-0054: SL-123 양수 pending input은 최신 이동과 최신 액션을 함께 보존한다
+
+상태: 승인됨
+
+맥락: Client가 한 gameplay tick 전에 action input을 보내고 이어 movement-only input을 보내면 room의 단순 last-write-wins 저장이 action flags와 조준을 지웠습니다. 그 결과 이동은 최신 값이어도 공격 또는 스킬 요청이 같은 tick에 도달하지 않았습니다.
+
+결정:
+
+- Room은 stale/duplicate 검사를 먼저 수행한 뒤, 기존 pending과 새 input이 모두 양수 `ClientTick`이고 새 input에 `PressedAttack`과 `PressedSkill`이 모두 `false`이면 기존 pending의 두 action flag와 `AttackDir`을 새 command에 복사합니다. `MoveDir`과 `ClientTick`은 새 input을 사용합니다.
+- 새 양수 input에 action flag가 하나라도 있으면 기존 action 전체를 버리고 새 flags와 `AttackDir`을 함께 사용합니다. 따라서 여러 action 중 마지막 action이 승리합니다.
+- 기존 pending 또는 새 input 중 어느 하나가 legacy `ClientTick: 0`이면 legacy last-write-wins 전체 덮어쓰기를 유지합니다. Stale/duplicate 양수는 기존 pending을 변경하지 않습니다.
+- Pending command는 다음 `State.Step`에 한 번 전달한 뒤 삭제합니다. 공격·스킬 cooldown 거절은 미래 입력 queue나 재생을 만들지 않으며 disconnect 시 pending도 폐기합니다.
+
+결과:
+
+- Tick 전 빠르게 연속된 movement input이 이미 입력된 공격·스킬 action과 조준을 지우지 않습니다.
+- 최신 movement/ACK와 최신 action/aim의 경계가 분리되고, legacy client와 stale/duplicate 방어 동작은 유지됩니다.
