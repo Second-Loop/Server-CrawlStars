@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check docs-install docs-validate docs-schema docs-build vet test build deploy-test deploy-check ci
+.PHONY: fmt fmt-check docs-install docs-validate docs-schema docs-build vet vuln-check test build deploy-test deploy-check ci
 
 GO ?= go
 GOFMT ?= gofmt
@@ -40,6 +40,9 @@ docs-build: docs-schema
 vet:
 	$(GO_ENV) $(GO_CMD) vet ./...
 
+vuln-check: docs-build
+	$(GO_ENV) $(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
 test:
 	$(GO_ENV) $(GO_CMD) test ./...
 
@@ -52,4 +55,4 @@ deploy-test:
 deploy-check: deploy-test
 	bash -n scripts/deploy/*.sh
 
-ci: docs-install docs-build fmt-check vet test build deploy-check
+ci: docs-install docs-build fmt-check vet vuln-check test build deploy-check
