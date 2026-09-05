@@ -28,6 +28,7 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 - `/matchmaking/join` IP별 token-bucket rate limit
 - matchmaking Ready event/ready ACK/countdown/start
 - sessionless server-owned bot participant와 human-only Ready quorum
+- Loading 진입부터 strict 30초 human Ready ACK deadline과 pre-start 전체 취소
 - 첫 human join 기준 10초 bot fill, timer/human join first-lock-wins, failure rollback/no-retry
 - optional `ClientTick`, stale/duplicate positive input silent drop, legacy zero compatibility
 - gameplay snapshot의 player별 monotonic `LastProcessedClientTick` processed input ACK
@@ -40,7 +41,6 @@ Phase E2: E1 server-authoritative core loop 위에 client-server integration sur
 아직 issue 없이 추가하지 않는 범위:
 
 - production matchmaking
-- ready timeout
 - bot replacement, reconnect grace
 - respawn, score
 - persistence, database, account auth

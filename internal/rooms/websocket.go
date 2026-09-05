@@ -1198,37 +1198,73 @@ func lastProcessedClientTick(players []simulation.PlayerData, playerID simulatio
 
 func (s *Store) markClientReady(roomID string, playerID string, expectedSession *clientSession) {
 	var deliveries []webSocketDelivery
+	var resources roomResources
+	var playerIDs []string
+	var clientTransitions []clientObservationTransition
+	var activeTransition observationTransition
+	removed := false
 
 	if !s.beginMutation() {
 		return
 	}
 	defer s.endMutation()
+	defer func() {
+		if removed {
+			s.releasePlayerIDs(playerIDs)
+			resources.closeWithCause(defaultMatchCancelMsg, websocketCloseCausePrestartCancel)
+			return
+		}
+		resources.stop()
+	}()
 
-	room := s.lookupRoom(roomID)
+	s.mu.Lock()
+	room := s.rooms[roomID]
 	if room == nil {
+		s.mu.Unlock()
 		return
 	}
 	room.mu.Lock()
 	if room.removed || !room.hasPlayer(playerID) || !room.hasPreStartMatch() || expectedSession == nil || room.clients[playerID] != expectedSession {
 		room.mu.Unlock()
+		s.mu.Unlock()
+		return
+	}
+	now := s.clock.Now()
+	if room.readyDeadlineExpiredLocked(now, room.readyDeadlineTicker) {
+		playerIDs, clientTransitions, activeTransition, removed = s.detachExpiredReadyDeadlineLocked(room, room.readyDeadlineTicker, now, &resources)
+		room.mu.Unlock()
+		s.mu.Unlock()
+		if removed {
+			s.publishDisconnectedClients(clientTransitions)
+			s.observation.publish(activeTransition)
+			s.logMatchmakingTransition(room.ID, "cancelled", "ready_deadline_expired")
+		}
 		return
 	}
 	if room.readyPlayers == nil {
 		room.readyPlayers = make(map[string]bool)
 	}
 	room.readyPlayers[playerID] = true
-	room.lastActivityAt = s.clock.Now()
+	room.lastActivityAt = now
 	if room.matchStatus == MatchStatusLoading && room.allMatchPlayersReady() {
-		s.startMatchCountdownLocked(room)
+		s.startMatchCountdownWithResourcesLocked(room, &resources)
 		deliveries = append(deliveries, room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...)
 	}
 	deliveryFailures := tryEnqueueWebSocketDeliveries(deliveries)
 	room.mu.Unlock()
+	s.mu.Unlock()
 
 	closeWebSocketDeliveryFailures(deliveryFailures, "control delivery failed")
 }
 
 func (s *Store) startMatchCountdownLocked(room *room) {
+	s.startMatchCountdownWithResourcesLocked(room, nil)
+}
+
+func (s *Store) startMatchCountdownWithResourcesLocked(room *room, resources *roomResources) {
+	if resources != nil {
+		resources.detachReadyDeadlineLocked(room)
+	}
 	room.matchStatus = MatchStatusStarting
 	room.countdown = matchCountdownSeconds
 	countdownTicker := s.clock.NewTicker(time.Second)
@@ -1549,11 +1585,13 @@ func (s *Store) advanceMatchLoadingLocked(room *room, resources *roomResources) 
 	}
 	deliveries := room.readyEventDeliveries()
 	if room.allMatchPlayersReady() {
-		s.startMatchCountdownLocked(room)
+		s.startMatchCountdownWithResourcesLocked(room, resources)
 		deliveries = append(
 			deliveries,
 			room.matchSnapshotDeliveries(MatchStatusStarting, room.countdown)...,
 		)
+	} else if resources != nil {
+		resources.merge(s.armReadyDeadlineLocked(room))
 	}
 	return deliveries, true
 }

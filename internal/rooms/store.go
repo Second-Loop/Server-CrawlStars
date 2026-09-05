@@ -17,6 +17,7 @@ import (
 )
 
 const matchedAttachDeadline = 30 * time.Second
+const loadingReadyDeadline = 30 * time.Second
 
 // Store owns registry and store-lifecycle synchronization only.
 //
@@ -122,6 +123,9 @@ type room struct {
 	matchAttachTicker        ticker
 	matchAttachStop          chan struct{}
 	matchAttachDeadlineAt    time.Time
+	readyDeadlineTicker      ticker
+	readyDeadlineStop        chan struct{}
+	readyDeadlineAt          time.Time
 }
 
 type simulationStepper interface {
@@ -1082,6 +1086,7 @@ func (s *Store) startRoom(roomID string) (roomResponse, error) {
 
 	resources.detachBotFillLocked(room)
 	resources.detachMatchedAttachDeadlineLocked(room)
+	resources.detachReadyDeadlineLocked(room)
 	started := s.startRoomLocked(room)
 	response := room.toResponse(s.gameMap)
 	room.mu.Unlock()
@@ -1106,7 +1111,7 @@ func (s *Store) logMatchmakingTransition(roomID string, state string, cause stri
 		"matched":            {"human_join": true, "bot_fill": true, "manual_bot_add": true},
 		"waiting_for_attach": {"attach_deadline_armed": true},
 		"loading":            {"all_humans_attached": true},
-		"cancelled":          {"attach_deadline_expired": true, "prestart_disconnect": true},
+		"cancelled":          {"attach_deadline_expired": true, "ready_deadline_expired": true, "prestart_disconnect": true},
 	}
 	causes, ok := valid[state]
 	if !ok || !causes[cause] {

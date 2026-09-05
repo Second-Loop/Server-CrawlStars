@@ -8,7 +8,7 @@ info:
     Matchmaking room은 selected mode의 full participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 `Type: Ready` 이벤트를 human session에 전달합니다. Ready payload는 full participant list를 포함하므로 human과 server-owned bot의 team/slot/spawn을 함께 보여 줍니다.
     duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
     같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` control snapshot을 보낸 다음 gameplay snapshot을 broadcast합니다.
-    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며, `now >= deadline`이면 attach를 거부하고 pre-start room 전체와 credential을 폐기합니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready ACK timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
+    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며 별도의 strict 30초 room-owned Ready ACK deadline을 시작합니다. `now >= deadline`이면 attach 또는 Ready ACK를 거부하고 pre-start room 전체와 credential을 폐기합니다. Ready worker가 늦게 실행돼도 exact/late ACK로 Starting을 시작하지 않습니다. 모든 human ACK가 경계 전에 모이면 Ready deadline을 해제하고 Starting으로 한 번만 전이하며 bot ACK는 필요하지 않습니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Pre-start reconnect grace와 participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
     Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 AttackDir을 보존하면서 최신 MoveDir과 ClientTick을 사용합니다. 새 PressedAttack 또는 PressedSkill action input은 flags와 AttackDir을 함께 교체하며, 어느 한쪽 ClientTick이 legacy 0이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 State.Step에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다.
     `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
     Human의 REST 선택값과 bot의 server-owned CharacterType은 Ready와 gameplay Snapshot까지 같은 canonical 값으로 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Bot은 Shelly/Colt/Lily를 각 bot마다 균등·독립적으로 선택하고 같은 room의 중복을 허용하며 participant 생성 뒤 match 동안 고정합니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
@@ -101,7 +101,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Send ready ACK
-    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Bot은 ACK를 보내지 않습니다. 같은 human player의 중복 ready ACK는 idempotent하므로 Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다.
+    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Loading 진입부터 strict 30초 안에 모든 human ACK가 모여야 하며 exact boundary의 ACK는 실패합니다. Bot은 ACK를 보내지 않습니다. 같은 human player의 중복 ready ACK는 idempotent하므로 Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyAck"
   receiveSnapshot:
@@ -492,7 +492,8 @@ components:
       required: [Type]
       description: >-
         각 human player의 `Type: Ready` 렌더 준비가 끝난 뒤 해당 player의
-        WebSocket session에서 한 번 이상 보내는 idempotent ACK입니다.
+        WebSocket session에서 한 번 이상 보내는 idempotent ACK입니다. Loading 진입부터
+        strict 30초 경계 전에 모든 human ACK가 모여야 Starting으로 전이합니다.
       properties:
         Type:
           type: string

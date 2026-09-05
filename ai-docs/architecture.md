@@ -332,6 +332,7 @@ Room store는 in-memory라 TTL이 중요합니다.
 - matchmaking matched/loading/starting 단계의 WebSocket close는 match cancel로 room과 남은 connection을 정리합니다.
 - Unmatched human disconnect는 bot-fill deadline과 credential을 유지합니다. matched/loading/starting disconnect는 기존 pre-start cancel로 bot-fill resource도 함께 회수합니다.
 - Matched attach deadline expiry는 room 전체, 남은 connection, player ID와 credential을 회수하고 `matchmaking_transition`의 bounded `cancelled/attach_deadline_expired` cause를 남깁니다. Secret/query/raw error는 기록하지 않습니다.
+- Loading Ready deadline expiry도 room 전체, 남은 connection, player ID와 credential을 같은 pre-start cancel 경로로 회수하고 bounded `cancelled/ready_deadline_expired` cause를 남깁니다. ACK와 timer worker는 `Store.mu -> room.mu` 순서에서 absolute deadline과 ticker identity를 확인해 한 transition만 소유합니다.
 - Solo 중간 탈락은 해당 session만 terminal close하고 room과 ticker를 유지합니다.
 - Room terminal decision은 `ending`을 예약하고 ticker를 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 이 상태에서는 새 mutation과 추가 tick을 받지 않습니다.
 - 각 terminal session의 connected-client observer는 session close callback에서 반영되어 transport `closeDone`보다 먼저일 수 있습니다. Normal GameEnd cleanup은 current terminal session, 앞서 결과가 확정되어 기억한 session, reconnect 전에 current map에서 빠졌지만 transport close가 끝나지 않은 historical session generation의 `closeDone`을 모두 기다립니다. Solo prior loser와 ordinary reconnect predecessor 모두 room-owned barrier에 남으며, lifecycle monitor가 각 `closeDone` 뒤 제거합니다. 그 뒤 room registry, active-room observer, player ID, `room_ended` log, 남은 resources를 정리합니다. Cleanup success signal은 모든 정상 작업이 성공한 마지막에만 닫습니다.
