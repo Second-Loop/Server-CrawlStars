@@ -1256,14 +1256,13 @@ function validateBotBehaviorDocumentation() {
       "AsyncAPI info version `0.7.0`",
       "only an approved snapshot with `PressedAttack: true` updates cadence",
     ]],
-    [projectMapText, "project map", "## SL-116 문서 전달과 현재 검증 경계", [
+    [projectMapText, "project map", "## 봇 구현과 문서 버전", [
       "server config v5",
-      "local delivery/validation",
-      "PR/merge/Done claim",
+      "현재 코드에 포함",
       "room-owned controller state",
       "one PlayerID-sorted merged State.Step",
-      "Client config v3",
-      "AsyncAPI info version `0.7.0`",
+      "client config v3",
+      "AsyncAPI info `0.8.0`",
     ]],
     [decisionsText, "decisions", "## ADR-0047: SL-116 결정적 Bot controller와 server config v5", [
       "room-owned controller state",

@@ -10,11 +10,11 @@
 
 SL-99 client config v3 catalog는 stable `type` `0=Shelly`, `1=Colt`, `2=Lily`와 UI/로컬 bot 입력 보조값을 제공하고 server HP는 `4000/3100/4100`입니다. Join의 lower-camel `characterType`은 required이며 누락값 fallback이 없습니다. Canonical participant가 Ready/Snapshot의 PascalCase `CharacterType`까지 값을 보존합니다. 일반 공격과 typed skill config는 server config v6와 production `State.Step`이 소유합니다. AsyncAPI는 `0.8.0`이고 SL-99 client config v3 artifact는 변경하지 않습니다.
 
-## SL-116 문서 전달과 현재 검증 경계
+## 봇 구현과 문서 버전
 
-이 체크아웃의 SL-116 문서 작업은 local delivery/validation 범위입니다. 이 문서는 PR/merge/Done claim을 하지 않으며, Linear와 GitHub의 실제 상태를 대신하지 않습니다.
+SL-116과 SL-121 봇 구현은 현재 코드에 포함되어 있어요. 작업 상태와 검증 증거는 Linear와 GitHub에서 별도로 확인해요.
 
-SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`입니다. Room은 `room-owned controller state`와 cadence를 보유하고, 모든 bot이 같은 이전 snapshot을 읽어 `one PlayerID-sorted merged State.Step`을 한 tick에 한 번 실행합니다. SL-121은 first-step tile cache, 회전 전 tile-axis centering, 결정적 player 우회로 production Map_0의 영구 정지를 막습니다. Client config v3, public REST/OpenAPI/AsyncAPI field/event shape는 그대로이고 AsyncAPI info version `0.7.0`도 유지합니다. 세부 priority, A*, projectile dodge, explore seed와 실패 규칙은 `ai-docs/architecture.md`와 `ai-docs/protocol.md`를 기준으로 합니다.
+SL-116의 `server config v5`는 server-only bot tuning을 담습니다. 값은 detection `15`, explore arrival `0.25`, retreat ratio `0.2`, retreat distance `6`, projectile look-ahead `8`, dodge margin `0.35`입니다. Room은 `room-owned controller state`와 cadence를 보유하고, 모든 bot이 같은 이전 snapshot을 읽어 `one PlayerID-sorted merged State.Step`을 한 tick에 한 번 실행합니다. SL-121은 first-step tile cache, 회전 전 tile-axis centering, 결정적 player 우회로 production Map_0의 영구 정지를 막습니다. SL-116 당시 bot 변경은 public 계약을 유지했어요. 현재 통합 버전은 server config v6, client config v3, AsyncAPI info `0.8.0`이에요. 세부 priority, A*, projectile dodge, explore seed와 실패 규칙은 `ai-docs/architecture.md`와 `ai-docs/protocol.md`를 기준으로 합니다.
 
 되는 것:
 
