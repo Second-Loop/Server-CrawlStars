@@ -1059,3 +1059,14 @@ Attack charge 설정과 진행도는 server-only입니다. `client-config/game-c
 
 - Tick 전 빠르게 연속된 movement input이 이미 입력된 공격·스킬 action과 조준을 지우지 않습니다.
 - 최신 movement/ACK와 최신 action/aim의 경계가 분리되고, legacy client와 stale/duplicate 방어 동작은 유지됩니다.
+
+
+## ADR-0055: SL-123은 대시를 9 tick으로 나누고 공개 잠금 상태를 제공해요
+
+상태: 승인됨. 아래 결정이 ADR-0049~0052의 거리, 피해, 스킬 발사 수와 순간 대시 실행 순서를 대체해요. 나머지 충돌·피해·발사 순서 계약은 유지해요.
+
+- Server config v7은 Shelly 일반 피해 `252`, 대시 `2.7 tile`/`dashDurationTicks: 9`, Colt 스킬 range `9.35 tile`/10발, Lily 일반 피해 `1210`/스킬 range `12.48 tile`을 사용해요.
+- Shelly 승인은 일반 이동 전에 방향과 구간 거리, 남은 tick을 저장하고 탄약과 cooldown을 한 번 갱신해요. 승인 `A`부터 `A+8`까지 매 tick swept collision을 적용해요. 입력이 없어도 계속 이동하고 Wall/Water/boundary/live player 접촉이나 사망으로 끝나요.
+- 매 구간에 일반 이동·공격을 차단하되 processed ACK는 유지해요. `IsDashing`과 `AttackReadyTick=A+9`를 공개하고 마지막 구간, 충돌, 사망 snapshot에서 `false/0`으로 해제해요. 다음 Step부터 일반 공격을 허용해요.
+- Colt 스킬은 `S+[0,2,4,6,7,9,11,13,14,16]`의 10발이며 `S+17`부터 일반 공격을 허용해요. 승인 tick 1의 ready는 18이에요. scheduled-before-activation phase와 emission tick 현재 위치, 고정 방향을 유지하고 사망은 미래 emission을 취소해요. Goroutine, timer를 추가하지 않아요.
+- AsyncAPI info `0.10.0`에 `IsDashing`을 추가해요. REST OpenAPI와 Client config v3 거리 보조값 `1/7/3`은 유지해요. 클라이언트 화면의 거리·위치 수용 검증은 별도로 남아요.

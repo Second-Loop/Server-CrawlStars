@@ -25,6 +25,7 @@ type skillDashCandidate struct {
 	direction   Vector2
 	distance    float64
 	radius      float64
+	collided    bool
 	active      bool
 }
 
@@ -33,9 +34,10 @@ type skillDashContact struct {
 	participants []int
 }
 
-func (s *State) applySkillDashes(intents []skillDashIntent) {
+func (s *State) applySkillDashes(intents []skillDashIntent) map[PlayerID]bool {
+	collisions := make(map[PlayerID]bool, len(intents))
 	if len(intents) == 0 {
-		return
+		return collisions
 	}
 	sort.SliceStable(intents, func(i, j int) bool {
 		return s.players[intents[i].playerIndex].ID < s.players[intents[j].playerIndex].ID
@@ -65,7 +67,7 @@ func (s *State) applySkillDashes(intents []skillDashIntent) {
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
-		return
+		return collisions
 	}
 
 	currentTime := 0.0
@@ -161,6 +163,7 @@ func (s *State) applySkillDashes(intents []skillDashIntent) {
 			travel := math.Max(candidates[index].distance*earliest-dashCollisionEpsilon, 0)
 			candidates[index].position = addScaled(candidates[index].origin, candidates[index].direction, travel)
 			candidates[index].active = false
+			candidates[index].collided = true
 		}
 		currentTime = math.Max(currentTime, earliest)
 	}
@@ -170,7 +173,9 @@ func (s *State) applySkillDashes(intents []skillDashIntent) {
 			candidate.position = candidate.target
 		}
 		s.players[candidate.playerIndex].Pos = candidate.position
+		collisions[candidate.playerID] = candidate.collided
 	}
+	return collisions
 }
 
 func dashPositionAt(candidate skillDashCandidate, time float64) Vector2 {

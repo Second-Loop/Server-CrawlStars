@@ -110,8 +110,8 @@ function renderAsyncAPI(specText) {
             <h3>Snapshot coalescing</h3>
             <p>일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 <code>PressedSkill: true</code>이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다.</p>
             <p>multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 <code>approval -&gt; latest</code> 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 <code>terminal snapshot -&gt; GameEnd -&gt; close</code> 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다.</p>
-            <p>queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.</p>
-            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.</p>
+            <p>queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.</p>
+            <p>Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v7 경계를 유지합니다.</p>
           </article>
           <article>
             <h3>Reliable control</h3>
@@ -161,7 +161,8 @@ function renderAsyncAPI(specText) {
           </article>
           <article>
             <h3>Snapshot</h3>
-            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity입니다. <code>Players[].PressedSkill</code>은 transient approval pulse이고 <code>Players[].SkillReadyTick</code>은 persistent canonical absolute tick입니다. <code>Players[].AttackCharges</code>는 현재 일반 공격 charge, <code>Players[].NextAttackChargeTick</code>은 다음 charge 복구 absolute tick이며 max charge에서는 0입니다. <code>Snapshot.Tick &gt;= SkillReadyTick</code>이면 ready이며 승인 tick A에는 <code>A + C</code>를 기록해 exact <code>A + C</code>도 허용합니다. Colt skill은 <code>S+[0,2,4,6,7,9,11,13,14,16,18,20]</code>에 <code>Projectiles[].Type: colt_skill</code> 12발을 생성하고 마지막 발 tick까지 일반 공격을 잠급니다. Lily skill은 damage 400, range 10.4 tile의 <code>Projectiles[].Type: lily_seed</code>를 생성하고 적중 피해 뒤 살아 있는 Lily를 피격 전 target 위치 기준 seed 방향 뒤 1 tile로 이동합니다. 막히면 같은 ray의 최대 유효 지점으로 backoff하고 owner 사망이나 유효 지점 부재에는 피해만 유지합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
+            <p>Shelly 대시는 2.7 tile을 9 tick 동안 고정 방향으로 이동해요. <code>Players[].IsDashing</code>과 <code>Players[].AttackReadyTick</code>은 일반 이동·공격 잠금을 보여 줘요. 마지막 구간·충돌·사망 snapshot에서는 false/0으로 해제해요. Colt skill 승인 tick 1의 ready는 18이에요.</p>
+            <p><code>Snapshot.status</code>는 lowercase이고, gameplay field인 <code>Tick</code>, <code>Players</code>, <code>Projectiles</code>는 기존 PascalCase를 유지합니다. gameplay <code>Players[].CharacterType</code>은 Ready와 같은 required identity입니다. <code>Players[].PressedSkill</code>은 transient approval pulse이고 <code>Players[].SkillReadyTick</code>은 persistent canonical absolute tick입니다. <code>Players[].AttackCharges</code>는 현재 일반 공격 charge, <code>Players[].NextAttackChargeTick</code>은 다음 charge 복구 absolute tick이며 max charge에서는 0입니다. <code>Snapshot.Tick &gt;= SkillReadyTick</code>이면 ready이며 승인 tick A에는 <code>A + C</code>를 기록해 exact <code>A + C</code>도 허용합니다. Colt skill은 <code>S+[0,2,4,6,7,9,11,13,14,16]</code>에 <code>Projectiles[].Type: colt_skill</code> 10발을 생성하고 마지막 발 tick까지 일반 공격을 잠급니다. Lily skill은 damage 400, range 12.48 tile의 <code>Projectiles[].Type: lily_seed</code>를 생성하고 적중 피해 뒤 살아 있는 Lily를 피격 전 target 위치 기준 seed 방향 뒤 1 tile로 이동합니다. 막히면 같은 ray의 최대 유효 지점으로 backoff하고 owner 사망이나 유효 지점 부재에는 피해만 유지합니다. <code>Players[].LastProcessedClientTick</code>은 수신 시점이 아니라 simulation step에서 실제 처리한 마지막 양수 tick이며 player별로 감소하지 않습니다.</p>
           </article>
           <article>
             <h3>Error</h3>
@@ -260,6 +261,8 @@ function renderAsyncAPI(specText) {
         "SkillReadyTick": 361,
         "AttackCharges": 3,
         "NextAttackChargeTick": 0,
+        "AttackReadyTick": 10,
+        "IsDashing": true,
         "IsDead": false,
         "LastProcessedClientTick": 12
       },
@@ -280,6 +283,8 @@ function renderAsyncAPI(specText) {
         "SkillReadyTick": 0,
         "AttackCharges": 2,
         "NextAttackChargeTick": 31,
+        "AttackReadyTick": 0,
+        "IsDashing": false,
         "IsDead": false,
         "LastProcessedClientTick": 0
       }
@@ -291,7 +296,7 @@ function renderAsyncAPI(specText) {
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9781476007338057, "y": 0.20791169081775931 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -302,7 +307,7 @@ function renderAsyncAPI(specText) {
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9945218953682733, "y": 0.10452846326765346 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -313,7 +318,7 @@ function renderAsyncAPI(specText) {
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -1, "y": 0 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -324,7 +329,7 @@ function renderAsyncAPI(specText) {
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9945218953682733, "y": -0.10452846326765346 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -335,7 +340,7 @@ function renderAsyncAPI(specText) {
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9781476007338057, "y": -0.20791169081775931 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false

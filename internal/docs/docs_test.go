@@ -88,9 +88,10 @@ func TestHandlerServesBotIdentityContracts(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.9.0",
+		"version: 0.10.0",
+		"IsDashing:",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
-		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDead, LastProcessedClientTick]",
+		"required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDashing, IsDead, LastProcessedClientTick]",
 		"IsBot: false",
 		"IsBot: true",
 	} {
@@ -118,7 +119,7 @@ func TestHandlerServesCharacterTypeContract(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.9.0",
+		"version: 0.10.0",
 		"required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
 		"CharacterType: 0",
 		"CharacterType: 1",
@@ -138,7 +139,7 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 	asyncAPI := request(handler, http.MethodGet, "/asyncapi.yaml")
 	assertStatus(t, asyncAPI, http.StatusOK)
 	for _, marker := range []string{
-		"version: 0.9.0",
+		"version: 0.10.0",
 		"PressedSkill:",
 		"SkillReadyTick:",
 		"AttackCharges:",
@@ -160,13 +161,13 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
 		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
-		"AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.",
 		"Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.",
 		"현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.",
-		"S+[0,2,4,6,7,9,11,13,14,16,18,20]",
-		"damage 320, range 11 tile, speed 13 world/s, radius 0.3, type colt_skill",
-		"damage 400, range 10.4 tile, speed 13 world/s, radius 0.3, type lily_seed",
-		"Client config v3/server config v6 경계를 유지합니다.",
+		"S+[0,2,4,6,7,9,11,13,14,16]",
+		"damage 320, range 9.35 tile, speed 13 world/s, radius 0.3, type colt_skill",
+		"damage 400, range 12.48 tile, speed 13 world/s, radius 0.3, type lily_seed",
+		"Client config v3/server config v7 경계를 유지합니다.",
 	} {
 		assertBodyContains(t, asyncAPI, marker)
 	}
@@ -208,10 +209,10 @@ func TestHandlerServesSkillCooldownContract(t *testing.T) {
 		"무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.",
 		"PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.",
 		"새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.",
-		"AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.",
+		"AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.",
 		"Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.",
 		"현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다.",
-		"Client config v3/server config v6 경계를 유지합니다.",
+		"Client config v3/server config v7 경계를 유지합니다.",
 	} {
 		assertStringContains(t, coalescingArticle, marker)
 	}
@@ -304,7 +305,7 @@ func TestHandlerServesClientTickACKContract(t *testing.T) {
 	asyncAPIText := asyncAPI.Body.String()
 
 	info := extractYAMLNamedBlock(t, asyncAPIText, "info:")
-	assertStringContains(t, info, "  version: 0.9.0")
+	assertStringContains(t, info, "  version: 0.10.0")
 
 	components := extractYAMLNamedBlock(t, asyncAPIText, "components:")
 	schemas := extractYAMLNamedBlock(t, components, "  schemas:")

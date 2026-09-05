@@ -4891,6 +4891,7 @@ func TestWebSocketUsesClientCompatibleMessageFieldNames(t *testing.T) {
 		`"AttackDir":{"x":0,"y":1}`,
 		`"PressedAttack":true`,
 		`"HP":4000`,
+		`"IsDashing":false`,
 		`"IsDead":false`,
 		`"OwnerId":"` + player.ID + `"`,
 		`"Dir":{"x":0,"y":1}`,
@@ -5098,9 +5099,9 @@ func TestWebSocketLilyCharacterAttackReachesGameEndDraw(t *testing.T) {
 	baseline := tickAndReadMatchingSnapshots(t, fakeClock, redConn, blueConn)
 	redBefore := findSnapshotPlayer(t, baseline.Snapshot, simulation.PlayerID(red.Player.ID))
 	blueBefore := findSnapshotPlayer(t, baseline.Snapshot, simulation.PlayerID(blue.Player.ID))
-	if redBefore.CharacterType != simulation.CharacterTypeLily || redBefore.HP != 1100 || redBefore.IsDead ||
-		blueBefore.CharacterType != simulation.CharacterTypeLily || blueBefore.HP != 1100 || blueBefore.IsDead {
-		t.Fatalf("expected two live 1100-HP Lily players before attack, red=%+v blue=%+v", redBefore, blueBefore)
+	if redBefore.CharacterType != simulation.CharacterTypeLily || redBefore.HP != 1210 || redBefore.IsDead ||
+		blueBefore.CharacterType != simulation.CharacterTypeLily || blueBefore.HP != 1210 || blueBefore.IsDead {
+		t.Fatalf("expected two live 1210-HP Lily players before attack, red=%+v blue=%+v", redBefore, blueBefore)
 	}
 	distance := math.Hypot(redBefore.Pos.X-blueBefore.Pos.X, redBefore.Pos.Y-blueBefore.Pos.Y)
 	if distance > 2.2*simulation.TileSize {

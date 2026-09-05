@@ -14,8 +14,8 @@ func TestShellySkillReloadsAndDashesExactConfiguredDistance(t *testing.T) {
 		direction Vector2
 		want      Vector2
 	}{
-		{name: "axis", direction: Vector2{X: 1}, want: Vector2{X: 6.48}},
-		{name: "diagonal", direction: Vector2{X: 1, Y: 1}, want: Vector2{X: 6.48 / math.Sqrt2, Y: 6.48 / math.Sqrt2}},
+		{name: "axis", direction: Vector2{X: 1}, want: Vector2{X: 3.24}},
+		{name: "diagonal", direction: Vector2{X: 1, Y: 1}, want: Vector2{X: 3.24 / math.Sqrt2, Y: 3.24 / math.Sqrt2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -27,7 +27,7 @@ func TestShellySkillReloadsAndDashesExactConfiguredDistance(t *testing.T) {
 			}})
 			player := playerByID(t, snapshot, "shelly")
 
-			assertVectorClose(t, "dash position", player.Pos, tt.want, dashTestTolerance)
+			assertVectorClose(t, "dash position", playerByID(t, finishDashTest(state, snapshot), "shelly").Pos, tt.want, dashTestTolerance)
 			if !player.PressedSkill || player.SkillReadyTick != 361 {
 				t.Fatalf("skill state = pressed:%t ready:%d, want true/361", player.PressedSkill, player.SkillReadyTick)
 			}
@@ -41,7 +41,7 @@ func TestShellySkillReloadsAndDashesExactConfiguredDistance(t *testing.T) {
 	}
 }
 
-func TestShellyDashStartsAfterNormalMovement(t *testing.T) {
+func TestShellyDashSuppressesActivationTickNormalMovement(t *testing.T) {
 	state := newShellyDashTestState(t, []PlayerData{{ID: "shelly", CharacterType: CharacterTypeShelly}}, MapData{})
 
 	snapshot := state.Step([]InputCommand{{
@@ -49,8 +49,8 @@ func TestShellyDashStartsAfterNormalMovement(t *testing.T) {
 		MoveDir: Vector2{X: 1}, AttackDir: Vector2{X: 1}, PressedSkill: true,
 	}})
 
-	want := Vector2{X: DefaultPlayerSpeed*TickDuration + 6.48}
-	assertVectorClose(t, "post-movement dash position", playerByID(t, snapshot, "shelly").Pos, want, dashTestTolerance)
+	want := Vector2{X: 0.36}
+	assertVectorClose(t, "activation dash position", playerByID(t, snapshot, "shelly").Pos, want, dashTestTolerance)
 }
 
 func TestShellySkillReloadsEveryChargeBoundary(t *testing.T) {
@@ -104,18 +104,18 @@ func TestShellyDashStopsBeforeMapAndPlayerContact(t *testing.T) {
 			name:    "bush passes",
 			gameMap: dashLineMap(TileBush),
 			players: []PlayerData{{ID: "shelly", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -4}}},
-			wantX:   2.48, wantReload: true,
+			wantX:   -0.76, wantReload: true,
 		},
 		{
 			name:    "spawn passes",
 			gameMap: dashLineMap(TileSpawnPoint),
 			players: []PlayerData{{ID: "shelly", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -4}}},
-			wantX:   2.48, wantReload: true,
+			wantX:   -0.76, wantReload: true,
 		},
 		{
 			name:    "boundary",
 			gameMap: dashOpenMap(),
-			players: []PlayerData{{ID: "shelly", CharacterType: CharacterTypeShelly, Pos: Vector2{X: 8}}},
+			players: []PlayerData{{ID: "shelly", CharacterType: CharacterTypeShelly, Pos: Vector2{X: 10}}},
 			wantX:   12.099999, wantReload: true,
 		},
 		{
@@ -143,7 +143,7 @@ func TestShellyDashStopsBeforeMapAndPlayerContact(t *testing.T) {
 				{ID: "shelly", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -4}},
 				{ID: "blocker", CharacterType: CharacterTypeColt, Pos: Vector2{}, IsDead: true},
 			},
-			wantX: 2.48, wantReload: true,
+			wantX: -0.76, wantReload: true,
 		},
 	}
 
@@ -156,8 +156,10 @@ func TestShellyDashStopsBeforeMapAndPlayerContact(t *testing.T) {
 				PlayerID: "shelly", ClientTick: 1, AttackDir: Vector2{X: 1}, PressedSkill: true,
 			}})
 			player := playerByID(t, snapshot, "shelly")
-			if math.Abs(player.Pos.X-tt.wantX) > dashTestTolerance || math.Abs(player.Pos.Y) > dashTestTolerance {
-				t.Fatalf("dash position = %+v, want x=%v", player.Pos, tt.wantX)
+			finalPlayer := playerByID(t, finishDashTest(state, snapshot), "shelly")
+			assertDashWire(t, finalPlayer, false, 0)
+			if math.Abs(finalPlayer.Pos.X-tt.wantX) > dashTestTolerance || math.Abs(finalPlayer.Pos.Y) > dashTestTolerance {
+				t.Fatalf("dash position = %+v, want x=%v", finalPlayer.Pos, tt.wantX)
 			}
 			if !player.PressedSkill || player.SkillReadyTick != 361 || player.AttackCharges != 3 || player.NextAttackChargeTick != 0 {
 				t.Fatalf("blocked dash refunded effect: %+v", player)
@@ -168,8 +170,8 @@ func TestShellyDashStopsBeforeMapAndPlayerContact(t *testing.T) {
 
 func TestShellySimultaneousDashIsOrderIndependent(t *testing.T) {
 	players := []PlayerData{
-		{ID: "shelly-b", CharacterType: CharacterTypeShelly, Pos: Vector2{X: 4}},
-		{ID: "shelly-a", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -4}},
+		{ID: "shelly-b", CharacterType: CharacterTypeShelly, Pos: Vector2{X: 3}},
+		{ID: "shelly-a", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -3}},
 	}
 	inputs := []InputCommand{
 		{PlayerID: "shelly-b", ClientTick: 1, MoveDir: Vector2{X: -1}, AttackDir: Vector2{X: -1}, PressedSkill: true},
@@ -178,8 +180,8 @@ func TestShellySimultaneousDashIsOrderIndependent(t *testing.T) {
 
 	forwardState := newShellyDashTestState(t, players, MapData{})
 	reversedState := newShellyDashTestState(t, players, MapData{})
-	forward := forwardState.Step(inputs)
-	reversed := reversedState.Step([]InputCommand{inputs[1], inputs[0]})
+	forward := finishDashTest(forwardState, forwardState.Step(inputs))
+	reversed := finishDashTest(reversedState, reversedState.Step([]InputCommand{inputs[1], inputs[0]}))
 
 	if !reflect.DeepEqual(forward, reversed) {
 		t.Fatalf("simultaneous dash differs by input order:\nforward=%+v\nreversed=%+v", forward, reversed)
@@ -203,8 +205,10 @@ func TestShellyThreeWayDashStopsTransitiveContactIndependentOfPlayerSliceOrder(t
 	reversedPlayers := []PlayerData{players[2], players[1], players[0]}
 	reversedInputs := []InputCommand{inputs[2], inputs[1], inputs[0]}
 
-	forward := newShellyDashTestState(t, players, MapData{}).Step(inputs)
-	reversed := newShellyDashTestState(t, reversedPlayers, MapData{}).Step(reversedInputs)
+	forwardState := newShellyDashTestState(t, players, MapData{})
+	forward := finishDashTest(forwardState, forwardState.Step(inputs))
+	reversedState := newShellyDashTestState(t, reversedPlayers, MapData{})
+	reversed := finishDashTest(reversedState, reversedState.Step(reversedInputs))
 	wantRadius := 1/math.Sqrt(3) + dashCollisionEpsilon
 	for _, id := range []PlayerID{"shelly-a", "shelly-b", "shelly-c"} {
 		gotForward := playerByID(t, forward, id).Pos
@@ -248,8 +252,8 @@ func TestProjectileDeathBeforeInputRejectsShellyDash(t *testing.T) {
 
 func TestShellyDashStoppedByWallBecomesBlocker(t *testing.T) {
 	players := []PlayerData{
-		{ID: "front", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -3}},
-		{ID: "rear", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -5}},
+		{ID: "front", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -1}},
+		{ID: "rear", CharacterType: CharacterTypeShelly, Pos: Vector2{X: -2.5}},
 	}
 	state := newShellyDashTestState(t, players, dashWallAtTwoMap())
 
@@ -258,6 +262,7 @@ func TestShellyDashStoppedByWallBecomesBlocker(t *testing.T) {
 		{PlayerID: "rear", AttackDir: Vector2{X: 1}, PressedSkill: true},
 	})
 
+	snapshot = finishDashTest(state, snapshot)
 	front := playerByID(t, snapshot, "front")
 	rear := playerByID(t, snapshot, "rear")
 	assertVectorClose(t, "front wall stop", front.Pos, Vector2{X: 1.299999}, dashTestTolerance)
@@ -334,4 +339,11 @@ func assertVectorClose(t *testing.T, label string, got, want Vector2, tolerance 
 	if math.Abs(got.X-want.X) > tolerance || math.Abs(got.Y-want.Y) > tolerance {
 		t.Fatalf("%s = %+v, want %+v", label, got, want)
 	}
+}
+
+func finishDashTest(state *State, snapshot Snapshot) Snapshot {
+	for i := 1; i < 9; i++ {
+		snapshot = state.Step(nil)
+	}
+	return snapshot
 }
