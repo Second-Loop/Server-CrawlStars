@@ -566,7 +566,7 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 7, "server config version must be 6");
+assert(serverGameConfig.version === 7, "server config version must be 7");
 assertOnlyKeys(serverGameConfig.bot, Object.keys(expectedServerBotConfig), "server-config/game-config.json bot");
 for (const [field, expected] of Object.entries(expectedServerBotConfig)) {
   assert(serverGameConfig.bot[field] === expected, `server bot config ${field} must be ${expected}`);
