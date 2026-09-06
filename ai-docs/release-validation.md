@@ -4,6 +4,14 @@
 
 `make ci`는 source marker → 공식 OpenAPI/AsyncAPI schema → docs embed build 순서를 검증하고 Go vet/test/build 및 배포 회귀를 실행해요. 동시성 검사는 `go test -race ./... -count=1`로 별도 실행해요.
 
+### Go 보안 기준
+
+SL-126에서 Go 1.26.8을 `go.mod`와 mise에 고정했어요. GitHub CI/CD는 같은 `go.mod` 버전을 사용해요. `make ci`와 배포 패키지 생성은 pinned govulncheck v1.7.0 검사도 실행하고, 호출 경로에서 알려진 취약점을 찾으면 실패해요. 단독 검사는 `make vuln-check`예요.
+
+2026-09-05 기존 Go 1.25.0 검사에서는 표준 라이브러리 21건이 정적 호출 경로에 잡혔어요. 같은 소스를 Go 1.26.8로 검사했을 때 호출 경로는 0건이고 Linux/amd64 CGO 비활성 서버 바이너리 검사도 0건이었어요. 호출하지 않는 모듈 경고 1건은 `golang.org/x/sys`의 Windows 전용 GO-2026-5024예요. 이 결과는 알려진 취약점 검사이며 실제 악용 여부나 모든 보안 결함의 부재를 증명하지는 않아요.
+
+Go 1.25는 지원 종료 계열이고 1.26은 지원 중이에요. 버전 결정 근거는 [Go 공식 릴리스·지원 정책](https://go.dev/doc/devel/release)이에요. 운영 반영 여부는 해당 revision의 패키지 배포와 runtime 확인으로 별도 기록해요.
+
 연결 종료 검사는 방 registry 제거와 플레이어 ID 반환을 별도로 기다려요. `releaseClient`가 방을 먼저 제거하고 함수 종료 시 ID를 반환하므로, 방이 없다는 사실만으로 전체 정리가 끝났다고 판단하지 않아요. 각 완료 조건에는 제한 시간이 있어 실제 정리 누락은 실패해요.
 
 ## 가속 용량 검사

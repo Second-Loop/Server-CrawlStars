@@ -36,8 +36,8 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Build docs UI
-        run: make docs-build
+      - name: Build docs and check vulnerabilities
+        run: make vuln-check
 
       - name: Test
         run: go test ./...
