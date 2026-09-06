@@ -322,8 +322,8 @@ func TestShellyDashSettlesBeforeSameTickMeleeAndGameEnd(t *testing.T) {
 	gameConfig := simulation.StaticGameConfig()
 	gameConfig.Map = simulation.MapData{}
 	state := simulation.NewStateWithConfig([]simulation.PlayerData{
-		{ID: "shelly", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: -4}, HP: 1100},
-		{ID: "lily", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeLily, Pos: simulation.Vector2{X: 4}},
+		{ID: "shelly", Team: simulation.TeamRed, CharacterType: simulation.CharacterTypeShelly, Pos: simulation.Vector2{X: -3.3}, HP: 1210},
+		{ID: "lily", Team: simulation.TeamBlue, CharacterType: simulation.CharacterTypeLily, Pos: simulation.Vector2{X: 0}},
 	}, simulation.Config{Game: gameConfig})
 
 	snapshot := state.Step([]simulation.InputCommand{
@@ -334,10 +334,10 @@ func TestShellyDashSettlesBeforeSameTickMeleeAndGameEnd(t *testing.T) {
 	if shelly.ID != "shelly" {
 		t.Fatalf("first player = %q, want shelly", shelly.ID)
 	}
-	if math.Abs(shelly.Pos.X-2.48) > 1e-9 || math.Abs(shelly.Pos.Y) > 1e-9 || !shelly.PressedSkill || shelly.AttackCharges != 3 || shelly.NextAttackChargeTick != 0 {
-		t.Fatalf("Shelly dash snapshot = %+v, want canonical 2.48/full reload approval", shelly)
+	if math.Abs(shelly.Pos.X-(-2.94)) > 1e-9 || math.Abs(shelly.Pos.Y) > 1e-9 || !shelly.PressedSkill || shelly.AttackCharges != 3 || shelly.NextAttackChargeTick != 0 {
+		t.Fatalf("Shelly dash snapshot = %+v, want canonical -2.94/full reload approval", shelly)
 	}
-	if !shelly.IsDead || shelly.HP != 0 {
+	if !shelly.IsDead || shelly.HP != 0 || shelly.IsDashing || shelly.AttackReadyTick != 0 {
 		t.Fatalf("same-tick Lily melee result = %+v, want dead Shelly", shelly)
 	}
 

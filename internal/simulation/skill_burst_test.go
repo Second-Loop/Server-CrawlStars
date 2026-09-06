@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"math"
 	"reflect"
 	"testing"
 )
@@ -9,10 +10,10 @@ func TestColtSkillBurstEmitsExactScheduleFromCurrentPositionWithFixedDirection(t
 	state := newColtSkillBurstState([]PlayerData{{
 		ID: "colt", Team: TeamRed, CharacterType: CharacterTypeColt,
 	}})
-	dueTicks := map[Tick]bool{1: true, 3: true, 5: true, 7: true, 8: true, 10: true, 12: true, 14: true, 15: true, 17: true, 19: true, 21: true}
+	dueTicks := map[Tick]bool{1: true, 3: true, 5: true, 7: true, 8: true, 10: true, 12: true, 14: true, 15: true, 17: true}
 	seen := make(map[ProjectileID]bool)
 
-	for inputTick := Tick(1); inputTick <= 22; inputTick++ {
+	for inputTick := Tick(1); inputTick <= 18; inputTick++ {
 		attackDirection := Vector2{Y: 1}
 		if inputTick == 1 {
 			attackDirection = Vector2{X: 1}
@@ -49,13 +50,13 @@ func TestColtSkillBurstEmitsExactScheduleFromCurrentPositionWithFixedDirection(t
 		if projectile.Type != "colt_skill" || projectile.Damage != 320 || projectile.Speed != 13 || projectile.Radius != 0.3 {
 			t.Fatalf("tick %d projectile=%+v, want config-owned Colt skill stats", inputTick, projectile)
 		}
-		if runtime := state.projectileRuntime[projectile.ID]; runtime.maxDistance != 11*TileSize {
-			t.Fatalf("tick %d max distance=%v, want %v", inputTick, runtime.maxDistance, 11*TileSize)
+		if runtime := state.projectileRuntime[projectile.ID]; math.Abs(runtime.maxDistance-9.35*TileSize) > 1e-9 {
+			t.Fatalf("tick %d max distance=%v, want %v", inputTick, runtime.maxDistance, 9.35*TileSize)
 		}
 	}
 
-	if got := len(seen); got != 12 {
-		t.Fatalf("skill projectile count=%d, want 12", got)
+	if got := len(seen); got != 10 {
+		t.Fatalf("skill projectile count=%d, want 10", got)
 	}
 	player := playerByID(t, state.Step(nil), "colt")
 	if player.SkillReadyTick != 391 || player.AttackCharges != 3 {
@@ -105,7 +106,7 @@ func TestColtSkillLocksNormalAttackThroughLastEmissionWithoutConsumingCharge(t *
 	state.attackStates["colt"] = attackState{charges: 2}
 	state.Step([]InputCommand{{PlayerID: "colt", ClientTick: 1, AttackDir: Vector2{X: 1}, PressedSkill: true}})
 
-	for inputTick := Tick(2); inputTick <= 21; inputTick++ {
+	for inputTick := Tick(2); inputTick <= 17; inputTick++ {
 		snapshot := state.Step([]InputCommand{{
 			PlayerID: "colt", ClientTick: int64(inputTick), AttackDir: Vector2{Y: 1}, PressedAttack: true,
 		}})
@@ -118,7 +119,7 @@ func TestColtSkillLocksNormalAttackThroughLastEmissionWithoutConsumingCharge(t *
 	}
 
 	accepted := state.Step([]InputCommand{{
-		PlayerID: "colt", ClientTick: 22, AttackDir: Vector2{Y: 1}, PressedAttack: true,
+		PlayerID: "colt", ClientTick: 18, AttackDir: Vector2{Y: 1}, PressedAttack: true,
 	}})
 	if !playerByID(t, accepted, "colt").PressedAttack {
 		t.Fatal("normal attack was not accepted on tick after final skill emission")
@@ -228,7 +229,7 @@ func TestColtSkillProjectileUsesRangeAndModeHitRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := newColtSkillBurstState([]PlayerData{
 				{ID: "colt", Team: TeamRed, CharacterType: CharacterTypeColt},
-				{ID: "target", Team: tt.team, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 11*TileSize + DefaultProjectileRadius + DefaultPlayerRadius}},
+				{ID: "target", Team: tt.team, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 9.35*TileSize + DefaultProjectileRadius + DefaultPlayerRadius}},
 			})
 			state.Step([]InputCommand{{PlayerID: "colt", AttackDir: Vector2{X: 1}, PressedSkill: true}})
 			state.EliminatePlayers([]PlayerID{"colt"})

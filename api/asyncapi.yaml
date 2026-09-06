@@ -1,22 +1,22 @@
 asyncapi: 3.0.0
 info:
   title: Server Crawl Stars WebSocket API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     E2 개발용 WebSocket 계약입니다. Client는 `POST /matchmaking/join` 또는 debug room API로 받은 room/player로 연결합니다.
     연결할 때 발급 응답의 player session token을 정확히 한 개의 `token` query parameter로 전달합니다.
     Matchmaking room은 selected mode의 full participant capacity가 채워지고 연결된 human WebSocket session만 attach quorum을 만족하면 `Type: Ready` 이벤트를 human session에 전달합니다. Ready payload는 full participant list를 포함하므로 human과 server-owned bot의 team/slot/spawn을 함께 보여 줍니다.
     duel_1v1은 2명, solo와 team은 6명의 participant capacity를 사용합니다. 각 human player가 보낸 ready ACK가 모두 모인 뒤 countdown을 한 번만 시작하며, bot은 WebSocket/ready ACK/input sender가 아닙니다.
     같은 human player의 중복 ready ACK는 quorum을 늘리거나 countdown을 다시 시작하지 않습니다. Server는 `starting` 신호를 한 번 보낸 뒤 5초를 내부에서 세고 `started` control snapshot을 보낸 다음 gameplay snapshot을 broadcast합니다.
-    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며, `now >= deadline`이면 attach를 거부하고 pre-start room 전체와 credential을 폐기합니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Ready ACK timeout, pre-start reconnect grace, reconnect participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
-    Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다.
+    Ready payload는 bot을 포함한 full participant list를 유지하지만 human session만 Ready ACK quorum에 들어갑니다. Match가 완성되면 strict 30초 room-owned human attach deadline을 시작합니다. 모든 human session이 붙으면 deadline을 해제하고 Loading으로 전이하며 별도의 strict 30초 room-owned Ready ACK deadline을 시작합니다. `now >= deadline`이면 attach 또는 Ready ACK를 거부하고 pre-start room 전체와 credential을 폐기합니다. Ready worker가 늦게 실행돼도 exact/late ACK로 Starting을 시작하지 않습니다. 모든 human ACK가 경계 전에 모이면 Ready deadline을 해제하고 Starting으로 한 번만 전이하며 bot ACK는 필요하지 않습니다. Client는 REST join을 새로 호출해 새 identity를 받아야 하며 replay key는 제공하지 않습니다. Unmatched human disconnect는 credential과 bot-fill deadline을 유지하고, matched/loading/starting 실제 disconnect는 기존 pre-start cancel로 room을 삭제합니다. Pre-start reconnect grace와 participant replacement는 제공하지 않습니다. Started match의 `peer_close`, read/write failure, Ping failure/timeout, control overflow는 10초 reconnect grace를 시작하며, grace 중 simulation은 계속됩니다. Grace 안의 reconnect는 같은 identity/state/tick을 이어가고 pending expiry를 취소합니다. Deadline 이상인 player는 다음 gameplay tick에서 한 번에 HP `0`/`IsDead`로 처리된 뒤 기존 Duel/Solo/Team evaluator로 Win/Lose/Draw를 확정합니다. `game_end`, `prestart_cancel`, `expiry`, `shutdown`, `debug_delete`는 intentional close라서 forfeit하지 않고, finalized player는 reconnect할 수 없습니다.
+    Human gameplay input의 optional `ClientTick`은 누락 또는 0이면 legacy last-write-wins로 처리합니다. 양수 tick은 이미 처리한 ACK 또는 현재 pending 양수 tick 이하이면 error frame 없이 input 전체를 조용히 무시하고, 음수는 `invalid_input`입니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 AttackDir을 보존하면서 최신 MoveDir과 ClientTick을 사용합니다. 새 PressedAttack 또는 PressedSkill action input은 flags와 AttackDir을 함께 교체하며, 어느 한쪽 ClientTick이 legacy 0이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 State.Step에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다.
     `PlayerData.LastProcessedClientTick`은 input 수신 시점이 아니라 authoritative `State.Step`에서 실제 처리한 마지막 양수 tick입니다. 유효한 input은 collision이나 공격 budget 때문에 눈에 보이는 효과가 없어도 ACK하며, legacy 0과 invalid/stale input은 ACK를 바꾸지 않습니다. ACK는 player별로 감소하지 않고 같은 match 재연결에서 유지되며 새 match와 bot은 0부터 시작합니다.
     Human의 REST 선택값과 bot의 server-owned CharacterType은 Ready와 gameplay Snapshot까지 같은 canonical 값으로 보존합니다. REST는 lower camel `characterType`이고 WebSocket Ready/PlayerData는 PascalCase `CharacterType`입니다. Bot은 Shelly/Colt/Lily를 각 bot마다 균등·독립적으로 선택하고 같은 room의 중복을 허용하며 participant 생성 뒤 match 동안 고정합니다. Stable ID는 0=Shelly, 1=Colt, 2=Lily입니다.
-    일반 공격과 typed skill config는 server config v6가 소유합니다. 캐릭터별 cooldown tick은 Shelly/Colt/Lily 순서로 360/390/330입니다. Shelly는 normal attack activation tick에 5발을 동시에 만들고, Colt 일반 공격은 activation tick A부터 exact offset [0,3,6,9,12,15]로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다.
-    Optional `PressedSkill`은 command별 독립적인 활성화 시도입니다. 누락하면 false이고, present null이나 boolean이 아닌 값은 `invalid_input`입니다. Skill은 같은 command의 `AttackDir`을 재사용하지만 방향만으로 시도하지 않으며 cooldown 동안의 시도는 queue하지 않습니다. Skill-ready면 attack보다 우선합니다. Shelly `reload_dash`는 charge/recharge를 `max/0`으로 만들고 일반 이동 뒤 `5.4 tile` swept dash를 실행합니다. Colt `burst_projectile`은 승인 방향을 고정해 `[0,2,4,6,7,9,11,13,14,16,18,20]`에 `colt_skill` 12발을 생성하고, 진행 중에는 일반 공격을 잠급니다. Lily `teleport_projectile`은 `lily_seed`를 발사해 400 피해를 먼저 적용하고 살아 있는 Lily를 피격 전 target 뒤로 이동합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 진행합니다. Bot skill use는 아직 실행하지 않습니다.
+    일반 공격과 typed skill config는 server config v7가 소유합니다. 캐릭터별 cooldown tick은 Shelly/Colt/Lily 순서로 360/390/330입니다. Shelly는 normal attack activation tick에 5발을 동시에 만들고, Colt 일반 공격은 activation tick A부터 exact offset [0,3,6,9,12,15]로 6발을 만들며, Lily는 2.2 tile centerline melee 피해를 같은 tick에 일괄 적용합니다.
+    Optional `PressedSkill`은 command별 독립적인 활성화 시도입니다. 누락하면 false이고, present null이나 boolean이 아닌 값은 `invalid_input`입니다. Skill은 같은 command의 `AttackDir`을 재사용하지만 방향만으로 시도하지 않으며 cooldown 동안의 시도는 queue하지 않습니다. Skill-ready면 attack보다 우선합니다. Shelly `reload_dash`는 charge/recharge를 `max/0`으로 만들고 일반 이동을 차단하며 `2.7 tile`을 9 tick으로 나눈 swept dash를 실행합니다. Colt `burst_projectile`은 승인 방향을 고정해 `[0,2,4,6,7,9,11,13,14,16]`에 `colt_skill` 10발을 생성하고, 진행 중에는 일반 공격을 잠급니다. Lily `teleport_projectile`은 `lily_seed`를 발사해 400 피해를 먼저 적용하고 살아 있는 Lily를 피격 전 target 뒤로 이동합니다. Cooldown 또는 zero direction이면 기존 normal attack 판정으로 진행합니다. Bot skill use는 아직 실행하지 않습니다.
     Server는 연결마다 독립적인 30초 heartbeat를 실행하고 각 Ping에 90초 deadline을 둡니다. Ping error/timeout은 read/write failure와 같은 close-once disconnect 경로를 사용합니다.
-    일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.
-    Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.
+    일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.
+    Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v7 경계를 유지합니다.
     duel_1v1은 기존 1명 사망 Win/Lose와 동시 사망 Draw를 유지합니다. Solo 중간 탈락 player는 Lose와 close를 받고 survivor gameplay는 계속되며, 마지막 생존자는 Win을 받습니다. 이전 Lose는 유지되고 이후 전원 사망 terminal에서는 아직 결과가 없는 player만 Draw를 받습니다.
     Team 일부 사망은 match를 계속합니다. 한 team이 전멸하면 패배 team 3명은 Lose, 생존 team 3명은 Win이고, 양 team이 같은 tick에 전멸하면 6명 모두 Draw입니다.
     Terminal room은 ticker를 terminal decision 즉시 중단한 뒤 tick observer, encode, enqueue를 수행합니다. 각 session의 connected-client observer는 close lifecycle에서 반영되며 transport closeDone보다 먼저일 수 있습니다. Normal cleanup은 current terminal session과 앞서 결과가 확정되어 기억한 session의 closeDone을 모두 기다립니다. 따라서 current client map에서 이미 빠진 Solo prior loser도 barrier에 남습니다. 그 뒤 registry를 분리하고 active-room observer를 반영한 다음 player ID를 release하고 room_ended log와 resource close를 수행하며 cleanup success signal은 마지막에 닫습니다.
@@ -101,7 +101,7 @@ operations:
     channel:
       $ref: "#/channels/roomPlayer"
     title: Send ready ACK
-    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Bot은 ACK를 보내지 않습니다. 같은 human player의 중복 ready ACK는 idempotent하므로 Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다.
+    summary: 연결된 human client의 asset load/render 준비가 끝났음을 서버에 알립니다. Loading 진입부터 strict 30초 안에 모든 human ACK가 모여야 하며 exact boundary의 ACK는 실패합니다. Bot은 ACK를 보내지 않습니다. 같은 human player의 중복 ready ACK는 idempotent하므로 Ready quorum을 재증가시키거나 countdown을 재시작하지 않습니다.
     messages:
       - $ref: "#/channels/roomPlayer/messages/readyAck"
   receiveSnapshot:
@@ -298,7 +298,8 @@ components:
                   SkillReadyTick: 361
                   AttackCharges: 3
                   NextAttackChargeTick: 0
-                  AttackReadyTick: 0
+                  AttackReadyTick: 10
+                  IsDashing: true
                   IsDead: false
                   LastProcessedClientTick: 12
                 - Id: player_AbCdEfGhIjKlMnOpQrStUv
@@ -324,6 +325,7 @@ components:
                   AttackCharges: 2
                   NextAttackChargeTick: 31
                   AttackReadyTick: 0
+                  IsDashing: false
                   IsDead: false
                   LastProcessedClientTick: 0
               Projectiles:
@@ -336,7 +338,7 @@ components:
                     x: -0.9781476007338057
                     y: 0.20791169081775931
                   Speed: 13
-                  Damage: 280
+                  Damage: 252
                   Radius: 0.3
                   Type: default
                   IsDestroyed: false
@@ -349,7 +351,7 @@ components:
                     x: -0.9945218953682733
                     y: 0.10452846326765346
                   Speed: 13
-                  Damage: 280
+                  Damage: 252
                   Radius: 0.3
                   Type: default
                   IsDestroyed: false
@@ -362,7 +364,7 @@ components:
                     x: -1
                     y: 0
                   Speed: 13
-                  Damage: 280
+                  Damage: 252
                   Radius: 0.3
                   Type: default
                   IsDestroyed: false
@@ -375,7 +377,7 @@ components:
                     x: -0.9945218953682733
                     y: -0.10452846326765346
                   Speed: 13
-                  Damage: 280
+                  Damage: 252
                   Radius: 0.3
                   Type: default
                   IsDestroyed: false
@@ -388,7 +390,7 @@ components:
                     x: -0.9781476007338057
                     y: -0.20791169081775931
                   Speed: 13
-                  Damage: 280
+                  Damage: 252
                   Radius: 0.3
                   Type: default
                   IsDestroyed: false
@@ -444,7 +446,7 @@ components:
       description: |
         Human WebSocket gameplay input입니다. `Type` field를 넣지 않습니다. Optional `ClientTick`은 누락 또는 0일 때 legacy input이며, bot command는 같은 InputCommand shape를 server 내부 controller가 ClientTick 0으로 만들고 WebSocket sender가 아닙니다.
         Room이 loading/starting 상태이면 input은 받을 수 있지만 gameplay tick은 server 내부 countdown 이후에 시작합니다.
-        양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. Legacy 0은 기존 last-write-wins를 유지해 양수 pending도 덮을 수 있지만 ACK를 바꾸지 않습니다. 음수는 `invalid_input`입니다.
+        양수 `ClientTick`은 이미 처리한 `LastProcessedClientTick`과 현재 pending 양수 tick보다 커야 합니다. 그 이하인 stale/duplicate input은 error/control frame 없이 전체를 무시합니다. 더 새로운 양수 movement-only input은 pending 양수 command의 action flags와 AttackDir을 보존하면서 최신 MoveDir과 ClientTick을 사용하고, 새 action input은 flags와 AttackDir을 함께 교체합니다. 어느 한쪽 ClientTick이 legacy 0이면 기존처럼 command 전체를 덮어씁니다. Pending command는 다음 State.Step에서 한 번 소비되고 cooldown 거절 뒤 재생하지 않습니다. 음수는 `invalid_input`입니다.
         유한한 `MoveDir`은 크기가 1을 넘을 때 unit vector로 clamp하고, zero가 아닌 유한한 `AttackDir`은 항상 정규화합니다. NaN/Inf가 포함된 input과 dead player input은 적용하지 않습니다.
         Player의 server-only attack charge는 Shelly/Colt/Lily 순서로 3/3/2이며 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 공격 요청은 non-zero 방향과 남은 charge가 모두 유효할 때만 승인됩니다.
         Optional `PressedSkill`은 누락하면 false입니다. Present null이나 boolean이 아닌 값은 `invalid_input`이며 기존 pending input을 바꾸지 않습니다. `PressedSkill: true`는 command마다 독립적인 활성화 시도이고 같은 command의 `AttackDir`을 재사용하지만 방향만으로 skill을 시도하지 않습니다. Cooldown 동안의 시도는 queue하지 않습니다.
@@ -454,14 +456,14 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Player가 보낸 optional input sequence입니다. 누락 또는 0은 legacy last-write-wins이고 ACK를 변경하지 않습니다.
+          description: Player가 보낸 optional input sequence입니다. 누락 또는 0은 legacy last-write-wins이고 ACK를 변경하지 않습니다. 양수 movement-only 갱신은 pending 양수 action flags와 AttackDir을 보존하며 최신 MoveDir과 ClientTick을 사용합니다.
         MoveDir:
           $ref: "#/components/schemas/Vector2"
         AttackDir:
           $ref: "#/components/schemas/Vector2"
         PressedAttack:
           type: boolean
-          description: server config v6의 캐릭터별 `normalAttack` activation 요청입니다. 조준 유지용 AttackDir와 분리하며, 실제 승인 결과는 snapshot PlayerData.PressedAttack에서 확인합니다.
+          description: server config v7의 캐릭터별 `normalAttack` activation 요청입니다. 조준 유지용 AttackDir와 분리하며, 실제 승인 결과는 snapshot PlayerData.PressedAttack에서 확인합니다.
         PressedSkill:
           type: boolean
           description: Optional command-level independent activation attempt입니다. 누락하면 false이고 present null/wrong type은 invalid_input입니다. 같은 command의 AttackDir을 재사용하지만 AttackDir 자체는 skill을 trigger하지 않으며, blocked attempt는 queue하지 않습니다. 승인 결과는 server snapshot PlayerData.PressedSkill에서 확인합니다.
@@ -492,7 +494,8 @@ components:
       required: [Type]
       description: >-
         각 human player의 `Type: Ready` 렌더 준비가 끝난 뒤 해당 player의
-        WebSocket session에서 한 번 이상 보내는 idempotent ACK입니다.
+        WebSocket session에서 한 번 이상 보내는 idempotent ACK입니다. Loading 진입부터
+        strict 30초 경계 전에 모든 human ACK가 모여야 Starting으로 전이합니다.
       properties:
         Type:
           type: string
@@ -637,7 +640,7 @@ components:
           $ref: "#/components/schemas/Vector2"
     PlayerData:
       type: object
-      required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDead, LastProcessedClientTick]
+      required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDashing, IsDead, LastProcessedClientTick]
       properties:
         Id:
           type: string
@@ -674,17 +677,20 @@ components:
           description: Input echo가 아니라 방향, 생존 상태, 남은 charge 검증을 통과해 서버가 activation tick에 공격이 승인됐을 때만 true인 transient 결과입니다. 이후 Colt burst emission tick에는 새 activation이 아니므로 false입니다.
         PressedSkill:
           type: boolean
-          description: Input echo가 아니라 server가 이번 gameplay tick의 skill activation을 승인했을 때만 true인 transient approval pulse입니다. 이 true를 포함한 non-terminal snapshot은 normal latest-only에서 제외되는 reliable approval exception으로 size-8 reliable control FIFO를 사용하며 queue overflow/write failure는 해당 session을 close/release하는 fail-closed입니다. 매 Step 시작에 false로 초기화됩니다. Shelly 승인이면 같은 snapshot의 Pos, AttackCharges, NextAttackChargeTick이 `reload_dash` 결과를 함께 보여 줍니다. Colt 승인이면 같은 snapshot부터 `Projectiles[].Type=colt_skill`의 12발 exact-offset burst가 시작됩니다. Lily 승인이면 같은 snapshot에 `Projectiles[].Type=lily_seed`가 생성되고 후속 적중 snapshot의 HP/IsDead/Pos가 피해와 순간이동 결과를 보여 줍니다. Bot skill use는 아직 실행하지 않습니다.
+          description: Input echo가 아니라 server가 이번 gameplay tick의 skill activation을 승인했을 때만 true인 transient approval pulse입니다. 이 true를 포함한 non-terminal snapshot은 normal latest-only에서 제외되는 reliable approval exception으로 size-8 reliable control FIFO를 사용하며 queue overflow/write failure는 해당 session을 close/release하는 fail-closed입니다. 매 Step 시작에 false로 초기화됩니다. Shelly 승인이면 같은 snapshot의 Pos, AttackCharges, NextAttackChargeTick이 `reload_dash` 결과를 함께 보여 줍니다. Colt 승인이면 같은 snapshot부터 `Projectiles[].Type=colt_skill`의 10발 exact-offset burst가 시작됩니다. Lily 승인이면 같은 snapshot에 `Projectiles[].Type=lily_seed`가 생성되고 후속 적중 snapshot의 HP/IsDead/Pos가 피해와 순간이동 결과를 보여 줍니다. Bot skill use는 아직 실행하지 않습니다.
+        IsDashing:
+          type: boolean
+          description: Shelly 대시가 다음 tick에도 계속되면 true예요. 승인 A부터 A+8까지 9개 구간에 일반 이동과 공격을 막고 방향을 고정해요. 마지막 구간, 충돌 또는 사망 snapshot에서는 false예요.
         AttackReadyTick:
           type: integer
           format: int64
           minimum: 0
-          description: 다음 일반 공격을 승인할 수 있는 absolute tick이에요. 0이면 연사 잠금이 없어요. 진행 중 연사의 마지막 emission 다음 tick까지 일반 공격을 막아요. 탄약 여부는 AttackCharges로 별도 확인해요.
+          description: 다음 일반 공격을 승인할 수 있는 absolute tick이에요. 0이면 연사/대시 잠금이 없어요. 진행 중 연사의 마지막 emission 다음 tick까지 일반 공격을 막아요. Shelly 대시는 승인 A에서 A+9로 잠그고 마지막 구간, 충돌 또는 사망 snapshot에서 0으로 해제해요. Colt skill 승인 1이면 ready는 18이에요. 탄약 여부는 AttackCharges로 별도 확인해요.
         SkillReadyTick:
           type: integer
           format: int64
           minimum: 0
-          description: Persistent canonical absolute ready tick입니다. 초기값은 0이고 Snapshot.Tick >= SkillReadyTick이면 ready입니다. Tick A 승인 시 character cooldown C를 사용해 `A + C`를 기록하며 exact A + C tick도 허용합니다. Server config v6의 Shelly/Colt/Lily cooldown은 360/390/330 tick입니다.
+          description: Persistent canonical absolute ready tick입니다. 초기값은 0이고 Snapshot.Tick >= SkillReadyTick이면 ready입니다. Tick A 승인 시 character cooldown C를 사용해 `A + C`를 기록하며 exact A + C tick도 허용합니다. Server config v7의 Shelly/Colt/Lily cooldown은 360/390/330 tick입니다.
         AttackCharges:
           type: integer
           minimum: 0
@@ -707,8 +713,8 @@ components:
       description: |
         Owner 자신과 이미 사망한 player는 projectile hit 대상에서 제외합니다.
         Solo는 owner가 아닌 모든 live player를 적으로 봅니다. Team/Duel은 현재 selected mode의 friendlyFire=false 규칙에 따라 ally를 통과하고 enemy만 hit합니다.
-        Colt skill projectile은 approval tick S 기준 S+[0,2,4,6,7,9,11,13,14,16,18,20]에 emission tick 현재 owner 위치에서 생성되며 damage 320, range 11 tile, speed 13 world/s, radius 0.3, type colt_skill을 사용합니다.
-        Lily skill projectile은 damage 400, range 10.4 tile, speed 13 world/s, radius 0.3, type lily_seed를 사용합니다. 적중 직전 target 위치를 보존하고 피해를 먼저 적용한 뒤, 살아 있는 Lily를 seed 방향의 target 뒤 1 tile 지점으로 이동합니다. Wall/Water/boundary/live player에 막히면 같은 ray에서 최소 비겹침 거리까지 가장 큰 유효 지점으로 backoff하고 유효 지점이 없거나 Lily가 이미 죽었으면 피해만 유지합니다.
+        Colt skill projectile은 approval tick S 기준 S+[0,2,4,6,7,9,11,13,14,16]에 emission tick 현재 owner 위치에서 생성되며 damage 320, range 9.35 tile, speed 13 world/s, radius 0.3, type colt_skill을 사용합니다.
+        Lily skill projectile은 damage 400, range 12.48 tile, speed 13 world/s, radius 0.3, type lily_seed를 사용합니다. 적중 직전 target 위치를 보존하고 피해를 먼저 적용한 뒤, 살아 있는 Lily를 seed 방향의 target 뒤 1 tile 지점으로 이동합니다. Wall/Water/boundary/live player에 막히면 같은 ray에서 최소 비겹침 거리까지 가장 큰 유효 지점으로 backoff하고 유효 지점이 없거나 Lily가 이미 죽었으면 피해만 유지합니다.
         한 projectile이 같은 tick에 여러 eligible target과 겹치면 PlayerID 오름차순 첫 target만 damage를 받고 projectile이 destroy됩니다.
         같은 tick의 command batch는 caller input을 바꾸지 않고 PlayerID 오름차순 input 순서로 stable sort한 뒤 적용합니다. 이 input 적용 순서는 hit target 순서와 별개입니다.
         Death snapshot 이후 elimination/GameEnd는 room-local selected mode 규칙을 따릅니다.
@@ -725,18 +731,18 @@ components:
         Speed:
           type: number
           format: double
-          description: Server config v6 projectile type catalog의 authoritative world/s 속도입니다. `colt_skill`과 `lily_seed`는 13입니다.
+          description: Server config v7 projectile type catalog의 authoritative world/s 속도입니다. `colt_skill`과 `lily_seed`는 13입니다.
         Damage:
           type: number
           format: double
-          description: Owner 캐릭터의 server config v6 `normalAttack.damagePerHit` 또는 typed `skill.damagePerHit`에서 복사한 authoritative 피해입니다. `colt_skill`은 320, `lily_seed`는 400입니다.
+          description: Owner 캐릭터의 server config v7 `normalAttack.damagePerHit` 또는 typed `skill.damagePerHit`에서 복사한 authoritative 피해입니다. `colt_skill`은 320, `lily_seed`는 400입니다.
         Radius:
           type: number
           format: double
-          description: Server config v6 projectile type catalog의 authoritative collision radius입니다. `colt_skill`과 `lily_seed`는 0.3입니다.
+          description: Server config v7 projectile type catalog의 authoritative collision radius입니다. `colt_skill`과 `lily_seed`는 0.3입니다.
         Type:
           type: string
           enum: [default, colt_skill, lily_seed]
-          description: Owner 캐릭터의 server config v6 `normalAttack.projectile.type` 또는 typed `skill.projectile.type`이 가리킨 projectile type ID입니다. `default`는 일반 공격 projectile, `colt_skill`은 Colt 스킬 12발 projectile, `lily_seed`는 피해 후 적 뒤 순간이동을 실행하는 Lily 씨앗 projectile입니다.
+          description: Owner 캐릭터의 server config v7 `normalAttack.projectile.type` 또는 typed `skill.projectile.type`이 가리킨 projectile type ID입니다. `default`는 일반 공격 projectile, `colt_skill`은 Colt 스킬 10발 projectile, `lily_seed`는 피해 후 적 뒤 순간이동을 실행하는 Lily 씨앗 projectile입니다.
         IsDestroyed:
           type: boolean

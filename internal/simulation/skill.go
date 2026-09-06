@@ -15,8 +15,6 @@ func (s *State) tryApproveSkill(playerIndex int, activationTick Tick) (SkillConf
 }
 
 type approvedSkillEffect struct {
-	dash      skillDashIntent
-	hasDash   bool
 	emissions []projectileEmission
 }
 
@@ -34,14 +32,13 @@ func (s *State) dispatchApprovedSkill(playerIndex int, direction Vector2, skill 
 			return approvedSkillEffect{}
 		}
 		s.attackStates[playerID] = attackState{charges: attack.MaxCharges}
-		return approvedSkillEffect{
-			dash: skillDashIntent{
-				playerIndex: playerIndex,
-				direction:   direction,
-				distance:    skill.ReloadDash.DashDistanceTiles * s.resolvedTileSize(),
-			},
-			hasDash: true,
+		s.dashStates[playerID] = timedDashState{
+			direction:      direction,
+			stepDistance:   skill.ReloadDash.DashDistanceTiles * s.resolvedTileSize() / float64(skill.ReloadDash.DashDurationTicks),
+			remainingTicks: skill.ReloadDash.DashDurationTicks,
+			readyTick:      activationTick + Tick(skill.ReloadDash.DashDurationTicks),
 		}
+		return approvedSkillEffect{}
 	case SkillBurstProjectile:
 		if skill.BurstProjectile == nil || playerIndex < 0 || playerIndex >= len(s.players) {
 			return approvedSkillEffect{}

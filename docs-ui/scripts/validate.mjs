@@ -46,11 +46,11 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.", "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요."]],
   ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.", "PressedAttack: true-only snapshot은 계속 latest-only로 전달해요."]],
   ["no new wire event", ["새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.", "새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
-  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
-  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
   ["current skill effect boundary", ["현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.", "현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다."]],
-  ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
+  ["SL-99 config boundary", ["Client config v3/server config v7 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
 ];
 const historicalReliableSkillDeliveryMarkerGroups = currentReliableSkillDeliveryMarkerGroups.map(([meaning, markers]) => {
   if (meaning === "SL-99 config boundary") {
@@ -401,7 +401,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.9.0"), "api/asyncapi.yaml must publish version 0.9.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.10.0"), "api/asyncapi.yaml must publish version 0.10.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -566,7 +566,7 @@ assert(
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
 );
 assert(clientGameConfig.version === 3, "client config version must be 3");
-assert(serverGameConfig.version === 6, "server config version must be 6");
+assert(serverGameConfig.version === 7, "server config version must be 7");
 assertOnlyKeys(serverGameConfig.bot, Object.keys(expectedServerBotConfig), "server-config/game-config.json bot");
 for (const [field, expected] of Object.entries(expectedServerBotConfig)) {
   assert(serverGameConfig.bot[field] === expected, `server bot config ${field} must be ${expected}`);
@@ -599,9 +599,9 @@ assert(serverGameConfig.tickRate === 30, "server-config/game-config.json must ex
 assert(serverGameConfig.tile?.size === 1.2, "server-config/game-config.json must expose tile.size 1.2");
 const expectedServerPlayerTypes = new Map([[0, 4000], [1, 3100], [2, 4100]]);
 const expectedNormalAttacks = new Map([
-  [0, { kind: "spread_projectile", damagePerHit: 280, rangeTiles: 7.2, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 5, directionOffsetsDegrees: [-12, -6, 0, 6, 12], intervalTicks: 0 } }],
+  [0, { kind: "spread_projectile", damagePerHit: 252, rangeTiles: 7.2, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 5, directionOffsetsDegrees: [-12, -6, 0, 6, 12], intervalTicks: 0 } }],
   [1, { kind: "burst_projectile", damagePerHit: 340, rangeTiles: 9, maxCharges: 3, rechargeTicks: 30, projectile: { type: "default", count: 6, directionOffsetsDegrees: [0], intervalTicks: 0, emissionOffsetsTicks: [0, 3, 6, 9, 12, 15] } }],
-  [2, { kind: "melee", damagePerHit: 1100, rangeTiles: 2.2, maxCharges: 2, rechargeTicks: 30 }],
+  [2, { kind: "melee", damagePerHit: 1210, rangeTiles: 2.2, maxCharges: 2, rechargeTicks: 30 }],
 ]);
 for (const playerType of serverGameConfig.player.types) {
   assert(playerType.radius === 0.5, `server player radius drift for ${playerType.id}`);
@@ -843,12 +843,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0");
+  assert(hasLine(asyncAPIText, "  version: 0.10.0"), "AsyncAPI version must be 0.10.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDashing, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -892,7 +892,7 @@ function validateCharacterTypeContract() {
   const playerSchema = extractYAMLSchema(openAPIText, "Player");
   assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
 
-  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0");
+  assert(hasLine(asyncAPIText, "  version: 0.10.0"), "AsyncAPI version must be 0.10.0");
   for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     const schema = extractYAMLSchema(asyncAPIText, schemaName);
     assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
@@ -932,7 +932,7 @@ function validateCharacterNormalAttackContract() {
   const inputSchema = extractYAMLSchema(asyncAPIText, "InputMessage");
   const inputPressedAttack = extractSchemaProperty(inputSchema, "PressedAttack");
   assert(!inputPressedAttack.includes("server config v4"), "InputMessage.PressedAttack must not document server config v4");
-  for (const marker of ["server config v6", "캐릭터별 `normalAttack`", "activation 요청"]) {
+  for (const marker of ["server config v7", "캐릭터별 `normalAttack`", "activation 요청"]) {
     assert(inputPressedAttack.includes(marker), `InputMessage.PressedAttack must document ${marker}`);
   }
 
@@ -989,9 +989,9 @@ function validateCharacterNormalAttackContract() {
 
   for (const [text, name, markers] of [
     [protocolText, "protocol", ["Shelly는 activation tick에 5발을 동시에", "A+[0,3,6,9,12,15]", "Lily는 2.2 tile centerline", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "wall/boundary까지의 range를 먼저", "Client parser 구현과 final balancing은 범위 밖"]],
-    [architectureText, "architecture", ["server config v6가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
+    [architectureText, "architecture", ["server config v7가 일반 공격", "player type의 `normalAttack`", "production `State.Step`", "room-local config", "Shelly/Colt/Lily는 각각 `3/3/2` attack charge", "projectile emission 또는 Lily melee intent를 승인"]],
     [projectMapText, "project map", ["SL-83 일반 공격", "3/3/2 charge", "A+16", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "client parser는 아직 범위 밖"]],
-    [apiReferenceText, "api reference", ["server config v6의 캐릭터별 일반 공격 activation 요청", "A+[0,3,6,9,12,15]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
+    [apiReferenceText, "api reference", ["server config v7의 캐릭터별 일반 공격 activation 요청", "A+[0,3,6,9,12,15]", "2.2 tile centerline", "기존 `Damage`와 `Type`"]],
     [decisionsText, "decisions", ["ADR-0036", "server config v3", "A+[0,6,12,18,24,30]", "A+31", "모든 input과 movement 적용 뒤 clone한 post-movement player snapshot", "same-tick batched damage", "range 판정 순서", "Client parser 구현과 final balancing"]],
   ]) {
     for (const marker of markers) {
@@ -1007,11 +1007,13 @@ function validateCharacterSkillCooldownContract() {
   assert(!topLevelRequiredFields(inputSchema).includes("PressedSkill"), "InputMessage.PressedSkill must be optional");
 
   const playerSchema = extractYAMLSchema(asyncAPIText, "PlayerData");
-  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
+  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick", "AttackReadyTick", "IsDashing"]) {
     assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
       `PlayerData must require ${field} exactly once`);
   }
   assert(topLevelRequiredFields(playerSchema).includes("AttackReadyTick"), "PlayerData must require AttackReadyTick");
+  assert(topLevelRequiredFields(playerSchema).includes("IsDashing"), "PlayerData must require IsDashing");
+  assert(extractSchemaProperty(playerSchema, "IsDashing").includes("type: boolean"), "IsDashing must be boolean");
   const attackReadyTick = extractSchemaProperty(playerSchema, "AttackReadyTick");
   assert(attackReadyTick.includes("minimum: 0"), "AttackReadyTick must be non-negative");
   const snapshotPressedSkill = extractSchemaProperty(playerSchema, "PressedSkill");
@@ -1034,7 +1036,7 @@ function validateCharacterSkillCooldownContract() {
     assert(nextChargeTick.includes(marker), `PlayerData.NextAttackChargeTick must document ${marker}`);
   }
 
-  assert(serverGameConfig.version === 6, "server config must be version 6");
+  assert(serverGameConfig.version === 7, "server config must be version 7");
   const cooldowns = new Map([[0, 360], [1, 390], [2, 330]]);
   for (const playerType of serverGameConfig.player.types) {
     assert(playerType.skill?.cooldownTicks === cooldowns.get(playerType.characterType),
@@ -1042,17 +1044,17 @@ function validateCharacterSkillCooldownContract() {
   }
   const [shelly, colt, lily] = [0, 1, 2].map((characterType) =>
     serverGameConfig.player.types.find((playerType) => playerType.characterType === characterType));
-  assert(shelly?.skill?.kind === "reload_dash" && shelly.skill.dashDistanceTiles === 5.4,
+  assert(shelly?.skill?.kind === "reload_dash" && shelly.skill.dashDistanceTiles === 2.7 && shelly.skill.dashDurationTicks === 9,
     "Shelly canonical reload_dash config drift");
   assert(JSON.stringify(colt?.normalAttack?.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 3, 6, 9, 12, 15]),
     "Colt normal exact offsets drift");
   assert(colt?.skill?.kind === "burst_projectile" && colt.skill.damagePerHit === 320 &&
-    colt.skill.rangeTiles === 11 && colt.skill.projectile?.type === "colt_skill" &&
-    colt.skill.projectile?.count === 12 &&
-    JSON.stringify(colt.skill.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]),
+    colt.skill.rangeTiles === 9.35 && colt.skill.projectile?.type === "colt_skill" &&
+    colt.skill.projectile?.count === 10 &&
+    JSON.stringify(colt.skill.projectile?.emissionOffsetsTicks) === JSON.stringify([0, 2, 4, 6, 7, 9, 11, 13, 14, 16]),
     "Colt skill canonical contract drift");
   assert(lily?.skill?.kind === "teleport_projectile" && lily.skill.damagePerHit === 400 &&
-    lily.skill.rangeTiles === 10.4 && lily.skill.behindDistanceTiles === 1 &&
+    lily.skill.rangeTiles === 12.48 && lily.skill.behindDistanceTiles === 1 &&
     lily.skill.projectile?.type === "lily_seed",
     "Lily canonical teleport_projectile config drift");
   for (const projectileType of ["colt_skill", "lily_seed"]) {
@@ -1066,33 +1068,33 @@ function validateCharacterSkillCooldownContract() {
   assert(lilySeedProjectile?.speed === 13 && lilySeedProjectile?.radius === 0.3,
     "Lily seed projectile speed/radius drift");
   const skillProjectileSchema = extractYAMLSchema(asyncAPIText, "ProjectileData");
-  for (const marker of ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "damage 320", "range 11 tile", "speed 13 world/s", "radius 0.3", "type colt_skill"]) {
+  for (const marker of ["S+[0,2,4,6,7,9,11,13,14,16]", "damage 320", "range 9.35 tile", "speed 13 world/s", "radius 0.3", "type colt_skill"]) {
     assert(skillProjectileSchema.includes(marker), `ProjectileData must document Colt skill marker ${marker}`);
   }
   for (const [text, name, markers] of [
-    [protocolText, "protocol Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "S+21", "emission tick 현재 위치", "미래 emission을 취소"]],
-    [architectureText, "architecture Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "colt_skill", "마지막 발 tick까지 일반 공격"]],
-    [projectMapText, "project map Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "S+21", "same-tick due emission은 committed"]],
-    [apiReferenceText, "api reference Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "Type: colt_skill", "damage `320`", "range `11 tile`"]],
-    [apiDocsText, "api docs Colt skill", ["[0,2,4,6,7,9,11,13,14,16,18,20]", "`colt_skill` 12발", "일반 공격을 잠급니다"]],
-    [decisionsText, "ADR-0051 Colt skill", ["ADR-0051", "scheduled-before-activation phase", "S+21", "Goroutine, timer"]],
-    [docsBuildText, "docs UI Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16,18,20]", "Projectiles[].Type: colt_skill", "일반 공격을 잠급니다"]],
+    [protocolText, "protocol Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16]", "S+17", "emission tick 현재 위치", "미래 emission을 취소"]],
+    [architectureText, "architecture Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16]", "colt_skill", "마지막 발 tick까지 일반 공격"]],
+    [projectMapText, "project map Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16]", "S+17", "same-tick due emission은 committed"]],
+    [apiReferenceText, "api reference Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16]", "Type: colt_skill", "damage `320`", "range `9.35 tile`"]],
+    [apiDocsText, "api docs Colt skill", ["[0,2,4,6,7,9,11,13,14,16]", "`colt_skill` 10발", "일반 공격을 잠급니다"]],
+    [decisionsText, "ADR-0051 Colt skill", ["ADR-0051", "scheduled-before-activation phase", "S+17", "Goroutine, timer"]],
+    [docsBuildText, "docs UI Colt skill", ["S+[0,2,4,6,7,9,11,13,14,16]", "Projectiles[].Type: colt_skill", "일반 공격을 잠급니다"]],
   ]) {
     for (const marker of markers) {
       assert(text.includes(marker), `${name} must document ${marker}`);
     }
   }
-  for (const marker of ["damage 400", "range 10.4 tile", "speed 13 world/s", "radius 0.3", "type lily_seed", "PlayerID 오름차순"]) {
+  for (const marker of ["damage 400", "range 12.48 tile", "speed 13 world/s", "radius 0.3", "type lily_seed", "PlayerID 오름차순"]) {
     assert(skillProjectileSchema.includes(marker), `ProjectileData must document Lily skill marker ${marker}`);
   }
   for (const [text, name, markers] of [
-    [protocolText, "protocol Lily skill", ["damage `400`", "range `10.4 tile`", "target 뒤 `1 tile`", "최대 유효 지점", "피해만 유지"]],
+    [protocolText, "protocol Lily skill", ["damage `400`", "range `12.48 tile`", "target 뒤 `1 tile`", "최대 유효 지점", "피해만 유지"]],
     [architectureText, "architecture Lily skill", ["lily_seed", "피격 전 위치", "damage `400`", "가장 큰 유효 거리", "owner 사망"]],
     [projectMapText, "project map Lily skill", ["lily_seed", "피격 전 위치", "400 피해 후 적 뒤 1타일", "PlayerID` 오름차순"]],
-    [apiReferenceText, "api reference Lily skill", ["Type: lily_seed", "damage `400`", "range `10.4 tile`", "가장 큰 유효 지점", "HP/IsDead/Pos"]],
-    [apiDocsText, "api docs Lily skill", ["damage `400`", "range `10.4 tile`", "피격 전 target 위치", "최대 유효 위치"]],
+    [apiReferenceText, "api reference Lily skill", ["Type: lily_seed", "damage `400`", "range `12.48 tile`", "가장 큰 유효 지점", "HP/IsDead/Pos"]],
+    [apiDocsText, "api docs Lily skill", ["damage `400`", "range `12.48 tile`", "피격 전 target 위치", "최대 유효 위치"]],
     [decisionsText, "ADR-0052 Lily skill", ["ADR-0052", "피해·HP·IsDead를 먼저", "contact interval", "PlayerID` 오름차순", "Win/Lose/Draw"]],
-    [docsBuildText, "docs UI Lily skill", ["Projectiles[].Type: lily_seed", "damage 400", "range 10.4 tile", "최대 유효 지점"]],
+    [docsBuildText, "docs UI Lily skill", ["Projectiles[].Type: lily_seed", "damage 400", "range 12.48 tile", "최대 유효 지점"]],
   ]) {
     for (const marker of markers) {
       assert(text.includes(marker), `${name} must document ${marker}`);
@@ -1112,7 +1114,7 @@ function validateCharacterSkillCooldownContract() {
   }
   assert(!apiReferenceText.includes("실제 projectile 생성은 후속 효과 티켓에서 구현합니다."),
     "api reference must not retain pre-SL-119 projectile implementation boundary");
-  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
+  for (const field of ["PressedSkill", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick", "AttackReadyTick", "IsDashing"]) {
     assert(!openAPIText.includes(field), `OpenAPI must not expose gameplay field ${field}`);
   }
 
@@ -1149,7 +1151,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## SL-82 CharacterType ownership",
     "architecture current config summary",
   );
-  for (const marker of ["server-config/game-config.json` v6", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
+  for (const marker of ["server-config/game-config.json` v7", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(architectureConfigSummary.includes(marker), `architecture current config summary must document ${marker}`);
   }
 
@@ -1159,7 +1161,7 @@ function validateCharacterSkillCooldownContract() {
     "\n\n## 기본 duel 2인 수동 검증 시나리오",
     "api reference current config summary",
   );
-  for (const marker of ["server-only v6 config", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
+  for (const marker of ["server-only v7 config", "skill.cooldownTicks", "SkillReadyTick", "AttackCharges", "NextAttackChargeTick"]) {
     assert(apiReferenceConfigSummary.includes(marker), `api reference current config summary must document ${marker}`);
   }
 
@@ -1265,7 +1267,7 @@ function validateBotBehaviorDocumentation() {
       "room-owned controller state",
       "one PlayerID-sorted merged State.Step",
       "client config v3",
-      "AsyncAPI info `0.9.0`",
+      "AsyncAPI info `0.10.0`",
     ]],
     [decisionsText, "decisions", "## ADR-0047: SL-116 결정적 Bot controller와 server config v5", [
       "room-owned controller state",
@@ -1293,13 +1295,13 @@ function validateBotBehaviorDocumentation() {
   }
 
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
-  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0 after SL-120");
+  assert(hasLine(asyncAPIText, "  version: 0.10.0"), "AsyncAPI version must be 0.10.0 after SL-120");
 }
 
 function validateReliableSkillDeliveryValidatorSelfTests() {
   const currentDocsUICoalescingArticle = extractDocsHTMLArticle("Snapshot coalescing");
   const staleDocsUICoalescingArticle = currentDocsUICoalescingArticle.replace(
-    "Client config v3/server config v6 경계를 유지합니다.",
+    "Client config v3/server config v7 경계를 유지합니다.",
     "SL-99 client config v3/server config v4 경계를 유지합니다.",
   );
   let rejectedStaleDocsUICoalescing = false;
@@ -1582,8 +1584,8 @@ function validateApiDocsServerConfigV5Contract() {
     "api docs current validation section",
   );
   assert(
-    validationSection.includes("server config v6 `360/390/330`"),
-    "api docs current validation must document server config v6 cooldowns",
+    validationSection.includes("server config v7 `360/390/330`"),
+    "api docs current validation must document server config v7 cooldowns",
   );
   assert(!validationSection.includes("server config v4"), "api docs current validation must not document server config v4");
 
@@ -1593,8 +1595,8 @@ function validateApiDocsServerConfigV5Contract() {
     "api docs current CharacterType section",
   );
   assert(
-    characterTypeSection.includes("server config v6 HP `4000/3100/4100`"),
-    "api docs current CharacterType section must document server config v6 authoritative stats",
+    characterTypeSection.includes("server config v7 HP `4000/3100/4100`"),
+    "api docs current CharacterType section must document server config v7 authoritative stats",
   );
   assert(!characterTypeSection.includes("server config v4"), "api docs current CharacterType section must not document server config v4");
 }
@@ -1609,6 +1611,8 @@ function assertEveryGameplayPlayerHasSkillCooldownState(objects, name) {
     assert(pressedSkillFields.length === 1, `${name} player ${index} must contain exactly one PressedSkill`);
     assert(readyTickFields.length === 1, `${name} player ${index} must contain exactly one SkillReadyTick`);
     assert(attackChargeFields.length === 1, `${name} player ${index} must contain exactly one AttackCharges`);
+    assert((object.match(/^\s+IsDashing:\s+(true|false)$/gm) ?? []).length === 1, `${name} player ${index} must contain exactly one boolean IsDashing`);
+    assert((object.match(/^\s+AttackReadyTick:\s+(\d+)$/gm) ?? []).length === 1, `${name} player ${index} must contain exactly one AttackReadyTick`);
     assert(nextChargeTickFields.length === 1, `${name} player ${index} must contain exactly one NextAttackChargeTick`);
   }
 }
@@ -1629,6 +1633,8 @@ function assertEveryJSONGameplayPlayerHasSkillCooldownState(players, name) {
       `${name} player ${index} must contain non-negative integer AttackCharges`);
     assert(Object.keys(player).filter((field) => field === "NextAttackChargeTick").length === 1,
       `${name} player ${index} must contain exactly one NextAttackChargeTick`);
+    assert(typeof player.IsDashing === "boolean", `${name} player ${index} must contain boolean IsDashing`);
+    assert(Number.isSafeInteger(player.AttackReadyTick) && player.AttackReadyTick >= 0, `${name} player ${index} must contain non-negative AttackReadyTick`);
     assert(Number.isSafeInteger(player.NextAttackChargeTick) && player.NextAttackChargeTick >= 0,
       `${name} player ${index} must contain non-negative integer NextAttackChargeTick`);
   }
@@ -1658,6 +1664,8 @@ function assertJSONSkillApprovalExample(message, name) {
       player.SkillReadyTick === 361,
   );
   assert(approvals.length === 1, `${name} must contain exactly one Tick 1 Shelly skill approval at ready tick 361`);
+  assertEveryJSONGameplayPlayerHasSkillCooldownState(snapshot.Players, name);
+  assert(approvals[0].IsDashing === true && approvals[0].AttackReadyTick === 10, `${name} must show active nine-tick dash lock`);
   const attackDirection = approvals[0].AttackDir;
   assert(
     Number.isFinite(attackDirection?.x) &&
@@ -1845,7 +1853,7 @@ function assertYAMLShellySpreadExample(gameplay, name) {
   for (const [index, projectile] of projectiles.entries()) {
     const projectileName = `${name} projectile ${index}`;
     assert(extractYAMLScalar(projectile, "OwnerId", projectileName) === ownerID, `${projectileName} must use the Shelly owner`);
-    assert(extractYAMLScalar(projectile, "Damage", projectileName) === "280", `${projectileName} must use Shelly damage 280`);
+    assert(extractYAMLScalar(projectile, "Damage", projectileName) === "252", `${projectileName} must use Shelly damage 252`);
     assert(extractYAMLScalar(projectile, "Type", projectileName) === "default", `${projectileName} must use the configured projectile type`);
     assertDirection(extractYAMLVector(projectile, "Dir", projectileName), expectedDirections[index], projectileName);
   }
@@ -1864,7 +1872,7 @@ function assertJSONShellySpreadExample(message, name) {
   for (const [index, projectile] of projectiles.entries()) {
     const projectileName = `${name} projectile ${index}`;
     assert(projectile.OwnerId === shellyActivations[0].Id, `${projectileName} must use the Shelly owner`);
-    assert(projectile.Damage === 280, `${projectileName} must use Shelly damage 280`);
+    assert(projectile.Damage === 252, `${projectileName} must use Shelly damage 252`);
     assert(projectile.Type === "default", `${projectileName} must use the configured projectile type`);
     assertDirection(projectile.Dir, expectedDirections[index], projectileName);
   }

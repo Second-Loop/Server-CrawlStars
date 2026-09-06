@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "tickRate": 30,
   "tile": {
     "size": 1.2
@@ -22,7 +22,7 @@
         "speed": 2,
         "normalAttack": {
           "kind": "spread_projectile",
-          "damagePerHit": 280,
+          "damagePerHit": 252,
           "rangeTiles": 7.2,
           "maxCharges": 3,
           "rechargeTicks": 30,
@@ -36,7 +36,8 @@
         "skill": {
           "kind": "reload_dash",
           "cooldownTicks": 360,
-          "dashDistanceTiles": 5.4
+          "dashDistanceTiles": 2.7,
+          "dashDurationTicks": 9
         }
       },
       {
@@ -63,13 +64,13 @@
           "kind": "burst_projectile",
           "cooldownTicks": 390,
           "damagePerHit": 320,
-          "rangeTiles": 11,
+          "rangeTiles": 9.35,
           "projectile": {
             "type": "colt_skill",
-            "count": 12,
+            "count": 10,
             "directionOffsetsDegrees": [0],
             "intervalTicks": 0,
-            "emissionOffsetsTicks": [0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20]
+            "emissionOffsetsTicks": [0, 2, 4, 6, 7, 9, 11, 13, 14, 16]
           }
         }
       },
@@ -81,7 +82,7 @@
         "speed": 2,
         "normalAttack": {
           "kind": "melee",
-          "damagePerHit": 1100,
+          "damagePerHit": 1210,
           "rangeTiles": 2.2,
           "maxCharges": 2,
           "rechargeTicks": 30
@@ -90,7 +91,7 @@
           "kind": "teleport_projectile",
           "cooldownTicks": 330,
           "damagePerHit": 400,
-          "rangeTiles": 10.4,
+          "rangeTiles": 12.48,
           "behindDistanceTiles": 1,
           "projectile": {
             "type": "lily_seed"

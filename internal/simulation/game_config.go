@@ -8,7 +8,7 @@ import (
 	"math"
 )
 
-const ServerGameConfigVersion = 6
+const ServerGameConfigVersion = 7
 
 type CharacterType int
 
@@ -80,6 +80,7 @@ const (
 
 type ReloadDashSkillConfig struct {
 	DashDistanceTiles float64
+	DashDurationTicks int
 }
 
 type BurstProjectileSkillConfig struct {
@@ -106,6 +107,7 @@ type SkillConfig struct {
 type skillConfigWire struct {
 	Kind                SkillKind               `json:"kind"`
 	CooldownTicks       int                     `json:"cooldownTicks"`
+	DashDurationTicks   *int                    `json:"dashDurationTicks,omitempty"`
 	DashDistanceTiles   *float64                `json:"dashDistanceTiles,omitempty"`
 	DamagePerHit        *float64                `json:"damagePerHit,omitempty"`
 	RangeTiles          *float64                `json:"rangeTiles,omitempty"`
@@ -131,17 +133,17 @@ func (config *SkillConfig) UnmarshalJSON(data []byte) error {
 	decoded := SkillConfig{Kind: wire.Kind, CooldownTicks: wire.CooldownTicks}
 	switch wire.Kind {
 	case SkillReloadDash:
-		if wire.DashDistanceTiles == nil || hasField("damagePerHit") || hasField("rangeTiles") || hasField("behindDistanceTiles") || hasField("projectile") {
+		if wire.DashDistanceTiles == nil || wire.DashDurationTicks == nil || hasField("damagePerHit") || hasField("rangeTiles") || hasField("behindDistanceTiles") || hasField("projectile") {
 			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
 		}
-		decoded.ReloadDash = &ReloadDashSkillConfig{DashDistanceTiles: *wire.DashDistanceTiles}
+		decoded.ReloadDash = &ReloadDashSkillConfig{DashDistanceTiles: *wire.DashDistanceTiles, DashDurationTicks: *wire.DashDurationTicks}
 	case SkillBurstProjectile:
-		if hasField("dashDistanceTiles") || wire.DamagePerHit == nil || wire.RangeTiles == nil || hasField("behindDistanceTiles") || wire.Projectile == nil {
+		if hasField("dashDistanceTiles") || hasField("dashDurationTicks") || wire.DamagePerHit == nil || wire.RangeTiles == nil || hasField("behindDistanceTiles") || wire.Projectile == nil {
 			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
 		}
 		decoded.BurstProjectile = &BurstProjectileSkillConfig{DamagePerHit: *wire.DamagePerHit, RangeTiles: *wire.RangeTiles, Projectile: *wire.Projectile}
 	case SkillTeleportProjectile:
-		if hasField("dashDistanceTiles") || wire.DamagePerHit == nil || wire.RangeTiles == nil || wire.BehindDistanceTiles == nil || wire.Projectile == nil {
+		if hasField("dashDistanceTiles") || hasField("dashDurationTicks") || wire.DamagePerHit == nil || wire.RangeTiles == nil || wire.BehindDistanceTiles == nil || wire.Projectile == nil {
 			return fmt.Errorf("skill kind %q fields are invalid", wire.Kind)
 		}
 		decoded.TeleportProjectile = &TeleportProjectileSkillConfig{DamagePerHit: *wire.DamagePerHit, RangeTiles: *wire.RangeTiles, BehindDistanceTiles: *wire.BehindDistanceTiles, Projectile: *wire.Projectile}
@@ -158,6 +160,7 @@ func (config SkillConfig) MarshalJSON() ([]byte, error) {
 	case SkillReloadDash:
 		if config.ReloadDash != nil {
 			wire.DashDistanceTiles = &config.ReloadDash.DashDistanceTiles
+			wire.DashDurationTicks = &config.ReloadDash.DashDurationTicks
 		}
 	case SkillBurstProjectile:
 		if config.BurstProjectile != nil {
@@ -512,8 +515,11 @@ func validateSkillConfig(playerTypeID string, skill SkillConfig, config GameConf
 		if !isFinitePositive(skill.ReloadDash.DashDistanceTiles) {
 			return fmt.Errorf("game config player type %q skill.dashDistanceTiles must be positive", playerTypeID)
 		}
-		if skill.ReloadDash.DashDistanceTiles != 5.4 {
-			return fmt.Errorf("game config player type %q skill.dashDistanceTiles must be canonical 5.4", playerTypeID)
+		if skill.ReloadDash.DashDurationTicks != 9 {
+			return fmt.Errorf("game config player type %q skill.dashDurationTicks must be canonical 9", playerTypeID)
+		}
+		if skill.ReloadDash.DashDistanceTiles != 2.7 {
+			return fmt.Errorf("game config player type %q skill.dashDistanceTiles must be canonical 2.7", playerTypeID)
 		}
 	case SkillBurstProjectile:
 		if skill.ReloadDash != nil || skill.BurstProjectile == nil || skill.TeleportProjectile != nil {
@@ -529,7 +535,7 @@ func validateSkillConfig(playerTypeID string, skill SkillConfig, config GameConf
 		if err := validateProjectileSchedule(playerTypeID+" skill", burst.Projectile, true); err != nil {
 			return err
 		}
-		if !equalIntOffsets(burst.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}) {
+		if !equalIntOffsets(burst.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16}) {
 			return fmt.Errorf("game config player type %q skill emission offsets do not match canonical schedule", playerTypeID)
 		}
 		if _, ok := config.ProjectileType(burst.Projectile.Type); !ok {
@@ -543,8 +549,8 @@ func validateSkillConfig(playerTypeID string, skill SkillConfig, config GameConf
 		if !isFinitePositive(teleport.DamagePerHit) || !isFinitePositive(teleport.RangeTiles) || !isFinitePositive(teleport.BehindDistanceTiles) {
 			return fmt.Errorf("game config player type %q teleport_projectile values must be positive", playerTypeID)
 		}
-		if teleport.RangeTiles != 10.4 {
-			return fmt.Errorf("game config player type %q skill.rangeTiles must be canonical 10.4", playerTypeID)
+		if teleport.RangeTiles != 12.48 {
+			return fmt.Errorf("game config player type %q skill.rangeTiles must be canonical 12.48", playerTypeID)
 		}
 		if _, ok := config.ProjectileType(teleport.Projectile.Type); !ok {
 			return fmt.Errorf("game config player type %q skill projectile type %q is not defined", playerTypeID, teleport.Projectile.Type)
@@ -712,7 +718,7 @@ func StaticGameConfig() GameConfig {
 					Speed:         DefaultPlayerSpeed,
 					NormalAttack: NormalAttackConfig{
 						Kind:          NormalAttackSpreadProjectile,
-						DamagePerHit:  280,
+						DamagePerHit:  252,
 						RangeTiles:    7.2,
 						MaxCharges:    3,
 						RechargeTicks: 30,
@@ -725,7 +731,7 @@ func StaticGameConfig() GameConfig {
 					Skill: SkillConfig{
 						Kind:          SkillReloadDash,
 						CooldownTicks: 360,
-						ReloadDash:    &ReloadDashSkillConfig{DashDistanceTiles: 5.4},
+						ReloadDash:    &ReloadDashSkillConfig{DashDistanceTiles: 2.7, DashDurationTicks: 9},
 					},
 				},
 				{
@@ -752,12 +758,12 @@ func StaticGameConfig() GameConfig {
 						CooldownTicks: 390,
 						BurstProjectile: &BurstProjectileSkillConfig{
 							DamagePerHit: 320,
-							RangeTiles:   11,
+							RangeTiles:   9.35,
 							Projectile: ProjectileAttackConfig{
 								Type:                    "colt_skill",
-								Count:                   12,
+								Count:                   10,
 								DirectionOffsetsDegrees: []float64{0},
-								EmissionOffsetsTicks:    []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20},
+								EmissionOffsetsTicks:    []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16},
 							},
 						},
 					},
@@ -770,7 +776,7 @@ func StaticGameConfig() GameConfig {
 					Speed:         DefaultPlayerSpeed,
 					NormalAttack: NormalAttackConfig{
 						Kind:          NormalAttackMelee,
-						DamagePerHit:  1100,
+						DamagePerHit:  1210,
 						RangeTiles:    2.2,
 						MaxCharges:    2,
 						RechargeTicks: 30,
@@ -780,7 +786,7 @@ func StaticGameConfig() GameConfig {
 						CooldownTicks: 330,
 						TeleportProjectile: &TeleportProjectileSkillConfig{
 							DamagePerHit:        400,
-							RangeTiles:          10.4,
+							RangeTiles:          12.48,
 							BehindDistanceTiles: 1,
 							Projectile:          ProjectileAttackConfig{Type: "lily_seed"},
 						},

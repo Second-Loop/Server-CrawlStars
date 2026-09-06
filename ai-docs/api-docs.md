@@ -79,11 +79,11 @@ AsyncAPI channel `address`는 query를 붙이지 않은 path-only 값으로 유�
 
 Handshake 순서는 room 404, player 404, token 401, live connection 또는 in-flight reservation 409입니다. Token credential은 room/player session이 남아 있는 동안 재사용할 수 있습니다. Unmatched disconnect는 room-owned 10초 fill deadline과 credential을 유지하고, matched/loading/starting disconnect는 pre-start cancel로 room을 삭제합니다. Failed upgrade는 room을 취소하지 않아 같은 경로로 재시도할 수 있습니다. Raw token과 전체 query 문자열은 log에 남기지 않습니다.
 
-AsyncAPI document dialect는 계속 `asyncapi: 3.0.0`이고, API 계약을 나타내는 `info.version`은 탄약 snapshot state가 추가된 `0.9.0`입니다. `InputMessage.ClientTick`은 optional `int64`, minimum `0`이고 `InputMessage.PressedSkill`은 optional boolean입니다. `PlayerData.LastProcessedClientTick`, `PressedSkill`, `SkillReadyTick`, `AttackCharges`, `NextAttackChargeTick`은 required이며 tick field는 `int64`, minimum `0`입니다. ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가지며 human의 REST 선택값과 server-owned bot 선택값을 보존합니다. Bot은 Shelly/Colt/Lily를 균등·독립적으로 고르고 room 내 중복을 허용하며 match 동안 고정합니다. 모든 Ready/gameplay example은 각 required field를 정확히 한 번 포함합니다. REST OpenAPI는 변경하지 않습니다.
+AsyncAPI document dialect는 계속 `asyncapi: 3.0.0`이고, API 계약을 나타내는 `info.version`은 탄약 snapshot state가 추가된 `0.10.0`입니다. `InputMessage.ClientTick`은 optional `int64`, minimum `0`이고 `InputMessage.PressedSkill`은 optional boolean입니다. `PlayerData.LastProcessedClientTick`, `PressedSkill`, `SkillReadyTick`, `AttackCharges`, `NextAttackChargeTick`은 required이며 tick field는 `int64`, minimum `0`입니다. ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가지며 human의 REST 선택값과 server-owned bot 선택값을 보존합니다. Bot은 Shelly/Colt/Lily를 균등·독립적으로 고르고 room 내 중복을 허용하며 match 동안 고정합니다. 모든 Ready/gameplay example은 각 required field를 정확히 한 번 포함합니다. REST OpenAPI는 변경하지 않습니다.
 
 AsyncAPI에는 message schema뿐 아니라 연결 생명주기도 기록합니다. Participant capacity는 human+bot 합계이고, Ready payload는 full participant list를 포함하지만 human WebSocket session에만 전달합니다. Attach와 match 시작용 Ready ACK는 human-only quorum이며 bot은 WebSocket sender가 아닙니다. Processed input ACK는 gameplay `PlayerData.LastProcessedClientTick`이고 Ready ACK와 별개입니다. 같은 match의 started room reconnect는 simulation state에 남은 ACK를 이어 쓰며 새 match는 `0`에서 시작합니다. Started match의 reconnectable transport close는 10초 grace 동안 state/tick을 유지하고, deadline expiry는 room gameplay tick에서 batch 처리합니다. Server heartbeat는 30초 간격이고 Ping마다 90초 deadline을 사용합니다. Payload write는 매번 새 5초 context를 사용하고 Ping/read/write failure는 같은 close-once 정책으로 현재 session만 해제하며 bot replacement와 pre-start reconnect grace는 범위 밖입니다.
 
-일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. Destroyed projectile은 destroyed snapshot tick `D`부터 `D+29`까지 30개 gameplay snapshot에 `IsDestroyed: true`로 남고 `D+30` 전에 Server canonical history에서 제거합니다. 느린 writer가 개별 tombstone snapshot을 건너뛸 수 있으므로 Client absent-ID reconciliation이 필요합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v6 경계를 유지합니다.
+일반 non-terminal gameplay snapshot은 client별 capacity-1 latest-only slot에서 coalescing합니다. Destroyed projectile은 destroyed snapshot tick `D`부터 `D+29`까지 30개 gameplay snapshot에 `IsDestroyed: true`로 남고 `D+30` 전에 Server canonical history에서 제거합니다. 느린 writer가 개별 tombstone snapshot을 건너뛸 수 있으므로 Client absent-ID reconciliation이 필요합니다. 어느 player라도 `PressedSkill: true`이면 해당 snapshot을 reliable control 경로로 승격합니다. PressedSkill approval은 reliable approval exception으로 size-8 reliable control FIFO에서 전달합니다. 승격 전에 older pending normal snapshot과 기존 deferred normal snapshot을 버리고 reliable approval로 전환합니다. 후속 normal은 reliable approval pending이 모두 drain될 때까지 session별 deferred latest 하나만 보관합니다. multiple approval은 FIFO로 전달합니다. reliable approval write가 성공해 pending이 모두 drain된 뒤 최신 일반 snapshot 하나를 flush합니다. flush는 approval -> latest 순서로 실행합니다. accepted approval은 terminal보다 먼저 drain합니다. accepted approval을 모두 drain한 뒤 terminal snapshot -> GameEnd -> close 순서로 실행합니다. deferred normal snapshot은 종료 시 버립니다. queue overflow/write failure는 해당 session close/release의 fail-closed로 처리합니다. 무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다. PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다. 새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다. AsyncAPI dialect 3.0.0과 info 0.10.0을 사용합니다. Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다. 현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다. Client config v3/server config v7 경계를 유지합니다.
 
 Input field는 Unity prototype 이름을 따릅니다.
 
@@ -101,7 +101,7 @@ Input field는 Unity prototype 이름을 따릅니다.
 
 `PressedSkill`은 optional boolean이며 누락하면 `false`, present `null`이나 wrong type이면 `invalid_input`입니다. `PressedSkill: true`는 command별 독립 시도이고 같은 command의 `AttackDir`을 재사용하지만 방향만으로 trigger하지 않습니다. Blocked attempt는 queue하지 않습니다. Skill-ready와 non-zero direction이면 normal attack보다 우선하며 Shelly `reload_dash`는 attack charge/recharge를 `max/0`으로 바꿉니다. Cooldown 또는 zero direction이면 기존 attack 판정으로 fall through하고, cooldown에 막힌 유효한 양수 command도 processed ACK는 진행합니다.
 
-Gameplay `PlayerData.PressedSkill`은 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute state입니다. `Snapshot.Tick >= SkillReadyTick`이면 ready이며 tick `A` 승인 시 cooldown `C`를 더한 `A + C`를 기록하고 exact `A + C`도 허용합니다. Server config v6가 Shelly/Colt/Lily `360/390/330` tick을 소유하고 client config는 SL-84에서 바꾸지 않습니다. Shelly 승인은 일반 이동 뒤 `5.4 tile` 대시와 완전 재장전을 실행하며 partial/blocked dash도 cooldown과 reload를 유지합니다. Colt 승인은 exact offsets `[0,2,4,6,7,9,11,13,14,16,18,20]`의 `colt_skill` 12발을 시작하고 완료 전 일반 공격을 잠급니다. Lily 승인은 damage `400`, range `10.4 tile`, speed `13`, radius `0.3`의 `lily_seed`를 생성하고 적중 피해 뒤 살아 있는 Lily를 피격 전 target 위치 기준 seed 방향 뒤 `1 tile`로 이동합니다. 목적지 충돌 시 같은 ray의 최대 유효 위치로 backoff하고 owner 사망이나 유효 위치 부재에는 피해만 유지합니다. Bot skill use는 후속 범위입니다.
+Gameplay `PlayerData.PressedSkill`은 transient server approval pulse이고 `SkillReadyTick`은 persistent canonical absolute state입니다. `Snapshot.Tick >= SkillReadyTick`이면 ready이며 tick `A` 승인 시 cooldown `C`를 더한 `A + C`를 기록하고 exact `A + C`도 허용합니다. Server config v7가 Shelly/Colt/Lily `360/390/330` tick을 소유하고 client config는 SL-84에서 바꾸지 않습니다. Shelly 승인은 일반 이동을 차단하며 `2.7 tile`을 9 tick으로 나눈 대시와 완전 재장전을 실행하며 partial/blocked dash도 cooldown과 reload를 유지합니다. Colt 승인은 exact offsets `[0,2,4,6,7,9,11,13,14,16]`의 `colt_skill` 10발을 시작하고 완료 전 일반 공격을 잠급니다. Lily 승인은 damage `400`, range `12.48 tile`, speed `13`, radius `0.3`의 `lily_seed`를 생성하고 적중 피해 뒤 살아 있는 Lily를 피격 전 target 위치 기준 seed 방향 뒤 `1 tile`로 이동합니다. 목적지 충돌 시 같은 ray의 최대 유효 위치로 backoff하고 owner 사망이나 유효 위치 부재에는 피해만 유지합니다. Bot skill use는 후속 범위입니다.
 
 서버는 유한한 `MoveDir`의 크기가 `1` 이하이면 그대로 보존하고, 더 크면 unit vector로 clamp합니다. Zero가 아닌 유한한 `AttackDir`는 항상 unit vector로 정규화하며, NaN/Inf가 포함된 input은 적용하지 않습니다. Player별 attack budget은 server-only이며 Shelly/Colt/Lily 순서로 `3/3/2` charge로 시작해 최대치보다 적을 때 30 tick마다 1 charge를 회복합니다. 사망한 player의 input과 zero 방향 또는 소진된 charge의 공격 요청은 거부합니다. Live player의 유한한 양수 input은 충돌이나 공격 budget 때문에 visible effect가 없어도 `State.Step`에서 처리하면 ACK합니다. Unknown/dead/non-finite/negative/stale input은 ACK하지 않습니다.
 
@@ -133,6 +133,8 @@ Server message wrapper:
         "SkillReadyTick": 361,
         "AttackCharges": 3,
         "NextAttackChargeTick": 0,
+        "AttackReadyTick": 10,
+        "IsDashing": true,
         "IsDead": false,
         "LastProcessedClientTick": 12
       },
@@ -153,6 +155,8 @@ Server message wrapper:
         "SkillReadyTick": 0,
         "AttackCharges": 2,
         "NextAttackChargeTick": 31,
+        "AttackReadyTick": 0,
+        "IsDashing": false,
         "IsDead": false,
         "LastProcessedClientTick": 0
       }
@@ -164,7 +168,7 @@ Server message wrapper:
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9781476007338057, "y": 0.20791169081775931 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -175,7 +179,7 @@ Server message wrapper:
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9945218953682733, "y": 0.10452846326765346 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -186,7 +190,7 @@ Server message wrapper:
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -1, "y": 0 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -197,7 +201,7 @@ Server message wrapper:
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9945218953682733, "y": -0.10452846326765346 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -208,7 +212,7 @@ Server message wrapper:
         "Pos": { "x": 1.2, "y": -1.2 },
         "Dir": { "x": -0.9781476007338057, "y": -0.20791169081775931 },
         "Speed": 13,
-        "Damage": 280,
+        "Damage": 252,
         "Radius": 0.3,
         "Type": "default",
         "IsDestroyed": false
@@ -327,10 +331,13 @@ rtk node docs-ui/scripts/build.mjs
 rtk mise exec -- env GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/go-mod" go test ./internal/docs -count=1
 ```
 
-순서는 source-level custom validator → pinned Redocly/AsyncAPI official validator → docs build → generated embed를 읽는 Go docs test입니다. `docs-ui/scripts/validate.mjs`는 raw spec의 필수 version, stability marker, security count, opaque pattern, error/status marker, tokenized path, path-only binding, public DTO secret 부재와 exhaustive player example을 확인합니다. SL-94 계약의 optional input `ClientTick`, required player ACK, human/bot ACK example과 함께 optional `PressedSkill`, required approval/ready/탄약 state, server config v6 `360/390/330`, `A + C`, `T + (R - r)` 경계와 OpenAPI/client config 제외 범위를 확인합니다. `starting`/`started` control의 `Players: null`도 유지합니다. 이 marker validator는 YAML parser가 아니므로 pinned official CLI의 OpenAPI/AsyncAPI parse와 schema validation을 생략할 수 없습니다. 전체 validation은 이어서 `make ci`로 확인합니다.
+순서는 source-level custom validator → pinned Redocly/AsyncAPI official validator → docs build → generated embed를 읽는 Go docs test입니다. `docs-ui/scripts/validate.mjs`는 raw spec의 필수 version, stability marker, security count, opaque pattern, error/status marker, tokenized path, path-only binding, public DTO secret 부재와 exhaustive player example을 확인합니다. SL-94 계약의 optional input `ClientTick`, required player ACK, human/bot ACK example과 함께 optional `PressedSkill`, required approval/ready/탄약 state, server config v7 `360/390/330`, `A + C`, `T + (R - r)` 경계와 OpenAPI/client config 제외 범위를 확인합니다. `starting`/`started` control의 `Players: null`도 유지합니다. 이 marker validator는 YAML parser가 아니므로 pinned official CLI의 OpenAPI/AsyncAPI parse와 schema validation을 생략할 수 없습니다. 전체 validation은 이어서 `make ci`로 확인합니다.
 
 ### SL-98 CharacterType 필수 계약 문서화 기준
 
 OpenAPI는 `CharacterType` shared schema의 stable IDs `0/1/2`를 제공하고, join request body와 lower-camel `characterType`을 required로 둡니다. request property에는 default, nullable, deprecated를 두지 않으며 누락값 fallback과 `character_type_defaulted` 경고가 없습니다. REST `Player`도 required `characterType`입니다.
 
-AsyncAPI `info.version`은 `0.9.0`이며 ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가집니다. Gameplay PlayerData는 required `PressedSkill`, `SkillReadyTick`, `AttackCharges`, `NextAttackChargeTick`을 정확히 한 번 가지며 starting/started control의 `Players: null`은 유지합니다. Source validator는 OpenAPI/AsyncAPI/UI example의 모든 participant가 valid ID를 정확히 한 번 갖고 bot CharacterType이 `0/1/2` stable ID 범위인지, examples에 non-Shelly bot marker가 실제 있는지, client config v3 mapping `0/1/2`와 server config v6 HP `4000/3100/4100`, cooldown `360/390/330`이 drift하지 않는지 검사합니다.
+AsyncAPI `info.version`은 `0.10.0`이며 ReadyPlayer와 PlayerData는 required PascalCase `CharacterType`을 가집니다. Gameplay PlayerData는 required `PressedSkill`, `SkillReadyTick`, `AttackCharges`, `NextAttackChargeTick`을 정확히 한 번 가지며 starting/started control의 `Players: null`은 유지합니다. Source validator는 OpenAPI/AsyncAPI/UI example의 모든 participant가 valid ID를 정확히 한 번 갖고 bot CharacterType이 `0/1/2` stable ID 범위인지, examples에 non-Shelly bot marker가 실제 있는지, client config v3 mapping `0/1/2`와 server config v7 HP `4000/3100/4100`, cooldown `360/390/330`이 drift하지 않는지 검사합니다.
+
+
+SL-123은 gameplay `PlayerData.IsDashing`을 required boolean으로 추가해요. Shelly는 승인 `A`부터 `A+8`까지 9구간 동안 일반 이동·공격을 차단하며 입력이 없어도 고정 방향으로 이동해요. `AttackReadyTick=A+9`와 `IsDashing=true`는 마지막 구간·충돌·사망 snapshot에서 `0/false`로 해제해요. 다음 Step의 일반 공격을 허용하고 유효한 입력 ACK는 대시 중에도 유지해요. REST OpenAPI는 그대로이고 AsyncAPI info는 `0.10.0`이에요.

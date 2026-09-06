@@ -62,6 +62,7 @@ type PlayerData struct {
 	AttackCharges           int           `json:"AttackCharges"`
 	NextAttackChargeTick    Tick          `json:"NextAttackChargeTick"`
 	AttackReadyTick         Tick          `json:"AttackReadyTick"`
+	IsDashing               bool          `json:"IsDashing"`
 	IsDead                  bool          `json:"IsDead"`
 	SkillReadyTick          Tick          `json:"SkillReadyTick"`
 	LastProcessedClientTick int64         `json:"LastProcessedClientTick"`
@@ -145,6 +146,7 @@ type State struct {
 	gameMap               MapData
 	gameConfig            GameConfig
 	attackStates          map[PlayerID]attackState
+	dashStates            map[PlayerID]timedDashState
 	burstStates           map[PlayerID]burstState
 	projectileRuntime     map[ProjectileID]projectileRuntime
 	projectileDestroyedAt map[ProjectileID]Tick
@@ -171,6 +173,7 @@ func NewStateWithConfig(players []PlayerData, config Config) *State {
 		gameConfig:            gameConfig,
 		attackStates:          attackStates,
 		burstStates:           make(map[PlayerID]burstState),
+		dashStates:            make(map[PlayerID]timedDashState),
 		projectileRuntime:     make(map[ProjectileID]projectileRuntime),
 		projectileDestroyedAt: make(map[ProjectileID]Tick),
 	}
@@ -194,6 +197,7 @@ func (s *State) EliminatePlayers(ids []PlayerID) {
 		}
 		s.players[index].HP = 0
 		s.players[index].IsDead = true
+		s.clearPlayerDash(index)
 	}
 }
 
@@ -207,7 +211,6 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 	s.moveProjectiles()
 	emissions := s.collectDueBurstEmissions(snapshotTick)
 	meleeIntents := make([]meleeIntent, 0, len(inputs))
-	dashIntents := make([]skillDashIntent, 0, len(inputs))
 	prepared := make([]preparedInput, 0, len(inputs))
 
 	for _, input := range orderedInputsByPlayerID(inputs) {
@@ -215,13 +218,11 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 			prepared = append(prepared, input)
 		}
 	}
+	s.prepareTimedDashes(prepared, snapshotTick)
 	s.applyPlayerMovement(prepared)
 
 	for _, input := range prepared {
 		intent, attackApproved, skillEffect := s.applyPreparedInput(input, snapshotTick)
-		if skillEffect.hasDash {
-			dashIntents = append(dashIntents, skillEffect.dash)
-		}
 		emissions = append(emissions, skillEffect.emissions...)
 		if attackApproved {
 			if intent.attack.Kind == NormalAttackMelee {
@@ -233,7 +234,7 @@ func (s *State) Step(inputs []InputCommand) Snapshot {
 			emissions = append(emissions, s.approveProjectileAttack(intent, snapshotTick)...)
 		}
 	}
-	s.applySkillDashes(dashIntents)
+	s.stepTimedDashes()
 	s.applyMeleeIntents(meleeIntents)
 	s.emitProjectiles(emissions)
 	s.finishCompletedBursts()
@@ -253,6 +254,15 @@ func (s *State) projectAttackStateToPlayers(snapshotTick Tick) {
 	for index := range s.players {
 		player := &s.players[index]
 		player.AttackReadyTick = 0
+		if player.IsDead {
+			s.clearPlayerDash(index)
+		}
+		if dash, active := s.dashStates[player.ID]; active {
+			player.IsDashing = true
+			player.AttackReadyTick = dash.readyTick
+		} else {
+			player.IsDashing = false
+		}
 		if burst, active := s.burstStates[player.ID]; active && !player.IsDead {
 			projectile := burst.attack.projectile
 			lastOffset := (projectile.Count - 1) * projectile.IntervalTicks
@@ -398,6 +408,8 @@ func normalizePlayers(players []PlayerData) []PlayerData {
 func normalizePlayersWithConfig(players []PlayerData, config GameConfig) []PlayerData {
 	cloned := clonePlayers(players)
 	for i := range cloned {
+		cloned[i].IsDashing = false
+		cloned[i].AttackReadyTick = 0
 		playerType, ok := config.PlayerType(cloned[i].CharacterType)
 		if !ok {
 			playerType = config.DefaultPlayerType()
@@ -453,6 +465,9 @@ func (s *State) prepareInput(input InputCommand) (preparedInput, bool) {
 }
 
 func (s *State) applyPreparedInput(input preparedInput, activationTick Tick) (attackIntent, bool, approvedSkillEffect) {
+	if _, active := s.dashStates[input.input.PlayerID]; active {
+		return attackIntent{}, false, approvedSkillEffect{}
+	}
 	if input.input.PressedSkill && input.attackDir != (Vector2{}) {
 		if skill, approved := s.tryApproveSkill(input.playerIndex, activationTick); approved {
 			return attackIntent{}, false, s.dispatchApprovedSkill(input.playerIndex, input.attackDir, skill, activationTick)

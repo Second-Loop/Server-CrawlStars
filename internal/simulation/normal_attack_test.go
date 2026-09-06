@@ -83,7 +83,7 @@ func TestLilyCenterlineRangeAndTangency(t *testing.T) {
 
 			wantHP := DefaultPlayerHP
 			if tt.wantDamage {
-				wantHP -= 1100
+				wantHP -= 1210
 			}
 			assertPlayerHP(t, snapshot, "target", wantHP, false)
 		})
@@ -112,7 +112,7 @@ func TestLilyWallContactPrecedence(t *testing.T) {
 
 			wantHP := DefaultPlayerHP
 			if tt.wantDamage {
-				wantHP -= 1100
+				wantHP -= 1210
 			}
 			assertPlayerHP(t, snapshot, "target", wantHP, false)
 		})
@@ -129,7 +129,7 @@ func TestLilyBushAndWaterDoNotBlock(t *testing.T) {
 
 			snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
 
-			assertPlayerHP(t, snapshot, "target", DefaultPlayerHP-1100, false)
+			assertPlayerHP(t, snapshot, "target", DefaultPlayerHP-1210, false)
 		})
 	}
 }
@@ -268,7 +268,7 @@ func TestLilyHitEligibilityMatchesModeRules(t *testing.T) {
 				wantHP = DefaultPlayerHP
 			}
 			if tt.wantDamage {
-				wantHP -= 1100
+				wantHP -= 1210
 			}
 			assertPlayerHP(t, snapshot, "target", wantHP, tt.target.IsDead)
 		})
@@ -284,7 +284,7 @@ func TestLilyFirstCanonicalTargetWinsBeforeNearerTarget(t *testing.T) {
 
 	snapshot := state.Step([]InputCommand{lilyAttackInput("lily", Vector2{X: 1})})
 
-	assertPlayerHP(t, snapshot, "farther-first", DefaultPlayerHP-1100, false)
+	assertPlayerHP(t, snapshot, "farther-first", DefaultPlayerHP-1210, false)
 	assertPlayerHP(t, snapshot, "nearer-later", DefaultPlayerHP, false)
 }
 
@@ -340,8 +340,8 @@ func TestLilyTargetSelectionWaitsForAllMovement(t *testing.T) {
 
 func TestLilyMutualKillIsDeterministicAcrossInputOrder(t *testing.T) {
 	players := []PlayerData{
-		{ID: "lily-a", Team: TeamRed, CharacterType: CharacterTypeLily, HP: 1100},
-		{ID: "lily-b", Team: TeamBlue, CharacterType: CharacterTypeLily, Pos: Vector2{X: 2}, HP: 1100},
+		{ID: "lily-a", Team: TeamRed, CharacterType: CharacterTypeLily, HP: 1210},
+		{ID: "lily-b", Team: TeamBlue, CharacterType: CharacterTypeLily, Pos: Vector2{X: 2}, HP: 1210},
 	}
 	inputs := []InputCommand{
 		lilyAttackInput("lily-a", Vector2{X: 1}),
@@ -420,8 +420,8 @@ func TestShellyAttackEmitsConfiguredSpreadFromPostMovementPosition(t *testing.T)
 		if math.Abs(projectile.Dir.X-math.Cos(radians)) > 1e-12 || math.Abs(projectile.Dir.Y-math.Sin(radians)) > 1e-12 {
 			t.Errorf("projectile %d direction = %+v, want angle %v degrees", index, projectile.Dir, offset)
 		}
-		if projectile.Damage != 280 {
-			t.Errorf("projectile %d damage = %v, want 280", index, projectile.Damage)
+		if projectile.Damage != 252 {
+			t.Errorf("projectile %d damage = %v, want 252", index, projectile.Damage)
 		}
 		runtime := state.projectileRuntime[projectile.ID]
 		if math.Abs(runtime.maxDistance-8.64) > 1e-12 {
@@ -691,7 +691,7 @@ func TestColtBurstCancelsDueEmissionWhenOwnerDiesInPrePhase(t *testing.T) {
 
 func TestColtDueEmissionSurvivesSamePhaseLilyKillThenFutureBurstCancels(t *testing.T) {
 	state := NewState([]PlayerData{
-		{ID: "colt", Team: TeamBlue, CharacterType: CharacterTypeColt, HP: 1100},
+		{ID: "colt", Team: TeamBlue, CharacterType: CharacterTypeColt, HP: 1210},
 		{ID: "lily", Team: TeamRed, CharacterType: CharacterTypeLily, Pos: Vector2{X: -2}},
 	})
 	state.Step([]InputCommand{{

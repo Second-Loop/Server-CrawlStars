@@ -37,8 +37,8 @@ func TestClientGameConfigSharedCollisionValuesMatchSimulation(t *testing.T) {
 func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) {
 	config := loadServerGameConfig(t)
 
-	if config.Version != 6 {
-		t.Fatalf("expected server config version 6, got %d", config.Version)
+	if config.Version != 7 {
+		t.Fatalf("expected server config version 7, got %d", config.Version)
 	}
 	if config.TickRate != TickRate {
 		t.Fatalf("expected tick rate %d, got %d", TickRate, config.TickRate)
@@ -89,16 +89,16 @@ func TestServerGameConfigArtifactMatchesServerSimulationConstants(t *testing.T) 
 func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 	config := loadServerGameConfig(t)
 	wants := map[CharacterType]SkillConfig{
-		CharacterTypeShelly: {Kind: SkillReloadDash, CooldownTicks: 360, ReloadDash: &ReloadDashSkillConfig{DashDistanceTiles: 5.4}},
+		CharacterTypeShelly: {Kind: SkillReloadDash, CooldownTicks: 360, ReloadDash: &ReloadDashSkillConfig{DashDistanceTiles: 2.7, DashDurationTicks: 9}},
 		CharacterTypeColt: {
 			Kind: SkillBurstProjectile, CooldownTicks: 390,
-			BurstProjectile: &BurstProjectileSkillConfig{DamagePerHit: 320, RangeTiles: 11, Projectile: ProjectileAttackConfig{
-				Type: "colt_skill", Count: 12, DirectionOffsetsDegrees: []float64{0}, EmissionOffsetsTicks: []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20},
+			BurstProjectile: &BurstProjectileSkillConfig{DamagePerHit: 320, RangeTiles: 9.35, Projectile: ProjectileAttackConfig{
+				Type: "colt_skill", Count: 10, DirectionOffsetsDegrees: []float64{0}, EmissionOffsetsTicks: []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16},
 			}},
 		},
 		CharacterTypeLily: {
 			Kind: SkillTeleportProjectile, CooldownTicks: 330,
-			TeleportProjectile: &TeleportProjectileSkillConfig{DamagePerHit: 400, RangeTiles: 10.4, BehindDistanceTiles: 1, Projectile: ProjectileAttackConfig{Type: "lily_seed"}},
+			TeleportProjectile: &TeleportProjectileSkillConfig{DamagePerHit: 400, RangeTiles: 12.48, BehindDistanceTiles: 1, Projectile: ProjectileAttackConfig{Type: "lily_seed"}},
 		},
 	}
 	for characterType, want := range wants {
@@ -109,8 +109,8 @@ func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 	}
 
 	shelly, _ := config.PlayerType(CharacterTypeShelly)
-	if shelly.Skill.Kind != SkillReloadDash || shelly.Skill.ReloadDash == nil || shelly.Skill.ReloadDash.DashDistanceTiles != 5.4 {
-		t.Fatalf("Shelly skill=%+v, want reload_dash 5.4 tiles", shelly.Skill)
+	if shelly.Skill.Kind != SkillReloadDash || shelly.Skill.ReloadDash == nil || shelly.Skill.ReloadDash.DashDistanceTiles != 2.7 {
+		t.Fatalf("Shelly skill=%+v, want reload_dash 2.7 tiles", shelly.Skill)
 	}
 	colt, _ := config.PlayerType(CharacterTypeColt)
 	if colt.Skill.Kind != SkillBurstProjectile || colt.Skill.BurstProjectile == nil {
@@ -119,11 +119,11 @@ func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 	if got, want := colt.NormalAttack.Projectile.EmissionOffsetsTicks, []int{0, 3, 6, 9, 12, 15}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Colt normal offsets=%v, want %v", got, want)
 	}
-	if got, want := colt.Skill.BurstProjectile.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16, 18, 20}; !reflect.DeepEqual(got, want) {
+	if got, want := colt.Skill.BurstProjectile.Projectile.EmissionOffsetsTicks, []int{0, 2, 4, 6, 7, 9, 11, 13, 14, 16}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Colt skill offsets=%v, want %v", got, want)
 	}
-	if skill := colt.Skill.BurstProjectile; skill.DamagePerHit != 320 || skill.RangeTiles != 11 || skill.Projectile.Type != "colt_skill" || skill.Projectile.Count != 12 {
-		t.Fatalf("Colt skill=%+v, want damage/range/type/count 320/11/colt_skill/12", skill)
+	if skill := colt.Skill.BurstProjectile; skill.DamagePerHit != 320 || skill.RangeTiles != 9.35 || skill.Projectile.Type != "colt_skill" || skill.Projectile.Count != 10 {
+		t.Fatalf("Colt skill=%+v, want damage/range/type/count 320/9.35/colt_skill/10", skill)
 	}
 	coltSkillProjectile, ok := config.ProjectileType("colt_skill")
 	if !ok || coltSkillProjectile.Speed != 13 || coltSkillProjectile.Radius != 0.3 {
@@ -133,8 +133,8 @@ func TestLoadServerGameConfigIncludesCanonicalSkillEffects(t *testing.T) {
 	if lily.Skill.Kind != SkillTeleportProjectile || lily.Skill.TeleportProjectile == nil {
 		t.Fatalf("Lily skill=%+v, want teleport_projectile", lily.Skill)
 	}
-	if skill := lily.Skill.TeleportProjectile; skill.DamagePerHit != 400 || skill.RangeTiles != 10.4 || skill.BehindDistanceTiles != 1 || skill.Projectile.Type != "lily_seed" {
-		t.Fatalf("Lily skill=%+v, want damage/range/behind/type 400/10.4/1/lily_seed", skill)
+	if skill := lily.Skill.TeleportProjectile; skill.DamagePerHit != 400 || skill.RangeTiles != 12.48 || skill.BehindDistanceTiles != 1 || skill.Projectile.Type != "lily_seed" {
+		t.Fatalf("Lily skill=%+v, want damage/range/behind/type 400/12.48/1/lily_seed", skill)
 	}
 	lilySeedProjectile, ok := config.ProjectileType("lily_seed")
 	if !ok || lilySeedProjectile.Speed != 13 || lilySeedProjectile.Radius != 0.3 {
@@ -202,9 +202,9 @@ func TestLoadServerGameConfigIncludesCharacterNormalAttacks(t *testing.T) {
 		t.Fatalf("server version = %d, want %d", config.Version, ServerGameConfigVersion)
 	}
 	wants := map[CharacterType]NormalAttackConfig{
-		CharacterTypeShelly: {Kind: NormalAttackSpreadProjectile, DamagePerHit: 280, RangeTiles: 7.2, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 5, DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12}}},
+		CharacterTypeShelly: {Kind: NormalAttackSpreadProjectile, DamagePerHit: 252, RangeTiles: 7.2, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 5, DirectionOffsetsDegrees: []float64{-12, -6, 0, 6, 12}}},
 		CharacterTypeColt:   {Kind: NormalAttackBurstProjectile, DamagePerHit: 340, RangeTiles: 9, MaxCharges: 3, RechargeTicks: 30, Projectile: &ProjectileAttackConfig{Type: "default", Count: 6, DirectionOffsetsDegrees: []float64{0}, EmissionOffsetsTicks: []int{0, 3, 6, 9, 12, 15}}},
-		CharacterTypeLily:   {Kind: NormalAttackMelee, DamagePerHit: 1100, RangeTiles: 2.2, MaxCharges: 2, RechargeTicks: 30},
+		CharacterTypeLily:   {Kind: NormalAttackMelee, DamagePerHit: 1210, RangeTiles: 2.2, MaxCharges: 2, RechargeTicks: 30},
 	}
 	for characterType, want := range wants {
 		got, ok := config.PlayerType(characterType)
@@ -350,6 +350,9 @@ func TestResolveGameConfigRejectsInvalidTypedSkillCombinations(t *testing.T) {
 		{"unknown kind", func(c *GameConfig) { c.Player.Types[0].Skill.Kind = "unknown" }},
 		{"missing reload payload", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash = nil }},
 		{"reload forbidden burst payload", func(c *GameConfig) { c.Player.Types[0].Skill.BurstProjectile = c.Player.Types[1].Skill.BurstProjectile }},
+		{"zero dash duration", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDurationTicks = 0 }},
+		{"noncanonical dash duration", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDurationTicks = 8 }},
+		{"negative dash duration", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDurationTicks = -1 }},
 		{"zero dash", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDistanceTiles = 0 }},
 		{"noncanonical dash", func(c *GameConfig) { c.Player.Types[0].Skill.ReloadDash.DashDistanceTiles = 5.3 }},
 		{"wrong character kind", func(c *GameConfig) { c.Player.Types[0].Skill = c.Player.Types[1].Skill }},
@@ -385,14 +388,18 @@ func TestResolveGameConfigRejectsInvalidTypedSkillCombinations(t *testing.T) {
 func TestSkillConfigJSONRejectsUnknownKindAndKindSpecificFieldMixes(t *testing.T) {
 	tests := map[string]string{
 		"unknown kind":                     `{"kind":"unknown","cooldownTicks":1}`,
-		"reload forbidden damage":          `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"damagePerHit":1}`,
-		"reload forbidden damage null":     `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"damagePerHit":null}`,
-		"reload forbidden projectile null": `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"projectile":null}`,
+		"reload forbidden damage":          `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7,"dashDurationTicks":9,"damagePerHit":1}`,
+		"reload forbidden damage null":     `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7,"dashDurationTicks":9,"damagePerHit":null}`,
+		"reload forbidden projectile null": `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7,"dashDurationTicks":9,"projectile":null}`,
 		"burst missing damage":             `{"kind":"burst_projectile","cooldownTicks":1,"rangeTiles":11,"projectile":{"type":"colt_skill"}}`,
 		"burst forbidden dash null":        `{"kind":"burst_projectile","cooldownTicks":1,"damagePerHit":320,"rangeTiles":11,"dashDistanceTiles":null,"projectile":{"type":"colt_skill"}}`,
-		"teleport forbidden dash":          `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":10.4,"behindDistanceTiles":1,"dashDistanceTiles":5.4,"projectile":{"type":"lily_seed"}}`,
-		"teleport forbidden dash null":     `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":10.4,"behindDistanceTiles":1,"dashDistanceTiles":null,"projectile":{"type":"lily_seed"}}`,
-		"unknown field":                    `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":5.4,"script":"unsafe"}`,
+		"teleport forbidden dash":          `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":12.48,"behindDistanceTiles":1,"dashDistanceTiles":2.7,"dashDurationTicks":9,"projectile":{"type":"lily_seed"}}`,
+		"teleport forbidden dash null":     `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":12.48,"behindDistanceTiles":1,"dashDistanceTiles":null,"projectile":{"type":"lily_seed"}}`,
+		"reload missing duration":          `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7}`,
+		"reload null duration":             `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7,"dashDurationTicks":null}`,
+		"burst forbidden duration":         `{"kind":"burst_projectile","cooldownTicks":1,"damagePerHit":320,"rangeTiles":9.35,"dashDurationTicks":9,"projectile":{"type":"colt_skill"}}`,
+		"teleport forbidden duration null": `{"kind":"teleport_projectile","cooldownTicks":1,"damagePerHit":400,"rangeTiles":12.48,"behindDistanceTiles":1,"dashDurationTicks":null,"projectile":{"type":"lily_seed"}}`,
+		"unknown field":                    `{"kind":"reload_dash","cooldownTicks":1,"dashDistanceTiles":2.7,"dashDurationTicks":9,"script":"unsafe"}`,
 	}
 	for name, payload := range tests {
 		t.Run(name, func(t *testing.T) {

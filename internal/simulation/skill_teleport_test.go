@@ -26,8 +26,8 @@ func TestLilySkillApprovalEmitsCanonicalSeed(t *testing.T) {
 	if seed.OwnerID != "lily" || seed.Type != "lily_seed" || seed.Damage != 400 || seed.Speed != 13 || seed.Radius != 0.3 {
 		t.Fatalf("seed = %+v, want canonical Lily skill projectile", seed)
 	}
-	if runtime := state.projectileRuntime[seed.ID]; math.Abs(runtime.maxDistance-10.4*TileSize) > 1e-12 {
-		t.Fatalf("seed max distance = %v, want %v", runtime.maxDistance, 10.4*TileSize)
+	if runtime := state.projectileRuntime[seed.ID]; math.Abs(runtime.maxDistance-12.48*TileSize) > 1e-12 {
+		t.Fatalf("seed max distance = %v, want %v", runtime.maxDistance, 12.48*TileSize)
 	}
 }
 
@@ -169,12 +169,12 @@ func TestLilySeedUsesModeEligibilityAndRangeBoundary(t *testing.T) {
 		},
 		{
 			name:   "range endpoint tangent hits",
-			target: PlayerData{ID: "target", Team: TeamBlue, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 10.4*TileSize + DefaultPlayerRadius + DefaultProjectileRadius}},
+			target: PlayerData{ID: "target", Team: TeamBlue, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 12.48*TileSize + DefaultPlayerRadius + DefaultProjectileRadius}},
 			wantHP: DefaultPlayerHP - 400,
 		},
 		{
 			name:   "just beyond range does not hit",
-			target: PlayerData{ID: "target", Team: TeamBlue, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 10.4*TileSize + DefaultPlayerRadius + DefaultProjectileRadius + 1e-6}},
+			target: PlayerData{ID: "target", Team: TeamBlue, CharacterType: CharacterTypeShelly, Pos: Vector2{X: 12.48*TileSize + DefaultPlayerRadius + DefaultProjectileRadius + 1e-6}},
 			wantHP: DefaultPlayerHP,
 		},
 	}

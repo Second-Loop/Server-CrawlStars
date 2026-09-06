@@ -230,11 +230,12 @@ func TestWebSocketInvalidPressedSkillPreservesPendingAndSnapshotStream(t *testin
 	}
 }
 
-func TestSetInputCopiesPressedSkillAsPartOfWinningCommand(t *testing.T) {
+func TestSetInputReplacesPendingActionWithNewestPositiveAction(t *testing.T) {
 	store, room, playerID, session := inputSelectionFixture(t)
 	if got := store.setInput(room.ID, playerID, inputMessage{
 		ClientTick:   12,
 		MoveDir:      simulation.Vector2{X: 1},
+		AttackDir:    simulation.Vector2{Y: 1},
 		PressedSkill: true,
 	}, session); got != inputStored {
 		t.Fatalf("setInput tick 12 disposition=%v, want stored", got)

@@ -1232,8 +1232,8 @@ func TestStepAcceptsAttackInputAndAddsProjectileSkeletonToSnapshot(t *testing.T)
 	if projectile.Speed != projectileType.Speed {
 		t.Fatalf("expected projectile speed %f, got %f", projectileType.Speed, projectile.Speed)
 	}
-	if projectile.Damage != 280 {
-		t.Fatalf("expected Shelly projectile damage 280, got %f", projectile.Damage)
+	if projectile.Damage != 252 {
+		t.Fatalf("expected Shelly projectile damage 252, got %f", projectile.Damage)
 	}
 	if projectile.Radius != projectileType.Radius {
 		t.Fatalf("expected projectile radius %f, got %f", projectileType.Radius, projectile.Radius)

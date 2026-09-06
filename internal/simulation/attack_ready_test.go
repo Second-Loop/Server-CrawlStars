@@ -8,7 +8,7 @@ func TestAttackReadyTickProjectsBurstLockAndUnlock(t *testing.T) {
 		first := state.Step([]InputCommand{{PlayerID: "colt", AttackDir: Vector2{X: 1}, PressedAttack: !skill, PressedSkill: skill}})
 		ready := Tick(17)
 		if skill {
-			ready = 22
+			ready = 18
 		}
 		if got := playerByID(t, first, "colt").AttackReadyTick; got != ready {
 			t.Fatalf("skill=%t ready=%d want=%d", skill, got, ready)
