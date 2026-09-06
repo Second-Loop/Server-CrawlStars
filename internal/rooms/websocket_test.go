@@ -4324,12 +4324,9 @@ func TestBotFillMatchedDisconnectCancelsRoom(t *testing.T) {
 			if countdownTicker != nil {
 				waitForCountingStopTicker(t, countdownTicker, 1)
 			}
-			store.mu.RLock()
-			remainingIDs := len(store.playerIDs)
-			store.mu.RUnlock()
-			if remainingIDs != 0 {
-				t.Fatalf("%s cancellation retained player IDs=%d", target, remainingIDs)
-			}
+			// Registry removal precedes releaseClient's deferred ID cleanup.
+			// Wait for that separate completion condition, not just room absence.
+			waitForReleasedPlayerIDs(t, store)
 		})
 	}
 }
@@ -6235,6 +6232,22 @@ func waitForRoomDeleted(t *testing.T, store *Store, roomID string) {
 	}
 
 	t.Fatalf("expected room %s to be deleted", roomID)
+}
+
+func waitForReleasedPlayerIDs(t *testing.T, store *Store) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	remaining := 0
+	for time.Now().Before(deadline) {
+		store.mu.RLock()
+		remaining = len(store.playerIDs)
+		store.mu.RUnlock()
+		if remaining == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("cancellation retained player IDs=%d after cleanup deadline", remaining)
 }
 
 func tickAndReadMatchingSnapshots(t *testing.T, fakeClock *fakeClock, first *websocket.Conn, second *websocket.Conn) snapshotMessage {

@@ -46,8 +46,8 @@ const currentReliableSkillDeliveryMarkerGroups = [
   ["bounded delivery without application acknowledgement", ["무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않습니다.", "무한히 느린 session 유지나 application-level ACK/replay를 보장하지 않아요."]],
   ["PressedAttack-only latest-only", ["PressedAttack: true-only snapshot은 계속 latest-only로 전달합니다.", "PressedAttack: true-only snapshot은 계속 latest-only로 전달해요."]],
   ["no new wire event", ["새 event는 추가하지 않고 gameplay PlayerData에 탄약 두 field를 추가합니다.", "새 wire field/event를 추가하지 않습니다.", "새 wire field/event를 추가하지 않아요."]],
-  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
-  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI dialect", ["AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
+  ["AsyncAPI info version", ["AsyncAPI dialect 3.0.0과 info 0.9.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.8.0을 사용합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지합니다.", "AsyncAPI dialect 3.0.0과 info 0.7.0을 유지해요."]],
   ["control players and projectiles remain null", ["Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 <code>Players: null</code>과 <code>Projectiles: null</code>을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 Players: null과 Projectiles: null을 유지하고 gameplay entity를 넣지 않습니다.", "Control snapshot의 `Players: null`과 `Projectiles: null`을 유지하고 gameplay entity를 넣지 않아요."]],
   ["current skill effect boundary", ["현재 Shelly `reload_dash`, Colt `burst_projectile`, Lily `teleport_projectile`을 실행하며 bot skill use는 아직 실행하지 않습니다.", "현재 Shelly <code>reload_dash</code>, Colt <code>burst_projectile</code>, Lily <code>teleport_projectile</code>을 실행하며 bot skill use는 아직 실행하지 않습니다."]],
   ["SL-99 config boundary", ["Client config v3/server config v6 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지합니다.", "SL-99 client config v3/server config v5 경계를 유지해요."]],
@@ -401,7 +401,7 @@ for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
   ]);
 }
 const asyncAPIInfo = extractYAMLNamedBlock(asyncAPIText, "info:");
-assert(hasLine(asyncAPIInfo, "  version: 0.8.0"), "api/asyncapi.yaml must publish version 0.8.0");
+assert(hasLine(asyncAPIInfo, "  version: 0.9.0"), "api/asyncapi.yaml must publish version 0.9.0");
 for (const marker of ["room_cap_reached", "bot_fill_failed"]) {
   assert(!asyncAPIInfo.includes(marker), `AsyncAPI info must not document REST or structured-log marker ${marker}`);
 }
@@ -556,11 +556,11 @@ for (const [text, name, allowedTokens] of [
 
 const expectedCharacters = new Map([[0, "shelly"], [1, "colt"], [2, "lily"]]);
 const expectedClientCharacters = new Map([
-  [0, { normalAttackDistance: 5, skillAttackDistance: 1, skillAttackCoolDown: 10, maxBullets: 3 }],
-  [1, { normalAttackDistance: 6, skillAttackDistance: 7, skillAttackCoolDown: 10, maxBullets: 4 }],
-  [2, { normalAttackDistance: 1.5, skillAttackDistance: 3, skillAttackCoolDown: 10, maxBullets: 3 }],
+  [0, { normalAttackDistance: 5, skillAttackDistance: 1, skillAttackCoolDown: 12, maxBullets: 3 }],
+  [1, { normalAttackDistance: 6, skillAttackDistance: 7, skillAttackCoolDown: 13, maxBullets: 3 }],
+  [2, { normalAttackDistance: 1.5, skillAttackDistance: 3, skillAttackCoolDown: 11, maxBullets: 2 }],
 ]);
-const approvedClientGameConfigSHA256 = "6fddd2971ce302a0ff50c2ed9fb9c5977f91bfed7c9f21fb0c4cc534dd7ea7c3";
+const approvedClientGameConfigSHA256 = "78e4d3a991c519b4850acab760dfb1a12089dec99ba2db3d03cd6e3868f79c08";
 assert(
   createHash("sha256").update(clientGameConfigBytes).digest("hex") === approvedClientGameConfigSHA256,
   "client-config/game-config.json must be byte-identical to the approved v3 artifact",
@@ -843,12 +843,12 @@ function validateBotIdentitySchemas() {
   ]);
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
 
-  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0");
+  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0");
   assertSchemaContains(asyncAPIText, "ReadyPlayer", [
     "required: [Id, Team, Slot, IsBot, CharacterType, SpawnPosition]",
   ]);
   assertSchemaContains(asyncAPIText, "PlayerData", [
-    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, IsDead, LastProcessedClientTick]",
+    "required: [Id, Team, Slot, IsBot, CharacterType, Pos, MoveDir, AttackDir, Speed, Radius, HP, PressedAttack, PressedSkill, SkillReadyTick, AttackCharges, NextAttackChargeTick, AttackReadyTick, IsDead, LastProcessedClientTick]",
   ]);
   const messagesBlock = extractYAMLNamedBlock(asyncAPIText, "  messages:");
   const readyMessage = extractYAMLNamedBlock(messagesBlock, "    ReadyEventMessage:");
@@ -892,7 +892,7 @@ function validateCharacterTypeContract() {
   const playerSchema = extractYAMLSchema(openAPIText, "Player");
   assert(topLevelRequiredFields(playerSchema).filter((field) => field === "characterType").length === 1, "REST Player must require characterType exactly once");
 
-  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0");
+  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0");
   for (const schemaName of ["ReadyPlayer", "PlayerData"]) {
     const schema = extractYAMLSchema(asyncAPIText, schemaName);
     assert(topLevelRequiredFields(schema).filter((field) => field === "CharacterType").length === 1, `${schemaName} must require CharacterType exactly once`);
@@ -1011,6 +1011,9 @@ function validateCharacterSkillCooldownContract() {
     assert(topLevelRequiredFields(playerSchema).filter((candidate) => candidate === field).length === 1,
       `PlayerData must require ${field} exactly once`);
   }
+  assert(topLevelRequiredFields(playerSchema).includes("AttackReadyTick"), "PlayerData must require AttackReadyTick");
+  const attackReadyTick = extractSchemaProperty(playerSchema, "AttackReadyTick");
+  assert(attackReadyTick.includes("minimum: 0"), "AttackReadyTick must be non-negative");
   const snapshotPressedSkill = extractSchemaProperty(playerSchema, "PressedSkill");
   assert(snapshotPressedSkill.includes("type: boolean"),
     "PlayerData.PressedSkill must be boolean");
@@ -1256,14 +1259,13 @@ function validateBotBehaviorDocumentation() {
       "AsyncAPI info version `0.7.0`",
       "only an approved snapshot with `PressedAttack: true` updates cadence",
     ]],
-    [projectMapText, "project map", "## SL-116 문서 전달과 현재 검증 경계", [
+    [projectMapText, "project map", "## 봇 구현과 문서 버전", [
       "server config v5",
-      "local delivery/validation",
-      "PR/merge/Done claim",
+      "현재 코드에 포함",
       "room-owned controller state",
       "one PlayerID-sorted merged State.Step",
-      "Client config v3",
-      "AsyncAPI info version `0.7.0`",
+      "client config v3",
+      "AsyncAPI info `0.9.0`",
     ]],
     [decisionsText, "decisions", "## ADR-0047: SL-116 결정적 Bot controller와 server config v5", [
       "room-owned controller state",
@@ -1291,7 +1293,7 @@ function validateBotBehaviorDocumentation() {
   }
 
   assert(!/^  \/.*bot/im.test(openAPIText), "OpenAPI must not add a bot endpoint");
-  assert(hasLine(asyncAPIText, "  version: 0.8.0"), "AsyncAPI version must be 0.8.0 after SL-120");
+  assert(hasLine(asyncAPIText, "  version: 0.9.0"), "AsyncAPI version must be 0.9.0 after SL-120");
 }
 
 function validateReliableSkillDeliveryValidatorSelfTests() {

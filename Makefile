@@ -1,12 +1,14 @@
-.PHONY: fmt fmt-check docs-install docs-validate docs-build vet test build deploy-test deploy-check ci
+.PHONY: fmt fmt-check docs-install docs-validate docs-schema docs-build vet test build deploy-test deploy-check ci
 
 GO ?= go
 GOFMT ?= gofmt
 NODE ?= node
+NPX ?= npx
 MISE ?= $(firstword $(shell command -v mise 2>/dev/null) $(wildcard /opt/homebrew/bin/mise) $(wildcard /usr/local/bin/mise))
 GO_CMD := $(if $(MISE),$(MISE) exec -- $(GO),$(GO))
 GOFMT_CMD := $(if $(MISE),$(MISE) exec -- $(GOFMT),$(GOFMT))
 NODE_CMD := $(if $(MISE),$(MISE) exec -- $(NODE),$(NODE))
+NPX_CMD := $(if $(MISE),$(MISE) exec -- $(NPX),$(NPX))
 GO_CACHE ?= $(CURDIR)/.cache/go-build
 GO_MOD_CACHE ?= $(CURDIR)/.cache/go-mod
 GO_ENV := GOCACHE=$(GO_CACHE) GOMODCACHE=$(GO_MOD_CACHE)
@@ -28,7 +30,11 @@ docs-install:
 docs-validate:
 	$(NODE_CMD) docs-ui/scripts/validate.mjs
 
-docs-build: docs-validate
+docs-schema: docs-validate
+	REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true $(NPX_CMD) --yes --package @redocly/cli@2.38.0 redocly lint --extends=minimal api/openapi.yaml
+	$(NPX_CMD) --yes --package @asyncapi/cli@6.0.2 asyncapi validate api/asyncapi.yaml --fail-severity=error
+
+docs-build: docs-schema
 	$(NODE_CMD) docs-ui/scripts/build.mjs
 
 vet:

@@ -37,9 +37,7 @@ jobs:
         run: go mod download
 
       - name: Build docs UI
-        run: |
-          node docs-ui/scripts/validate.mjs
-          node docs-ui/scripts/build.mjs
+        run: make docs-build
 
       - name: Test
         run: go test ./...
